@@ -1,0 +1,29 @@
+**/*.vsix
+
+# Dependencies
+node_modules/
+
+# Compiled output
+out/
+
+# VS Code
+.vscode-test/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Coverage
+coverage/
+
+# Build artifacts
+*.vsix
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo

@@ -1,0 +1,50 @@
+{
+  "name": "arma3-sqf-reloader",
+  "displayName": "Arma 3 SQF Reloader",
+  "description": "Sends saved SQF functions to an Arma 3 development server.",
+  "version": "1.0.0",
+  "publisher": "Razer",
+  "repository": {
+      "type": "git",
+      "url": "https://github.com/VainoKarppi/Arma3SqfReloader.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.sqf"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Arma 3 SQF Reloader",
+      "properties": {
+        "arma3SqfReloader.url": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765/api/command",
+          "description": "URL of the Arma 3 command API."
+        },
+        "arma3SqfReloader.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically send SQF functions when a file is saved."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.5.0"
+  }
+}
