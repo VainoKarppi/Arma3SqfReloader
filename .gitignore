@@ -1,4 +1,4 @@
-**/*.vsix
+﻿**/*.vsix
 
 # Dependencies
 node_modules/
@@ -20,6 +20,7 @@ coverage/
 
 # Build artifacts
 *.vsix
+vscode-runtime/
 
 # OS files
 .DS_Store
@@ -27,3 +28,19 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+# ArmaApi extension build output
+ArmaApiExtension/bin/
+ArmaApiExtension/obj/
+ArmaApiExtension/dist/
+ArmaApiExtension/tools/**/bin/
+ArmaApiExtension/tools/**/obj/
+# callExtension harness (downloaded by tools\install-call-extension.ps1)
+ArmaApiExtension/tests/callExtension/callExtension_x64.exe
+ArmaApiExtension/tests/callExtension/*.txt
+ArmaApiExtension/tests/callExtension/*.cmd
+ArmaApiExtension/tests/callExtension/ArmaApi_x64.dll
+# callExtension harness samples (only the runner is downloaded on demand)
+ArmaApiExtension/tests/callExtension/callExtension.exe
+ArmaApiExtension/tests/callExtension/readme.txt
+ArmaApiExtension/tests/callExtension/test_*
+ArmaApiExtension/tests/callExtension/api_*

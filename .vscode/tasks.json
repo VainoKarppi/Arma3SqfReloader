@@ -1,0 +1,38 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "npm",
+            "script": "compile",
+            "group": "build",
+            "problemMatcher": "$tsc",
+            "label": "npm: compile"
+        },
+        {
+            "type": "npm",
+            "script": "watch",
+            "group": "build",
+            "isBackground": true,
+            "problemMatcher": "$tsc-watch",
+            "label": "npm: watch"
+        },
+        {
+            "type": "shell",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File build-all.ps1",
+            "problemMatcher": [],
+            "label": "Build all (DLL + mod + vsix)"
+        },
+        {
+            "type": "shell",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File build-all.ps1 -Install",
+            "problemMatcher": [],
+            "label": "Build all and install"
+        },
+        {
+            "type": "shell",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ArmaApiExtension\\tools\\test-extension.ps1",
+            "problemMatcher": [],
+            "label": "Test extension (callExtension harness)"
+        }
+    ]
+}

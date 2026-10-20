@@ -1,36 +1,171 @@
 {
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
-  "description": "Sends saved SQF functions to an Arma 3 development server.",
-  "version": "1.0.0",
+  "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the ArmaApi REST API. Creates mod junctions automatically.",
+  "version": "2.0.7",
   "publisher": "Razer",
   "repository": {
-      "type": "git",
-      "url": "https://github.com/VainoKarppi/Arma3SqfReloader.git"
+    "type": "git",
+    "url": "https://github.com/VainoKarppi/Arma3SqfReloader.git"
   },
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
-  ],
-  "activationEvents": [
-    "workspaceContains:**/*.sqf"
+  ],  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:armaApi.createExample",
+    "workspaceContains:**/*.sqf",
+    "workspaceContains:**/$PBOPREFIX$"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "armaApi.play",
+        "title": "Arma API: Play (start Arma 3 with this mod)",
+        "icon": "$(play)"
+      },
+      {
+        "command": "armaApi.stop",
+        "title": "Arma API: Stop Arma 3"
+      },
+      {
+        "command": "armaApi.setup",
+        "title": "Arma API: Set up this mod (junction + config)",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "armaApi.setupWorkspace",
+        "title": "Arma API: Set up all mods in this workspace"
+      },
+      {
+        "command": "armaApi.createExample",
+        "title": "Arma API: Create example mod (try the reloader)"
+      },
+      {
+        "command": "armaApi.connect",
+        "title": "Arma API: Check connection"
+      },
+      {
+        "command": "armaApi.reloadAll",
+        "title": "Arma API: Reload all functions"
+      },
+      {
+        "command": "armaApi.reloadFile",
+        "title": "Arma API: Reload current function"
+      },
+      {
+        "command": "armaApi.removeJunctions",
+        "title": "Arma API: Remove junctions created by this extension"
+      },
+      {
+        "command": "armaApi.openArmaFolder",
+        "title": "Arma API: Open Arma 3 folder"
+      },
+      {
+        "command": "armaApi.showOutput",
+        "title": "Arma API: Show output"
+      },
+      {
+        "command": "armaApi.toggleAutoReload",
+        "title": "Arma API: Toggle reload on save"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "armaApi.reloadFile",
+          "when": "resourceExtname == .sqf"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "armaApi.reloadFile",
+          "when": "resourceExtname == .sqf",
+          "group": "armaApi@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "armaApi.setup",
+          "when": "explorerResourceIsFolder",
+          "group": "armaApi@1"
+        }
+      ]
+    },
     "configuration": {
       "title": "Arma 3 SQF Reloader",
       "properties": {
-        "arma3SqfReloader.url": {
+        "armaApi.armaDirectory": {
           "type": "string",
-          "default": "http://127.0.0.1:8765/api/command",
-          "description": "URL of the Arma 3 command API."
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Arma 3 installation folder (contains `arma3_x64.exe`). Leave empty to auto-detect from the registry / Steam libraries."
         },
-        "arma3SqfReloader.enabled": {
+        "armaApi.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically send SQF functions when a file is saved."
+          "description": "Send SQF changes to Arma 3 when a file is saved."
+        },
+        "armaApi.apiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765/api",
+          "description": "Base URL of the ArmaApi REST server (the ArmaApi mod must be running in Arma 3)."
+        },
+        "armaApi.requestTimeout": {
+          "type": "number",
+          "default": 3000,
+          "description": "Timeout in milliseconds for a request to Arma."
+        },
+        "armaApi.autoJunction": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a junction from the Arma 3 folder to the open mod folder so Arma (and the reloader) can read the scripts from your working copy."
+        },
+        "armaApi.junctionMode": {
+          "type": "string",
+          "enum": [
+            "addon",
+            "module"
+          ],
+          "enumDescriptions": [
+            "Link each PBO prefix (folder with $PBOPREFIX$) into <arma>\\z\\<tag>\\addons\\<name>. Works even when the mod folder lives anywhere.",
+            "Link the whole mod folder (@Mod) into <arma>\\<@Mod>. Closest to the normal -mod= layout."
+          ],
+          "default": "addon",
+          "description": "How mod folders are linked into the Arma 3 directory."
+        },
+        "armaApi.reloadOnSave": {
+          "type": "string",
+          "enum": [
+            "reload",
+            "recompile",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Read the saved file from disk and recompile the TAG_fnc_name variable (recommended).",
+            "Send the file content through POST /api/command as a recompile request (compatible with the EdenOnline API).",
+            "Do not reload on save."
+          ],
+          "default": "reload",
+          "description": "How a saved SQF file is pushed to Arma."
+        },
+        "armaApi.notifyOnError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when Arma is not reachable or a reload fails."
+        },
+        "armaApi.extraLaunchArguments": {
+          "type": "string",
+          "default": "-noSplash -skipIntro -noPause",
+          "markdownDescription": "Extra arguments for `Arma API: Play`. `-filePatching`, `-mod=` and `-noBattlEye` are always added (file patching and the mod are required by the reloader, BattlEye cannot load the unsigned extension); set `-be` here to start it anyway."
+        },
+        "armaApi.createExampleWithMission": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "**Arma API: Create example mod** also writes `missions/example.Altis`, a minimal mission that calls the generated functions."
         }
       }
     }

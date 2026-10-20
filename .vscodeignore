@@ -1,0 +1,18 @@
+﻿# The VS Code extension ships only what it needs at runtime:
+#   out/                compiled JavaScript
+#   vscode-runtime/     ArmaApi_x64.dll + the unpacked @ArmaApi mod (deployed to the Arma folder
+#                       on "Arma API: Play", see src/runtime.ts)
+ArmaApiExtension/**
+arma3-sqf-reloader-*.vsix
+*.bak
+build-all.ps1
+node_modules/**
+out/**/*.map
+src/**
+scripts/**
+tsconfig.json
+.gitignore
+.vscodeignore
+.armaapi-links.json
+.vscode/**
+**/*.tsbuildinfo

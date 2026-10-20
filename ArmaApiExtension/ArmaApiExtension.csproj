@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>ArmaApi_x64</AssemblyName>
+    <RootNamespace>ArmaApi</RootNamespace>
+    <Version>2.0.7</Version>
+
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <DebugType>none</DebugType>
+    <PublishTrimmed>true</PublishTrimmed>
+    <StripSymbols>true</StripSymbols>
+    <Optimization>true</Optimization>
+    <IsTrimmable>false</IsTrimmable>
+    <NativeLib>Shared</NativeLib>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;tools/**</DefaultItemExcludes>
+
+    <NoWarn>IL3002;IL2026;IL2065;IL3050;IL2069;IL3053;IDE0270;IDE0019;IL2062;IL2067;IL2070;IL2057;IL2075</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="linker.xml" />
+    <!-- Built explicitly by BuildNativeExports (NativeAOT does not compile ClCompile items). -->
+    <ClCompile Remove="exports.c" />
+  </ItemGroup>
+
+  <!--
+    NativeAOT links the shared library with a generated .def file that only lists the
+    UnmanagedCallersOnly entry points. The C exports Arma reads before the runtime starts
+    (RVExtensionFeatureFlags / RVExtensionGetFeatureFlags) must be added to that file and
+    the compiled object has to be part of the link, otherwise the linker drops them.
+  -->
+  <PropertyGroup>
+    <_ArmaApiExportsSource>$(MSBuildProjectDirectory)\exports.c</_ArmaApiExportsSource>
+    <_ArmaApiExportsObject>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.obj</_ArmaApiExportsObject>
+    <_ArmaApiVcVarsAll Condition="'$(_ArmaApiVcVarsAll)' == ''">$(VcToolChainPath)</_ArmaApiVcVarsAll>
+  </PropertyGroup>
+
+  <Target Name="FindNativeToolchain" BeforeTargets="BuildNativeExports">
+    <PropertyGroup>
+      <_ArmaApiVsRoot></_ArmaApiVsRoot>
+    </PropertyGroup>
+
+    <Exec Command="&quot;$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true"
+          Condition="'$(_ArmaApiVcVarsAll)' == '' And Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe')">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_ArmaApiVsRoot" />
+    </Exec>
+
+    <PropertyGroup>
+      <_ArmaApiVcVarsAll Condition="'$(_ArmaApiVcVarsAll)' == '' And '$(_ArmaApiVsRoot)' != ''">$(_ArmaApiVsRoot)\VC\Auxiliary\Build\vcvars64.bat</_ArmaApiVcVarsAll>
+      <_ArmaApiVcVarsAll>$([System.String]::Copy($(_ArmaApiVcVarsAll)).Trim())</_ArmaApiVcVarsAll>
+      <_ArmaApiExportsObject>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.obj</_ArmaApiExportsObject>
+      <_ArmaApiExportsBatch>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.cmd</_ArmaApiExportsBatch>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="AddNativeExportsToDefFile" AfterTargets="IlcCompile" Condition="'$(NativeLib)' == 'Shared' and '$(ExportsFile)' != '' and Exists('$(ExportsFile)')">
+    <ReadLinesFromFile File="$(ExportsFile)">
+      <Output TaskParameter="Lines" ItemName="_ArmaApiDefLine" />
+    </ReadLinesFromFile>
+
+    <PropertyGroup>
+      <_ArmaApiDefHasFlags>false</_ArmaApiDefHasFlags>
+      <_ArmaApiDefHasFlags Condition="@(_ArmaApiDefLine->AnyHaveMetadataValue('Identity','RVExtensionFeatureFlags'))">true</_ArmaApiDefHasFlags>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(ExportsFile)"
+                      Lines="@(_ArmaApiDefLine);   RVExtensionFeatureFlags DATA;   RVExtensionGetFeatureFlags"
+                      Overwrite="true"
+                      Condition="'$(_ArmaApiDefHasFlags)' != 'true'" />
+  </Target>
+
+  <!-- Compiles exports.c with the MSVC toolchain that NativeAOT uses and links the object. -->
+  <Target Name="BuildNativeExports" BeforeTargets="LinkNative" DependsOnTargets="FindNativeToolchain" Condition="'$(NativeLib)' == 'Shared'">
+    <ItemGroup Condition="'$(_ArmaApiVcVarsAll)' != ''">
+      <LinkerArg Include="&quot;$(_ArmaApiExportsObject)&quot;" />
+    </ItemGroup>
+
+    <Message Importance="low" Text="Compiling native exports: $(_ArmaApiExportsSource)" Condition="'$(_ArmaApiVcVarsAll)' != ''" />
+
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_ArmaApiExportsObject)'))" Condition="'$(_ArmaApiVcVarsAll)' != ''" />
+
+    <WriteLinesToFile File="$(_ArmaApiExportsBatch)"
+                      Overwrite="true"
+                      Condition="'$(_ArmaApiVcVarsAll)' != ''"
+                      Lines="call &quot;$(_ArmaApiVcVarsAll)&quot;;cl.exe /nologo /c /O2 /GS- &quot;$(_ArmaApiExportsSource)&quot; /Fo:&quot;$(_ArmaApiExportsObject)&quot;;exit /b %ERRORLEVEL%" />
+
+    <Exec Command="cmd.exe /c &quot;$(_ArmaApiExportsBatch)&quot;"
+          Condition="'$(_ArmaApiVcVarsAll)' != ''"
+          StandardOutputImportance="low" />
+  </Target>
+
+</Project>

@@ -1,0 +1,47 @@
+{
+    // Recommended workspace settings for developing this repository.
+    // When a user opens *their* mod folder, the extension settings below are what matter.
+    "armaApi.enabled": true,
+    "armaApi.apiUrl": "http://127.0.0.1:8765/api",
+    "armaApi.autoJunction": true,
+    "armaApi.junctionMode": "addon",
+    "armaApi.reloadOnSave": "reload",
+    "armaApi.notifyOnError": true,
+    "armaApi.requestTimeout": 3000,
+
+    // The ArmaApi mod shipped from this repository (dist/@ArmaApi/source) is the layout that
+    // matches z\armaapi\addons\armaapi; open it to hot-reload ArmaApi's own SQF functions.
+    "files.associations": {
+        "*.sqf": "sqf",
+        "*.ext": "sqf",
+        "*/$PBOPREFIX$": "plaintext",
+        "*.cpp": "cpp",
+        "*.hpp": "cpp"
+    },
+    "files.encoding": "utf8",
+    "files.eol": "\r\n",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "[sqf]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    },
+    "[cpp]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/out": true,
+        "**/ArmaApiExtension/bin": true,
+        "**/ArmaApiExtension/obj": true,
+        "**/ArmaApiExtension/dist": true
+    },
+    "files.watcherExclude": {
+        "**/ArmaApiExtension/bin/**": true,
+        "**/ArmaApiExtension/obj/**": true,
+        "**/ArmaApiExtension/dist/**": true,
+        "**/node_modules/**": true
+    },
+    "typescript.tsdk": "node_modules/typescript/lib"
+}
