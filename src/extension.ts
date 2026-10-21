@@ -3,6 +3,7 @@ import { getStatus } from "./api";
 import { disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { findArmaDirectory, findModForFile } from "./arma";
+import { removeAllLinks, removeModInZLink } from "./junctions";
 import { isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
@@ -28,8 +29,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
     statusBar.command = "sqfReloader.play";
-    setStatus("$(play) Play Arma 3", false, "Start Arma 3 with this mod and SqfReloader");
+    refreshStatus();
     statusBar.show();
+    const statusTimer = setInterval(() => void refreshStatus(), 2000);
+    context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
 
     // --- Save -> reload ---------------------------------------------------
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
@@ -98,7 +101,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }
             await refreshStatus();
         } else {
-            setStatus("$(play) Play Arma 3", false);
+            await refreshStatus();
         }
 
         return started;
@@ -120,6 +123,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
         try {
             require("child_process").execSync('taskkill /IM arma3_x64.exe /F');
+            const armaDirectory = await findArmaDirectory(readSettings());
+            if (armaDirectory) {
+                // Remove only this extension's registered mod/addon links and any old
+                // z\@Mod alias it created. Empty z mount folders are pruned by cleanup.
+                const removedLinks = removeAllLinks(armaDirectory);
+                const removedLegacy = workspaceMods().filter(mod => removeModInZLink(armaDirectory, mod)).length;
+                const failures = removedLinks.failed.length;
+                log(`Removed ${removedLinks.removed.length + removedLegacy} Arma mod link(s) after Stop Arma 3${failures ? `; ${failures} could not be removed` : ""}.`);
+                if (failures > 0) {
+                    vscode.window.showWarningMessage(`Arma 3 stopped, but ${failures} mod link(s) could not be removed. See the SqfReloader output.`);
+                }
+            }
             setStatus("$(play) Play Arma 3", false);
             log("Arma 3 closed.");
         } catch (error) {
@@ -343,13 +358,20 @@ function describeWorkspace(): void {
 
 /** Reflects the live API state in the status bar; quiet when Arma is not running. */
 async function refreshStatus(): Promise<void> {
+    if (isRunning()) {
+        statusBar && (statusBar.command = "sqfReloader.stop");
+        setStatus("$(debug-stop) Stop Arma 3", false, "Stop the running Arma 3 process");
+        return;
+    }
+
+    if (statusBar) statusBar.command = "sqfReloader.play";
     const settings: Settings = readSettings();
 
     try {
         const status = await getStatus(settings);
-        setStatus(status.gameConnected ? "$(check) SqfReloader connected" : "$(sync~spin) SqfReloader starting", status.gameConnected !== true);
+        setStatus("$(play) Play Arma 3", false, status.gameConnected ? "Start another Arma 3 session with this mod" : "Start Arma 3 with this mod and SqfReloader");
     } catch {
-        setStatus("$(play) Play Arma 3", false);
+        setStatus("$(play) Play Arma 3", false, "Start Arma 3 with this mod and SqfReloader");
     }
 }
 

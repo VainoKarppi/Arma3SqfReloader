@@ -4,22 +4,20 @@
 
 private _list = [];
 
-// This mod's own functions come from the extension's source index.
-if (SqfReloader_var_ready) then {
-    private _index = ["FunctionIndex", ["z\sqfreloader\addons\sqfreloader"]] call SqfReloader_fnc_call;
-
-    if (!isNil "_index") then {
-        {
-            if (_x isEqualType [] && {count _x >= 3}) then {
-        _list pushBack format ["SqfReloader_fnc_%1", _x param [0, ""]];
-            };
-        } forEach (_index param [0, []]);
-    };
-};
-
-// Functions other mods opted into with CfgPatches >> <class> >> SqfReloader_reloadable.
+// Return every custom CfgFunctions entry. SqfReloader reloads these directly from their
+// configured addon paths; no CfgPatches opt-in list is required.
 {
-    _list append getArray (_x >> "SqfReloader_reloadable");
-} forEach ("true" configClasses (configFile >> "CfgPatches"));
+    private _tagClass = _x;
+    private _tag = getText (_tagClass >> "tag");
+    if (_tag isEqualTo "") then {_tag = configName _tagClass};
+    if (toLower _tag == "bis") then {continue};
+
+    {
+        private _category = _x;
+        {
+            _list pushBack format ["%1_fnc_%2", _tag, configName _x];
+        } forEach ("true" configClasses _category);
+    } forEach ("true" configClasses _tagClass);
+} forEach ("true" configClasses (configFile >> "CfgFunctions"));
 
 _list arrayIntersect _list

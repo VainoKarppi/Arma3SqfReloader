@@ -129,15 +129,8 @@ private _async = ["FunctionIndex", [] , 5] call SqfReloader_fnc_callAsync;  // [
 
 ### Reloading other mods' functions
 
-The reloader compiles straight from disk, so a function only needs its source file:
-
-```sqf
-class CfgPatches {
-    class MyMod {
-        SqfReloader_reloadable[] = {"MyTag_fnc_one", "MyTag_fnc_two"};
-    };
-};
-```
+Every custom function declared in `CfgFunctions` is available for recompile without a separate
+allowlist in `CfgPatches`.
 
 or push single functions through the API:
 

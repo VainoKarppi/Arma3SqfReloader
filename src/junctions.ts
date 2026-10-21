@@ -304,8 +304,19 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
             continue;
         }
 
+        const resolvedCurrent = path.resolve(path.dirname(entry.linkPath), current).toLowerCase();
+        const resolvedRecorded = path.resolve(entry.target).toLowerCase();
+        if (resolvedCurrent !== resolvedRecorded) {
+            continue;
+        }
+
         if (removeLink(entry.linkPath)) {
             removed.push(entry.linkPath);
+            const zRoot = path.resolve(armaDirectory, "z");
+            const relativeToZ = path.relative(zRoot, path.resolve(entry.linkPath));
+            if (relativeToZ !== ".." && !relativeToZ.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToZ)) {
+                removeEmptyDirectories(path.dirname(entry.linkPath), zRoot);
+            }
         } else {
             failed.push(entry.linkPath);
         }
@@ -318,6 +329,23 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
     }
 
     return { removed, failed };
+}
+
+function removeEmptyDirectories(directory: string, stopAt: string): void {
+    const stop = path.resolve(stopAt);
+    let current = path.resolve(directory);
+
+    while (current === stop || current.startsWith(`${stop}${path.sep}`)) {
+        try {
+            if (!fs.existsSync(current) || fs.readdirSync(current).length > 0) return;
+            fs.rmdirSync(current);
+        } catch {
+            return;
+        }
+
+        if (current === stop) return;
+        current = path.dirname(current);
+    }
 }
 
 /** What Arma would read for an addon right now. */

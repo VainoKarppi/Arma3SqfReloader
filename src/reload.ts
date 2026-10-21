@@ -12,6 +12,8 @@ export interface ReloadOutcome {
     detail?: string;
 }
 
+let snapshotSequence = 0;
+
 function notify(settings: Settings, message: string): void {
     if (settings.notifyOnError) {
         vscode.window.showWarningMessage(`Arma 3 SQF Reloader: ${message}`);
@@ -55,11 +57,13 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     log(`Saved ${document.fileName} -> ${variable} (${armaPath})`);
 
     try {
-        const code = compileAssignment(variable, armaPath);
+        const snapshot = writeCompileSnapshot(document.fileName, document.getText());
+        scheduleSnapshotCleanup(snapshot);
+        const code = compileAssignment(variable, toArmaPath(addon, snapshot));
         const result = await evalCode(settings, code);
 
         return result.success
-            ? { ok: true, message: `Recompiled ${variable} from ${armaPath}.` }
+            ? { ok: true, message: `Recompiled ${variable} from saved snapshot of ${armaPath}.` }
             : { ok: false, message: result.error ?? "Compile failed" };
     } catch (error) {
         logError("compile request failed", error);
@@ -67,6 +71,31 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
         notify(settings, message);
         return { ok: false, message };
     }
+}
+
+/**
+ * Arma can keep a file-patching source open briefly while preprocessing it. Compile an
+ * immutable sibling copy instead, so VS Code can replace the user's file on every save.
+ * Keeping the copy in the same directory preserves relative #include resolution.
+ */
+function writeCompileSnapshot(sourcePath: string, content: string): string {
+    const snapshotPath = `${sourcePath}.sqfreloader-${Date.now()}-${++snapshotSequence}.sqf`;
+    fs.writeFileSync(snapshotPath, content, { encoding: "utf8", flag: "wx" });
+    return snapshotPath;
+}
+
+function scheduleSnapshotCleanup(snapshotPath: string, attempt = 0): void {
+    const timer = setTimeout(() => {
+        try {
+            fs.unlinkSync(snapshotPath);
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if ((code === "EBUSY" || code === "EPERM" || code === "EACCES") && attempt < 10) {
+                scheduleSnapshotCleanup(snapshotPath, attempt + 1);
+            }
+        }
+    }, 10 * 60_000);
+    timer.unref?.();
 }
 
 /** Calls the SQF reloader for every function of the mod (or all known functions with fallback). */
@@ -181,7 +210,9 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     }
 
     const armaPath = toArmaPath(addon, document.fileName);
-    const code = compileAssignment(variable, armaPath);
+    const snapshot = writeCompileSnapshot(document.fileName, document.getText());
+    scheduleSnapshotCleanup(snapshot);
+    const code = compileAssignment(variable, toArmaPath(addon, snapshot));
 
     const result = await evalCode(settings, code);
 

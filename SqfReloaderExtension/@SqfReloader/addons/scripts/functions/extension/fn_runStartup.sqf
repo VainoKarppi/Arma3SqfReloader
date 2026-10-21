@@ -55,6 +55,17 @@ diag_log format ["[SqfReloader] startup: configured addon prefixes %1", _prefixe
 private _registered = [] call SqfReloader_fnc_reloadFunctions;
 diag_log format ["[SqfReloader] startup: registered %1 custom CfgFunctions", _registered];
 
+// Eden replaces parts of missionNamespace while the editor display is being constructed.
+// Re-run the registration once the display has settled so functions are present on the
+// first editor open, before the developer needs to save a file.
+if (is3DEN) then {
+    [] spawn {
+        uiSleep 0.5;
+        private _editorRegistered = [] call SqfReloader_fnc_reloadFunctions;
+        diag_log format ["[SqfReloader] Eden startup: registered %1 custom CfgFunctions", _editorRegistered];
+    };
+};
+
 // Optional project hook, e.g. in description.ext:
 //   class SqfReloader { StartupCode = "call compile preprocessFileLineNumbers 'dev/setup.sqf';"; };
 private _code = getText (missionConfigFile >> "SqfReloader" >> "StartupCode");

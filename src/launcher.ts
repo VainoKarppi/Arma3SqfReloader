@@ -250,7 +250,9 @@ function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {
         const marker = `addons\\${addon.name.toLowerCase()}\\`;
         const markerIndex = lower.lastIndexOf(marker);
         if (markerIndex < 0) continue;
-        const relative = normalized.slice(markerIndex + marker.length).replace(/\\/g, path.sep);
+        const relative = normalized.slice(markerIndex + marker.length)
+            .replace(/\.sqfreloader-\d+-\d+\.sqf$/i, ".sqf")
+            .replace(/\\/g, path.sep);
         if (!/\.sqf$/i.test(relative)) continue;
         const candidate = path.resolve(addon.localDirectory, relative);
         if (fs.existsSync(candidate)) return candidate;

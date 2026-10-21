@@ -65,7 +65,7 @@ You get a complete, working mod plus a test mission:
 @ExampleMod/
   mod.cpp
   addons/example/
-    config.cpp               CfgPatches (SqfReloader_reloadable) + CfgFunctions tag "example"
+    config.cpp               CfgFunctions tag "example"
     functions/fn_hello.sqf   example_fnc_hello   - writes a systemChat line
     functions/fn_add.sqf     example_fnc_add     - 20 + 22
     functions/fn_showCounter.sqf  example_fnc_showCounter - calls both
@@ -145,17 +145,8 @@ POST /api/reload
 | `fn_*.sqf` | that one function is recompiled |
 | `config.cpp`, `*.hpp`, `init.sqf`, helpers | the mod's reloadable functions are recompiled |
 
-Functions opt into reloading with `recompile = 1` in `CfgFunctions`: only those classes are
-recompiled after a save (`init`/`runStartup` style entry points stay unmarked). Other mods opt
-into reloading with one line in their `CfgPatches`:
-
-```sqf
-class CfgPatches {
-    class mymod {
-        SqfReloader_reloadable[] = {"mymod_fnc_hello", "mymod_fnc_other"};
-    };
-};
-```
+All custom functions declared in `CfgFunctions` can be recompiled; no `CfgPatches` opt-in list
+is needed. `recompile = 1` is not required for SqfReloader's scan.
 
 `TAG_fnc_name` is compiled from `\z\<tag>\addons\<tag>\source\fn_name.sqf`,
 `\z\<tag>\addons\<tag>\functions\fn_name.sqf`, `\x\<tag>\addons\...` or an unpacked

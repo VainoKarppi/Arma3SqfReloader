@@ -55,7 +55,18 @@ diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixe
                 private _prefix = (missionNamespace getVariable ["SqfReloader_var_addonPrefixes", []]) select {
                     (_x param [0, ""]) isEqualTo (toLower _tag)
                 };
-                _mountRoot = format ["%1\%2", (_prefix param [0, ["", ""]]) param [1, ""], _relativeBase];
+                private _prefixPath = (_prefix param [0, ["", ""]]) param [1, ""];
+                private _relativeFunctionPath = _relativeBase;
+
+                // CfgFunctions paths such as "\example\functions" are relative to the
+                // function tag. The API prefix already includes z\<tag>\addons\<addon>,
+                // so remove that leading tag before joining the configured path.
+                private _tagRoot = format ["%1\", toLower _tag];
+                if (((toLower _relativeFunctionPath) find _tagRoot) == 0) then {
+                    _relativeFunctionPath = _relativeFunctionPath select [count _tagRoot];
+                };
+
+                _mountRoot = format ["%1\%2", _prefixPath, _relativeFunctionPath];
             };
             if !((toLower _mountRoot select [0, 2]) in ["z\", "x\"]) then {continue};
             private _source = format ["%1\fn_%2.sqf", _mountRoot, _name];

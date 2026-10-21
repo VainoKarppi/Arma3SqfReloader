@@ -229,8 +229,6 @@ function configCpp(): string {
         versionStr = "1.0.0";
         versionAr[] = {1, 0, 0};
 
-        // SqfReloader may recompile these in a running game (SqfReloader_fnc_reloadFunction).
-        SqfReloader_reloadable[] = {"${TEMPLATE_TAG}_fnc_hello", "${TEMPLATE_TAG}_fnc_add"};
     };
 };
 
@@ -239,7 +237,7 @@ class CfgFunctions {
         tag = "${TEMPLATE_TAG}";
 
         class Core {
-            file = "\\z\\${TEMPLATE_TAG}\\addons\\${TEMPLATE_TAG}\\functions";
+            file = "\\${TEMPLATE_TAG}\\functions";
 
             class hello { recompile = 1; };
             class add { recompile = 1; };
