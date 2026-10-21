@@ -4,7 +4,7 @@ import { disposeOutput, getOutput, log, logError, readSettings, Settings, update
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { findArmaDirectory, findModForFile } from "./arma";
 import { removeAllLinks, removeModInZLink } from "./junctions";
-import { isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow } from "./reload";
+import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
@@ -31,7 +31,17 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar.command = "sqfReloader.play";
     refreshStatus();
     statusBar.show();
-    const statusTimer = setInterval(() => void refreshStatus(), 2000);
+    let wasArmaRunning = isRunning();
+    const statusTimer = setInterval(() => {
+        const running = isRunning();
+        if (wasArmaRunning && !running) {
+            void findArmaDirectory(readSettings()).then(armaDirectory => {
+                if (armaDirectory) cleanupSnapshots(armaDirectory);
+            });
+        }
+        wasArmaRunning = running;
+        void refreshStatus();
+    }, 2000);
     context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
 
     // --- Save -> reload ---------------------------------------------------
@@ -73,6 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
             await ensureJunctions(readSettings());
             await refreshStatus();
+            void promptForExampleIfNeeded(context, version);
         } catch (error) {
             logError("workspace change handling failed", error);
         }
@@ -260,7 +271,31 @@ export function activate(context: vscode.ExtensionContext): void {
 
     describeWorkspace();
     installTestHook(context, playCommand);
+    void promptForExampleIfNeeded(context, version);
     void refreshStatus();
+}
+
+async function promptForExampleIfNeeded(context: vscode.ExtensionContext, version: string): Promise<void> {
+    if (!(vscode.workspace.workspaceFolders?.length)) return;
+
+    const stateKey = "setupExamplePromptVersion";
+    if (context.globalState.get<string>(stateKey) === version) return;
+
+    if (workspaceMods().length > 0) {
+        await context.globalState.update(stateKey, version);
+        return;
+    }
+
+    // Record before showing the prompt so workspace/settings changes cannot stack notices.
+    await context.globalState.update(stateKey, version);
+    const choice = await vscode.window.showInformationMessage(
+        "Completed installing extension. This workspace has no Arma mod yet. Set up an example mod?",
+        "Setup Example"
+    );
+
+    if (choice === "Setup Example") {
+        await vscode.commands.executeCommand("sqfReloader.createExample");
+    }
 }
 
 async function injectWorkspaceFunctionsWhenReady(settings: Settings): Promise<void> {

@@ -6,12 +6,15 @@ call SqfReloader_fnc_addEditorMenu;
 
 [] spawn {
     uiSleep 0.5;
-    private _registered = [] call SqfReloader_fnc_reloadFunctions;
-    diag_log format ["[SqfReloader] Eden namespace refresh (0.5s): registered %1 custom CfgFunctions; example_fnc_add isNil=%2", _registered, isNil {missionNamespace getVariable "example_fnc_add"}];
+    // Returning from a playable mission can replace missionNamespace after the Eden
+    // EventHandler runs. Call runStartup again here so workspace functions are restored too;
+    // reloadFunctions only scans configFile and does not contain these workspace files.
+    private _started = [] call SqfReloader_fnc_runStartup;
+    diag_log format ["[SqfReloader] Eden namespace refresh (0.5s): startup=%1; example_fnc_add isNil=%2", _started, isNil {missionNamespace getVariable "example_fnc_add"}];
 
     uiSleep 1;
-    _registered = [] call SqfReloader_fnc_reloadFunctions;
-    diag_log format ["[SqfReloader] Eden namespace refresh (1.5s): registered %1 custom CfgFunctions; example_fnc_add isNil=%2", _registered, isNil {missionNamespace getVariable "example_fnc_add"}];
+    _started = [] call SqfReloader_fnc_runStartup;
+    diag_log format ["[SqfReloader] Eden namespace refresh (1.5s): startup=%1; example_fnc_add isNil=%2", _started, isNil {missionNamespace getVariable "example_fnc_add"}];
 
     call SqfReloader_fnc_addEditorMenu;
 };

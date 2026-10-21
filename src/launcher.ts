@@ -6,6 +6,7 @@ import { findArmaDirectory, findMissions, pickArmaDirectory, toArmaPath } from "
 import { log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { PreparedLaunch, ensurePrefixFile, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
+import { cleanupSnapshots } from "./reload";
 
 export interface LaunchOptions {
     /** Extra launch parameters, e.g. "-window -noSplash". */
@@ -129,6 +130,7 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
     armaProcess.on("error", error => logError("arma3_x64.exe could not be started", error));
     armaProcess.on("exit", (code, signal) => {
         log(`Arma 3 exited (${signal ?? code ?? "?"}).`);
+        cleanupSnapshots(launch.armaDirectory);
         armaProcess = undefined;
     });
 }

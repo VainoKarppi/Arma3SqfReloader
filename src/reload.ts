@@ -13,6 +13,7 @@ export interface ReloadOutcome {
 }
 
 let snapshotSequence = 0;
+const snapshotCleanupOperations = new Map<string, Promise<void>>();
 
 interface CompileSnapshot {
     armaPath: string;
@@ -219,6 +220,54 @@ function scheduleSnapshotCleanup(snapshotDirectory: string, attempt = 0): void {
         }
     }, 10 * 60_000);
     timer.unref?.();
+}
+
+/** Removes the extension-owned snapshot mount after the Arma process has exited. */
+export function cleanupSnapshots(armaDirectory: string): void {
+    const snapshotRoot = path.join(armaDirectory, "z", "SqfReloader");
+    const key = path.resolve(snapshotRoot).toLowerCase();
+    if (snapshotCleanupOperations.has(key)) return;
+
+    const operation = removeSnapshotRoot(snapshotRoot);
+    snapshotCleanupOperations.set(key, operation);
+    void operation.finally(() => snapshotCleanupOperations.delete(key));
+}
+
+async function removeSnapshotRoot(snapshotRoot: string): Promise<void> {
+    for (let attempt = 0; attempt <= 10; attempt++) {
+        try {
+            const stat = await fs.promises.lstat(snapshotRoot);
+            // Never recurse through a link if this managed path was replaced by something else.
+            if (!stat.isDirectory() || stat.isSymbolicLink()) {
+                log(`Leaving ${snapshotRoot} in place because it is not a regular directory.`);
+                return;
+            }
+
+            await fs.promises.rm(snapshotRoot, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
+            try {
+                await fs.promises.lstat(snapshotRoot);
+                throw Object.assign(new Error(`SqfReloader snapshot cleanup did not remove ${snapshotRoot}.`), { code: "ENOTEMPTY" });
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+                    log(`Removed SqfReloader snapshots: ${snapshotRoot}`);
+                    return;
+                }
+                throw error;
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") return;
+
+            if (["ENOTEMPTY", "EBUSY", "EPERM", "EACCES"].includes(code ?? "") && attempt < 10) {
+                log(`SqfReloader snapshot cleanup is waiting for files to unlock (attempt ${attempt + 1}/10).`);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                continue;
+            }
+
+            logError(`could not remove SqfReloader snapshots at ${snapshotRoot}`, error);
+            return;
+        }
+    }
 }
 
 /** Calls the SQF reloader for every function of the mod (or all known functions with fallback). */

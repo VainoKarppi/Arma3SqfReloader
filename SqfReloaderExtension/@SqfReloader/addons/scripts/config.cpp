@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "2.9.71";
-        versionStr = "2.9.71";
-        versionAr[] = {2, 9, 71};
+        version = "2.9.77";
+        versionStr = "2.9.77";
+        versionAr[] = {2, 9, 77};
     };
 };
 
@@ -72,6 +72,7 @@ class Cfg3DEN {
             init = "[] call SqfReloader_fnc_runEditorStartup;";
             onMissionNew = "[] call SqfReloader_fnc_runEditorStartup;";
             onMissionLoad = "[] call SqfReloader_fnc_runEditorStartup;";
+            onMissionPreviewEnd = "[] spawn { uiSleep 0.1; diag_log '[SqfReloader] Eden OnMissionPreviewEnd: restoring workspace functions'; [] call SqfReloader_fnc_runEditorStartup; };";
             onTerrainNew = "call SqfReloader_fnc_addEditorMenu;";
         };
     };

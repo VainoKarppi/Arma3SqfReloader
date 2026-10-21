@@ -2,7 +2,7 @@
 // Loads the extension into memory and registers the ExtensionCallback handler.
 // Safe to call repeatedly; returns true once the DLL answered.
 
-if (SqfReloader_var_ready) exitWith {true};
+if (missionNamespace getVariable ["SqfReloader_var_ready", false]) exitWith {true};
 
 SqfReloader_var_extension = "SqfReloader";
 SqfReloader_var_ready = false;
