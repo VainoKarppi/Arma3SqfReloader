@@ -289,6 +289,38 @@ function Invoke-DllBuild {
     return $dll
 }
 
+function Get-TreeContentHash {
+    param(
+        [Parameter(Mandatory)] [string[]]$Path,
+        [string]$Root = ""
+    )
+
+    $entries = New-Object System.Collections.Generic.List[string]
+    foreach ($itemPath in $Path) {
+        if (!(Test-Path -LiteralPath $itemPath)) { continue }
+        $item = Get-Item -LiteralPath $itemPath
+        if ($item.PSIsContainer) {
+            $base = $item.FullName
+            foreach ($file in (Get-ChildItem -LiteralPath $base -Recurse -File | Sort-Object FullName)) {
+                $relative = $file.FullName.Substring($base.TrimEnd("\", "/").Length).TrimStart("\", "/").Replace("\", "/")
+                $fileHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+                $entries.Add("$($item.Name)/$relative $fileHash")
+            }
+        }
+        else {
+            $relative = if ($Root) { $item.FullName.Substring($Root.TrimEnd("\", "/").Length).TrimStart("\", "/").Replace("\", "/") } else { $item.Name }
+            $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+            $entries.Add("$relative $fileHash")
+        }
+    }
+
+    $content = [string]::Join("`n", @($entries | Sort-Object))
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
 function Find-AddonBuilder {
     # Order: explicit parameter / environment, the registry entry the Arma 3 Tools installer
     # writes, then the default Steam library locations.
@@ -467,6 +499,7 @@ AddonBuilder.exe was not found. Install "Arma 3 Tools" in Steam (Library > Tools
 function New-ModPackage {
     param(
         [Parameter(Mandatory)] [string]$DllPath,
+        [switch]$BuildPbo,
         [switch]$NoPbo,
         [ValidateSet("Auto", "AddonBuilder", "PboBuilder")] [string]$Packer = "Auto",
         [string]$AddonBuilder = "",
@@ -491,6 +524,20 @@ function New-ModPackage {
 
     foreach ($required in @((Join-Path $script:ModSource "mod.cpp"), (Join-Path $script:ModSource "logo.paa"), (Join-Path $script:AddonSource "config.cpp"))) {
         if (!(Test-Path $required)) { throw "Mod source not found: $required" }
+    }
+
+    $preserved = Join-Path ([System.IO.Path]::GetTempPath()) ("sqfreloader-package-" + [guid]::NewGuid().ToString("N"))
+    $preservedPbo = Join-Path $preserved "scripts.pbo"
+    $preservedDll = Join-Path $preserved $script:DllName
+    $existingPbo = Join-Path $script:ModFolder "addons\$($script:AddonName).pbo"
+    $existingDll = Join-Path $script:ModFolder $script:DllName
+    if (!$BuildPbo -and !$NoPbo -and (Test-Path $existingPbo)) {
+        New-Item -ItemType Directory -Force -Path $preserved | Out-Null
+        Copy-Item $existingPbo $preservedPbo -Force
+    }
+    if (Test-Path $existingDll) {
+        New-Item -ItemType Directory -Force -Path $preserved | Out-Null
+        Copy-Item $existingDll $preservedDll -Force
     }
 
     if (Test-Path $script:ModFolder) { Remove-Item $script:ModFolder -Recurse -Force }
@@ -525,6 +572,11 @@ function New-ModPackage {
         $pboJson = Join-Path $script:AddonSource "pbo.json"
         if (Test-Path $pboJson) { Copy-Item $pboJson $addonFolder -Force }
     }
+    elseif (!$BuildPbo) {
+        if (!(Test-Path $preservedPbo)) { throw "No cached PBO is available to reuse: $existingPbo" }
+        Copy-Item $preservedPbo $pbo -Force
+        Write-Ok "PBO unchanged; reused cached file ($pbo)"
+    }
     elseif ($Packer -eq "AddonBuilder") {
         Write-Step "Packing addons\$($script:AddonName).pbo (Arma 3 Tools AddonBuilder)"
 
@@ -556,7 +608,10 @@ function New-ModPackage {
 
     # The DLL goes in the mod ROOT: Arma resolves extension DLLs from the executable folder
     # or the mod root, never from a dll\ subfolder.
-    Copy-Item $DllPath (Join-Path $script:ModFolder $script:DllName) -Force
+    $dllToCopy = if (Test-Path $DllPath) { $DllPath } elseif (Test-Path $preservedDll) { $preservedDll } else { throw "No DLL is available to package: $DllPath" }
+    Copy-Item $dllToCopy (Join-Path $script:ModFolder $script:DllName) -Force
+
+    if (Test-Path $preserved) { Remove-Item $preserved -Recurse -Force }
 
     Write-Ok "Mod created: $script:ModFolder"
 }

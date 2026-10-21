@@ -70,15 +70,6 @@ else {
 
 Write-Step "SqfReloader $version"
 
-# Fail before the DLL build when AddonBuilder is missing.
-if (!$NoPbo) {
-    $builderPath = if ($AddonBuilder) { (Resolve-Path $AddonBuilder).Path } else { Find-AddonBuilder }
-    if (!$builderPath) {
-        throw 'AddonBuilder.exe was not found. Install "Arma 3 Tools" from Steam (Tools) and run again, pass -AddonBuilder <path>, or use -NoPbo.'
-    }
-    Write-Ok "AddonBuilder: $builderPath"
-}
-
 Write-Step "Checking SQF sources"
 $sqfCheck = & (Join-Path $PSScriptRoot "check-sqf.ps1") -Path $script:AddonSource 2>&1
 if ($LASTEXITCODE -ne 0) {
@@ -87,8 +78,58 @@ if ($LASTEXITCODE -ne 0) {
 }
 $sqfCheck | ForEach-Object { Write-Ok "$_" }
 
-$dll = Invoke-DllBuild -Clean:$Clean
-New-ModPackage -DllPath $dll -NoPbo:$NoPbo -AddonBuilder $AddonBuilder -KeyPath (Get-SqfReloaderPublicKeyPath -Override $Key)
+$hashRoot = Join-Path $script:DistDir ".build-hashes"
+$dllHashFile = Join-Path $hashRoot "dll\hash.txt"
+$pboHashFile = Join-Path $hashRoot "pbo\hash.txt"
+$dllInputs = @(
+    (Join-Path $script:RepoRoot "src"),
+    $script:ProjectFile,
+    (Join-Path $script:RepoRoot "exports.c"),
+    (Join-Path $script:RepoRoot "linker.xml"),
+    (Join-Path $script:RepoRoot "global.json")
+)
+$dllInputHash = Get-TreeContentHash -Path $dllInputs -Root $script:RepoRoot
+$pboInputs = @($script:ModSource)
+$keyPath = Get-SqfReloaderPublicKeyPath -Override $Key
+if ($keyPath) { $pboInputs += $keyPath }
+$pboInputHash = Get-TreeContentHash -Path $pboInputs -Root $script:RepoRoot
+$distDll = Join-Path $script:ModFolder $script:DllName
+$distPbo = Join-Path $script:ModFolder "addons\$($script:AddonName).pbo"
+$oldDllHash = if (Test-Path $dllHashFile) { (Get-Content $dllHashFile -Raw).Trim() } else { "" }
+$oldPboHash = if (Test-Path $pboHashFile) { (Get-Content $pboHashFile -Raw).Trim() } else { "" }
+$buildDll = $Clean -or !(Test-Path $distDll) -or $oldDllHash -ne $dllInputHash
+$buildPbo = !$NoPbo -and ($Clean -or !(Test-Path $distPbo) -or $oldPboHash -ne $pboInputHash)
+
+# Only require AddonBuilder when the PBO actually needs to be repacked.
+if ($buildPbo) {
+    $builderPath = if ($AddonBuilder) { (Resolve-Path $AddonBuilder).Path } else { Find-AddonBuilder }
+    if (!$builderPath) {
+        throw 'AddonBuilder.exe was not found. Install "Arma 3 Tools" from Steam (Tools), pass -AddonBuilder <path>, or use -NoPbo.'
+    }
+    Write-Ok "AddonBuilder: $builderPath"
+}
+
+if ($buildDll) {
+    $dll = Invoke-DllBuild -Clean:$Clean
+}
+else {
+    $dll = $distDll
+    Write-Ok "DLL sources unchanged; reusing cached DLL"
+}
+
+if (!$NoPbo -and !$buildPbo) { Write-Ok "PBO sources unchanged; reusing cached PBO" }
+New-ModPackage -DllPath $dll -BuildPbo:$buildPbo -NoPbo:$NoPbo -AddonBuilder $AddonBuilder -KeyPath $keyPath
+
+if ($buildDll) {
+    $dllHashDirectory = Split-Path $dllHashFile -Parent
+    New-Item -ItemType Directory -Force -Path $dllHashDirectory | Out-Null
+    [System.IO.File]::WriteAllText($dllHashFile, $dllInputHash + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+}
+if ($buildPbo) {
+    $pboHashDirectory = Split-Path $pboHashFile -Parent
+    New-Item -ItemType Directory -Force -Path $pboHashDirectory | Out-Null
+    [System.IO.File]::WriteAllText($pboHashFile, $pboInputHash + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+}
 
 if ($Release) {
     Write-Step "Creating dist\SqfReloader-Setup.zip"

@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
 import { findArmaDirectory, findMissions, pickArmaDirectory, toArmaPath } from "./arma";
-import { log, logError, readSettings, Settings, updateSetting } from "./settings";
+import { getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
 import { cleanupSnapshots } from "./reload";
@@ -147,10 +147,23 @@ export function startRptMonitor(): void {
             if (!latest) return;
             if (latest !== rptFile) {
                 rptFile = latest;
-                rptOffset = 0;
+                // Start at the end of an already-existing RPT. It can contain results and
+                // diagnostics from a previous VS Code/Arma session; replaying those makes an
+                // old "Run in Arma" result appear as soon as the extension activates.
+                rptOffset = fs.statSync(rptFile).size;
+                rptPartial = "";
+                rptErrorBlock = [];
+                return;
             }
             const stat = fs.statSync(rptFile);
-            if (stat.size < rptOffset) rptOffset = 0;
+            if (stat.size < rptOffset) {
+                // Arma may recreate or truncate the current log. Treat its current contents
+                // as the new baseline for the same reason as a newly discovered file.
+                rptOffset = stat.size;
+                rptPartial = "";
+                rptErrorBlock = [];
+                return;
+            }
             if (stat.size === rptOffset) return;
             // Keep the RPT descriptor open only for the duration of this read.
             const fd = fs.openSync(rptFile, "r");
@@ -177,6 +190,15 @@ export function stopRptMonitor(): void {
 }
 
 function consumeRptLine(line: string): void {
+    const runResult = /\[SqfReloader Run:([^\]]+)\]\s*(.*)/.exec(line);
+    if (runResult) {
+        const output = getOutput();
+        output.appendLine(`[Arma result ${runResult[1]}] ${runResult[2]}`);
+        output.show(true);
+        void vscode.window.showInformationMessage(`Arma SQF result: ${runResult[2]}`);
+        return;
+    }
+
     if (/Invalid path \(only relative paths supported\)/i.test(line)) return;
 
     if (/\bError in expression\b/i.test(line)) {
@@ -267,26 +289,31 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         args.push(`-mod=${launch.mods.map(folder => `"${folder}"`).join(";")}`);
     }
 
-    // No -init=: @SqfReloader starts itself from its own Cfg3DEN >> EventHandlers >> init (Eden
-    // Editor, including Play from the main menu) and from Cfg3DEN onMissionNew/onMissionLoad.
-    // Missions started outside Eden get SqfReloader through "SqfReloader: Check connection" or the
-    // SqfReloader >> StartupCode hook in description.ext.
+    // Initialize SqfReloader at game startup, before the user opens Eden or selects a mission.
+    // Keep a caller-provided -init intact; Cfg3DEN and preInit still start the API on mission loads.
 
     const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
+    const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
+
+    if (!launchExtras.some(argument => /^-init(?:=|$)/i.test(argument))) {
+        // This process uses verbatim Windows arguments. Quote the command value so its spaces
+        // stay inside -init, and keep SQF's required space between the code array and `call`.
+        args.push('-init="[] call SqfReloader_fnc_runStartup;"');
+    }
 
     // BattlEye cannot load unsigned extensions, so it is off unless the user asks for it.
-    if (!extra.some(argument => /^-(no)?be$/i.test(argument))) {
+    if (!launchExtras.some(argument => /^-(no)?be$/i.test(argument))) {
         args.push("-noBattlEye");
     }
 
-    if (extra.length > 0) {
-        args.push(...extra);
+    if (launchExtras.length > 0) {
+        args.push(...launchExtras);
     }
 
     // When profile auto-detection picked a named profile, explicitly launch that same profile.
     // Otherwise Arma would default to Documents\Arma 3 while the mission junction targets the
     // detected Documents\Arma 3 - Other Profiles\<name> folder.
-    if (launch.profile.launchName && !extra.some(argument => /^-name(?:=|$)/i.test(argument))) {
+    if (launch.profile.launchName && !launchExtras.some(argument => /^-name(?:=|$)/i.test(argument))) {
         args.push(`-name="${launch.profile.launchName.replace(/"/g, "\\\"")}"`);
     }
 
@@ -295,6 +322,20 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     }
 
     return args;
+}
+
+function withoutProfileName(argumentsList: string[]): string[] {
+    const result: string[] = [];
+    for (let index = 0; index < argumentsList.length; index++) {
+        const argument = argumentsList[index];
+        if (/^-name$/i.test(argument)) {
+            if (index + 1 < argumentsList.length) index++;
+            continue;
+        }
+        if (/^-name=/i.test(argument)) continue;
+        result.push(argument);
+    }
+    return result;
 }
 
 function parseExtraArguments(value: string): string[] {

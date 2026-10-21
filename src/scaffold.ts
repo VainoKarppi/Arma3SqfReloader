@@ -359,6 +359,8 @@ function vscodeSettings(): string {
     return `{
     // Set this when Arma 3 is not detected automatically (folder with arma3_x64.exe).
     "sqfReloader.armaDirectory": "",
+    // Set a profile name to choose it; leave empty to use the most recently updated profile.
+    "sqfReloader.armaProfile": "",
     "sqfReloader.junctionMode": "addon",
     "sqfReloader.reloadOnSave": "reload",
     "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"

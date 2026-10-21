@@ -4,7 +4,7 @@ import { disposeOutput, getOutput, log, logError, readSettings, Settings, update
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { findArmaDirectory, findModForFile } from "./arma";
 import { removeAllLinks, removeModInZLink } from "./junctions";
-import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow } from "./reload";
+import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
@@ -242,6 +242,41 @@ export function activate(context: vscode.ExtensionContext): void {
             vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${error instanceof Error ? error.message : String(error)}`);
         }
     });
+
+    const runFileCommand = async (resource: unknown, withParameters: boolean): Promise<void> => {
+        let document: vscode.TextDocument | undefined;
+        const uri = resource instanceof vscode.Uri ? resource : undefined;
+
+        if (uri) {
+            document = vscode.workspace.textDocuments.find(open => open.uri.toString() === uri.toString());
+            document ??= await vscode.workspace.openTextDocument(uri);
+        } else {
+            document = vscode.window.activeTextEditor?.document;
+        }
+
+        if (!document || !/\.sqf$/i.test(document.fileName)) {
+            vscode.window.showWarningMessage("Select or open an SQF file first.");
+            return;
+        }
+
+        if (!isRunning()) {
+            vscode.window.showWarningMessage("Arma 3 is not running. Start it with SqfReloader: Play, then run the SQF file again.");
+            return;
+        }
+
+        const output = getOutput();
+        output.appendLine(`--- Run in Arma: ${document.fileName}${withParameters ? " (with parameters)" : ""} ---`);
+
+        const outcome = await runSqfFile(document, readSettings(), withParameters);
+        output.appendLine(outcome.message);
+
+        if (!outcome.ok && outcome.message !== "Run canceled.") {
+            vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
+        }
+    };
+
+    register(context, "sqfReloader.runFile", async (resource?: unknown) => runFileCommand(resource, false));
+    register(context, "sqfReloader.runFileWithParameters", async (resource?: unknown) => runFileCommand(resource, true));
 
     register(context, "sqfReloader.removeJunctions", async () => {
         await removeJunctions(readSettings());

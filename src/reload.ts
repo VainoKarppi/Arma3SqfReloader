@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionTag, toArmaPath, toFunctionVariable } from "./arma";
-import { evalCode, listFunctions, reloadEverything, sqfString } from "./api";
+import { evalCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
 import { workspaceAddons } from "./runtime";
 
@@ -403,6 +403,97 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     }
 
     return { ok: true, message: `Recompiled ${variable} from ${armaPath}.` };
+}
+
+/** Executes an SQF file in Arma and writes its returned value to Arma's RPT for VS Code to read. */
+export async function runSqfFile(document: vscode.TextDocument, settings: Settings, withParameters = false): Promise<ReloadOutcome> {
+    if (document.uri.scheme !== "file" || !/\.sqf$/i.test(document.fileName)) {
+        return { ok: false, message: "Run in Arma works with saved .sqf files." };
+    }
+
+    try {
+        const status = await getStatus(settings);
+        if (status.gameConnected !== true) {
+            return {
+                ok: false,
+                message: "Arma 3 is open, but SqfReloader has not connected to its SQF runtime yet. Start Arma with SqfReloader: Play and wait for startup, or open Eden/the mission if Arma was started another way."
+            };
+        }
+    } catch {
+        return {
+            ok: false,
+            message: "Arma 3 is open, but SqfReloader's API is not ready. Start Arma with SqfReloader: Play and wait for the connection before running SQF."
+        };
+    }
+
+    if (document.isDirty && !(await document.save())) {
+        return { ok: false, message: "Save the SQF file before running it in Arma." };
+    }
+
+    let parameters = "[]";
+    if (withParameters) {
+        const answer = await vscode.window.showInputBox({
+            title: `Run ${path.basename(document.fileName)} in Arma`,
+            prompt: "Enter the SQF argument array to pass to params (for example [1, 1]).",
+            placeHolder: "[1, 1]",
+            value: "[]",
+            ignoreFocusOut: true
+        });
+
+        if (answer === undefined) return { ok: false, message: "Run canceled." };
+        parameters = answer.trim() || "[]";
+
+        if (!parameters.startsWith("[") || !parameters.endsWith("]")) {
+            return { ok: false, message: "Parameters must be an SQF array, for example [1, 1]." };
+        }
+    }
+
+    const missionDirectory = findMissionDirectory(document.fileName);
+    let snapshot: CompileSnapshot;
+
+    if (missionDirectory) {
+        snapshot = await writeMissionCompileSnapshot(missionDirectory, document.fileName, document.getText(), settings);
+    } else {
+        const addon = findAddonForFile(document.fileName);
+        if (!addon) {
+            return { ok: false, message: "The file is not inside a recognized addon or mission folder." };
+        }
+        snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
+    }
+
+    scheduleSnapshotCleanup(snapshot.directory);
+    const runId = `${Date.now()}-${++snapshotSequence}`;
+    const code = `[] spawn {\n` +
+        `    private _sqfRunOutput = \"\";\n` +
+        `    try {\n` +
+        `        private _sqfRunFunction = compile preprocessFileLineNumbers ${sqfString(snapshot.armaPath)};\n` +
+        `        private _sqfRunValue = (${parameters}) call _sqfRunFunction;\n` +
+        `        _sqfRunOutput = str _sqfRunValue;\n` +
+        `    } catch {\n` +
+        `        _sqfRunOutput = format [\"ERROR: %1\", _exception];\n` +
+        `    };\n` +
+        `    diag_log format [\"[SqfReloader Run:${runId}] %1\", _sqfRunOutput];\n` +
+        `};`;
+
+    try {
+        const result = await evalCode(settings, code);
+        if (!result.success) return { ok: false, message: result.error ?? "Arma rejected the run request." };
+        log(`Run request ${runId} queued for ${document.fileName}; snapshot ${snapshot.armaPath}`);
+        return { ok: true, message: `Run request ${runId} queued. The result will appear in the Arma 3 SQF Reloader output.` };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError(`run request ${runId} failed`, error);
+        return { ok: false, message };
+    }
+}
+
+function findMissionDirectory(filePath: string): string | undefined {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    for (const mission of findMissions(roots)) {
+        const relative = path.relative(mission.directory, filePath);
+        if (!relative.startsWith("..") && !path.isAbsolute(relative)) return path.resolve(mission.directory);
+    }
+    return undefined;
 }
 
 /** Files that should trigger a reload when saved. */

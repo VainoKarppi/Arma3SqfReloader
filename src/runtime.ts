@@ -160,7 +160,7 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     // --- 3. Missions -------------------------------------------------------
     // Mission folders belong to the selected user profile, not the Arma install directory.
     const missions = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
-    const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments);
+    const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments, settings.armaProfile);
     const missionLinks = linkMissions(armaDirectory, profile.directory, missions);
     warnings.push(...missionLinks.warnings);
 

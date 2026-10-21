@@ -63,6 +63,9 @@ the source addon under its own `z\<tag>\addons\<addon>` path for live reloads. Y
 prefix remains available for normal PBO builds and loading the mod manually. Run
 **SqfReloader: Play** to set up links and start Arma with your mod.
 
+The launcher initializes SqfReloader with Arma's `-init` startup command, so the API can be ready
+at the main menu without first opening Eden or loading a mission.
+
 On launch, the extension keeps checking for SqfReloader. When the game callback is ready, it
 injects workspace `fn_*.sqf` functions into `missionNamespace`. You can open Eden later; the
 initial injection does not depend on opening it within a fixed time.
@@ -71,6 +74,10 @@ When you save a `fn_*.sqf` file, the extension sends its function name to Arma. 
 compiles the source through the addon’s `z\<tag>\addons\<addon>` link and updates the
 function in `missionNamespace`. Compile errors from the Arma `.rpt` appear in the SqfReloader
 output and as VS Code diagnostics.
+
+Right-click an `.sqf` file and choose **Run in Arma** to execute it with no arguments, or
+**Run in Arma With Parameters** to enter an SQF array such as `[1, 1]`. The returned value is
+shown in the **Arma 3 SQF Reloader** output channel.
 
 ## Commands
 

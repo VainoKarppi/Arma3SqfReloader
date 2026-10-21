@@ -176,7 +176,7 @@ console.log(`  args: ${cmdArgs.join(" ")}`);
 check("starts with -filePatching", cmdArgs[0] === "-filePatching", cmdArgs[0]);
 check("BattlEye disabled", cmdArgs.includes("-noBattlEye"));
 check("-mod= quotes every entry", cmdArgs.some(value => /^-mod=".+"(;"".+")*$/.test(value)), cmdArgs.find(value => value.startsWith("-mod=")));
-check("no -init= (SqfReloader starts from Cfg3DEN)", !cmdArgs.some(value => value.startsWith("-init=")), cmdArgs.find(value => value.startsWith("-init=")));
+check("-init starts SqfReloader before the main menu", cmdArgs.includes("-init=[]call SqfReloader_fnc_runStartup;"), cmdArgs.find(value => value.startsWith("-init=")));
 
 if (mods.length > 0) {
     const modValue = cmdArgs.find(value => value.startsWith("-mod="))?.slice("-mod=".length) ?? "";

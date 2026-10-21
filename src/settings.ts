@@ -7,6 +7,7 @@ export interface Settings {
     enabled: boolean;
     apiUrl: string;
     armaDirectory: string;
+    armaProfile: string;
     requestTimeout: number;
     autoJunction: boolean;
     junctionMode: JunctionMode;
@@ -27,6 +28,7 @@ export function readSettings(): Settings {
         enabled: config.get<boolean>("enabled", true),
         apiUrl: trimSlash(config.get<string>("apiUrl", "http://127.0.0.1:8765/api")),
         armaDirectory: config.get<string>("armaDirectory", "").trim(),
+        armaProfile: config.get<string>("armaProfile", "").trim(),
         requestTimeout: Math.max(500, config.get<number>("requestTimeout", 3000)),
         autoJunction: config.get<boolean>("autoJunction", true),
         junctionMode: config.get<JunctionMode>("junctionMode", "addon"),
