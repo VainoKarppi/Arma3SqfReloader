@@ -155,7 +155,7 @@ function sanitizeProfileName(name: string): string {
     return name.replace(/[<>:"/\\|?*]/g, "_").trim();
 }
 
-function documentsDirectory(): string {
+export function documentsDirectory(): string {
     if (process.platform === "win32") {
         try {
             const output = require("child_process").execSync(

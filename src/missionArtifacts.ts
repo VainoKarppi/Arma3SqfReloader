@@ -1,7 +1,8 @@
+import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { findArmaDirectory } from "./arma";
-import { selectArmaProfile } from "./profile";
+import { documentsDirectory, selectArmaProfile } from "./profile";
 import { log, Settings } from "./settings";
 
 let scanTimer: ReturnType<typeof setInterval> | undefined;
@@ -20,11 +21,40 @@ export async function configureMissionArtifactCleanup(settings: Settings): Promi
     }
 
     const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments, settings.armaProfile);
-    scanRoots = [path.join(profile.directory, "Missions"), path.join(profile.directory, "MPMissions")];
+    const docs = documentsDirectory();
+    const profileDirectories = new Set<string>([
+        profile.directory,
+        path.join(docs, "Arma 3")
+    ]);
+    const otherProfiles = path.join(docs, "Arma 3 - Other Profiles");
+    try {
+        for (const entry of await fs.promises.readdir(otherProfiles, { withFileTypes: true })) {
+            if (entry.isDirectory()) profileDirectories.add(path.join(otherProfiles, entry.name));
+        }
+    } catch {
+        // The selected profile is still monitored if the standard profile directory is absent.
+    }
+
+    const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).flatMap(folder => [
+        folder.uri.fsPath,
+        path.join(folder.uri.fsPath, "missions"),
+        path.join(folder.uri.fsPath, "mpmissions")
+    ]);
+    scanRoots = [...new Set([
+        ...workspaceRoots,
+        ...[...profileDirectories].flatMap(directory => [
+            path.join(directory, "Missions"),
+            path.join(directory, "MPMissions")
+        ]),
+        path.join(armaDirectory, "Missions"),
+        path.join(armaDirectory, "MPMissions")
+    ].map(directory => path.resolve(directory)))];
     log(`Monitoring Arma preview mission artifacts in ${scanRoots.join(" and ")}.`);
 
     void removeMissionArtifacts();
-    scanTimer = setInterval(() => void removeMissionArtifacts(), 750);
+    // Keep this independent of Arma's close cleanup: preview artifacts are removed during
+    // the session, while the existing close handler continues to clean SqfReloader snapshots.
+    scanTimer = setInterval(() => void removeMissionArtifacts(), 500);
 }
 
 export function stopMissionArtifactCleanup(): void {
@@ -50,7 +80,7 @@ async function removeMissionArtifacts(): Promise<void> {
             }
 
             for (const entry of entries) {
-                if (!entry.isDirectory() || !/^~[^\\/:*?"<>|]+\.[^\\/:*?"<>|]+$/.test(entry.name)) continue;
+                if (!entry.isDirectory() || !/^~[^\\/:*?"<>|]+\.[^\\/:*?"<>|]+$/i.test(entry.name)) continue;
 
                 const artifact = path.join(root, entry.name);
                 try {
@@ -60,12 +90,6 @@ async function removeMissionArtifacts(): Promise<void> {
                     const missionFile = path.join(artifact, "mission.sqm");
                     const missionStat = await fs.promises.lstat(missionFile);
                     if (!missionStat.isFile() || missionStat.isSymbolicLink()) continue;
-
-                    // Arma marks its preview copy with a tilde sourceName. This extra check
-                    // prevents deleting a developer's unrelated folder that happens to start
-                    // with '~' and use a Mission.World-style name.
-                    const header = await fs.promises.readFile(missionFile, "utf8");
-                    if (!/\bsourceName\s*=\s*"~[^"]*"\s*;/i.test(header)) continue;
 
                     await fs.promises.rm(artifact, { recursive: true, force: true, maxRetries: 2, retryDelay: 100 });
                     log(`Removed Arma preview mission artifact: ${artifact}`);

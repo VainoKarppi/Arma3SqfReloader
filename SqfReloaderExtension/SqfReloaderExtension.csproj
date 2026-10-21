@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>SqfReloader_x64</AssemblyName>
     <RootNamespace>SqfReloader</RootNamespace>
-    <Version>2.9.98</Version>
+    <Version>2.9.99</Version>
 
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>
