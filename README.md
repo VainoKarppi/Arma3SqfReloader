@@ -65,20 +65,25 @@ You get a complete, working mod plus a test mission:
 @ExampleMod/
   mod.cpp
   addons/example/
-    $PBOPREFIX$              example\addons\example
     config.cpp               CfgPatches (SqfReloader_reloadable) + CfgFunctions tag "example"
     functions/fn_hello.sqf   example_fnc_hello   - writes a systemChat line
     functions/fn_add.sqf     example_fnc_add     - 20 + 22
     functions/fn_showCounter.sqf  example_fnc_showCounter - calls both
-missions/example.Altis/      optional test mission (setting below)
+missions/example.Altis/      optional single-player test mission (setting below)
+    mission.sqm              minimal Altis mission, editable in Eden
     description.ext          SqfReloader >> StartupCode hook
     initPlayerLocal.sqf      calls the functions 2 s after spawn
+mpmissions/example.Altis/    optional multiplayer copy (MP header keys, 8 players)
 .vscode/settings.json        sqfReloader.* defaults for this project
 ```
 
+There is no `$PBOPREFIX$` file to look after: **Play** derives the mount path from the
+`tag = "...";` of the addon's `CfgFunctions` block, writes `<Arma 3>\z\<tag>\addons\<addon>
+into `$PBOPREFIX$` (replacing a stale file on every launch) and links the addon there.
+
 The command links the mod into your Arma 3 folder right away and offers **Play Arma 3**.
 Existing files are never overwritten: run it again and you are asked before the template
-files are recreated (`sqfReloader.createExampleWithMission` controls the mission).
+files are recreated (`sqfReloader.createExampleWithMission` controls the missions).
 
 Then try the reload:
 
@@ -86,13 +91,14 @@ Then try the reload:
 2. Open `fn_hello.sqf`, change the message, save.
 3. In the debug console run `[] call example_fnc_hello;` - the new text appears.
 
-`missions/example.Altis` does the same on spawn, so you can also just open that mission in
-Eden and press *Play*.
+Both missions do the same on spawn, so you can also just open one in Eden and press *Play*.
+Play links them into `<Arma 3>\Missions` and `<Arma 3>\MPMissions`.
 
 ## 3. Start Arma 3 with your own mod
 
 1. Open your mod folder in VS Code (the folder with `addons\` and `mod.cpp`, e.g.
-   `...\@MyMod`). The extension activates on `**/*.sqf`, `mod.cpp` and `$PBOPREFIX$`.
+   `...\@MyMod`, or a whole development folder that contains it). The extension activates on
+   `**/*.sqf`, `mod.cpp` and `$PBOPREFIX$`.
 2. On first activation it detects the Arma 3 installation (registry, Steam libraries and
    common paths). Only if detection fails does it ask for the folder once and store it in
    `sqfReloader.armaDirectory`.
@@ -103,7 +109,8 @@ Eden and press *Play*.
 | Step | Detail |
 | --- | --- |
 | Deploy the runtime | copies the bundled `@SqfReloader` (`mod.cpp`, `logo.paa`, `addons\scripts.pbo`, `SqfReloader_x64.dll`) into `<Arma 3>\@SqfReloader` as a plain folder, replacing any older copy. Legacy `<Arma 3>\SqfReloader_x64.dll`, `<Arma 3>\SqfReloader`, `dll\`, `replacement\` and the unpacked addon copy are removed. |
-| Link your mod | each folder with a `$PBOPREFIX$` becomes `<Arma 3>\z\<tag>\addons\<addon>`, a junction to your working copy. Your mod is *not* packed into a PBO. |
+| Link your mod | every addon is linked as `<Arma 3>\z\<tag>\addons\<addon>`, where `<tag>` is the `tag = "...";` from its `CfgFunctions`. The whole `@Mod` folder is also junctioned as `<Arma 3>\z\@<Mod>`. Your mod is *not* packed into a PBO. |
+| Link your missions | every `missions\<name>.<World>` folder (or a `<name>.<World>` opened directly) becomes a junction in `<Arma 3>\Missions` and `<Arma 3>\MPMissions`; a mission under `mpmissions\` goes to `<Arma 3>\MPMissions` only. |
 | Start the game | `arma3_x64.exe -filePatching -mod="<your mod>";"<Arma 3>\@SqfReloader" -noBattlEye` |
 | Wait for the API | polls `GET /api/status` for up to 60 s, then the status bar turns green. |
 
@@ -164,7 +171,7 @@ working copy at that path.
 | `sqfReloader.apiUrl` | `http://127.0.0.1:8765/api` | SqfReloader REST base URL. |
 | `sqfReloader.requestTimeout` | `3000` | Request timeout in ms. |
 | `sqfReloader.autoJunction` | `true` | Link the open mod into the Arma folder automatically. |
-| `sqfReloader.junctionMode` | `addon` | `addon` (per `$PBOPREFIX$`) or `module` (whole `@Mod`). |
+| `sqfReloader.junctionMode` | `addon` | `addon` (per addon) or `module` (whole `@Mod`). |
 | `sqfReloader.reloadOnSave` | `reload` | `reload` (recompile the variable), `recompile` (content posted to `/api/command`), `off`. |
 | `sqfReloader.notifyOnError` | `true` | Warn when Arma is not reachable or a reload fails. |
 | `sqfReloader.extraLaunchArguments` | `-noSplash -skipIntro -noPause` | Extra parameters for `Play` (e.g. `-window -showScriptErrors`). `-filePatching` and `-noBattlEye` are added automatically. |

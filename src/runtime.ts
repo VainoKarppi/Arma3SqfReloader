@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { findMods, Mod, normalizePrefix, readAddon, Addon } from "./arma";
-import { createLinks } from "./junctions";
+import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon } from "./arma";
+import { createLinks, addonLinkPath, linkMissions, linkModIntoZ } from "./junctions";
 import { log, logError, readSettings, Settings } from "./settings";
 
 /**
@@ -67,7 +67,7 @@ function syncFile(source: string, target: string): void {
  * Deploys the bundled @SqfReloader mod into the Arma folder and links the user's mods there.
  * Returns everything needed to launch Arma.
  */
-export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings: Settings, workspaceMods: Mod[]): PreparedLaunch {
+export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings: Settings, mods: Mod[]): PreparedLaunch {
     const warnings: string[] = [];
 
     // --- 1. @SqfReloader ------------------------------------------------------
@@ -131,22 +131,43 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     // linked into z\... (or x\...) so -mod= can also point at the original mod folder.
     const modFolders: string[] = [];
 
-    for (const mod of workspaceMods) {
+    for (const mod of mods) {
+        // Every Play rewrites $PBOPREFIX$ from CfgFunctions (z\<tag>\addons\<addon>), so an
+        // outdated or hand-made file can never mount the addon at a different path.
+        for (const addon of mod.addons) {
+            writePrefixFile(addon);
+        }
+
+        const open = openModFolder(armaDirectory, mod);
+        if (!open) {
+            continue;
+        }
+
         if (mod.addons.length > 0) {
             const { warnings: linkWarnings } = createLinks(armaDirectory, [mod], settings.junctionMode);
             warnings.push(...linkWarnings);
 
-            if (settings.junctionMode === "addon") {
-                // Register the mod as a module that only contains the linked addons: Arma
-                // mounts one -mod= entry whose addons live under z\; the original folder is
-                // still handed over for missions/config, see below.
-                modFolders.push(mod.directory);
-            } else {
-                modFolders.push(path.join(armaDirectory, mod.name.startsWith("@") ? mod.name : `@${mod.name}`));
-            }
-        } else if (mod.hasModFiles) {
+            // <Arma 3>\z\@Mod -> the workspace folder that is open in VS Code, so the mod is
+            // also mounted as z\@ExampleMod\addons\example.
+            const zLink = linkModIntoZ(armaDirectory, mod);
+            warnings.push(...zLink.warnings);
             modFolders.push(mod.directory);
         }
+
+        // The -mod= entry is the workspace @Mod folder itself (or the generated one when the
+        // folder has no mod.cpp), so Arma reads addons from the junctioned working copy.
+        modFolders.push(open);
+    }
+
+    // --- 3. Missions -------------------------------------------------------
+    // Missions in the workspace are junctioned into <Arma 3>\Missions and \MPMissions so they
+    // can be opened from the editor without copying them (mpmissions\ only into MPMissions).
+    const missions = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
+    const missionLinks = linkMissions(armaDirectory, missions);
+    warnings.push(...missionLinks.warnings);
+
+    if (missions.length > 0) {
+        log(`Mission links: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
     }
 
     return {
@@ -155,22 +176,106 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
         mods: [...new Set([...modFolders, bundledMod])],
         modPath: bundledMod,
         warnings,
-        userMods: workspaceMods
+        userMods: mods
     };
 }
 
 /** True when the path is a junction/symlink rather than a real folder. */
-function isLink(target: string): boolean {
-    try {
-        return fs.lstatSync(target).isSymbolicLink() || !!currentLinkTarget(target);
-    } catch {
-        return false;
-    }
+export function isLink(target: string): boolean {
+    return currentLinkTarget(target) !== undefined;
 }
 
 /** Folder where @SqfReloader is deployed inside the Arma directory. */
 export function bundledModFolder(armaDirectory: string): string {
     return path.join(armaDirectory, "@SqfReloader");
+}
+
+/** Folder name of a mod as Arma expects it: @ExampleMod, @My-Mod, ... */
+export function modFolderName(mod: Mod): string {
+    return mod.name.startsWith("@") ? mod.name : `@${mod.name}`;
+}
+
+/**
+ * Writes the addon's $PBOPREFIX$ as `z\<tag>\addons\<addon>`, with the tag taken from the
+ * addon's CfgFunctions block. Called on every Play, so an outdated file is replaced instead of
+ * being trusted.
+ */
+export function writePrefixFile(addon: Addon): string | undefined {
+    const file = path.join(addon.localDirectory, "$PBOPREFIX$");
+
+    try {
+        const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+
+        if (current === addon.prefix) {
+            return file;
+        }
+
+        fs.writeFileSync(file, addon.prefix, "utf8");
+        log(`${current === undefined ? "Created" : "Updated"} ${file} (${addon.prefix})`);
+        return file;
+    } catch (error) {
+        log(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+    }
+}
+
+/** Backwards-compatible alias: writes the prefix only when the file is missing. */
+export function ensurePrefixFile(addon: Addon): string | undefined {
+    return writePrefixFile(addon);
+}
+
+/**
+ * Folder where the user's mod is handed to Arma (-mod=).
+ *
+ * A bare addon folder (`addons\example`, or a prefix without a mount root) must never be
+ * linked at its $PBOPREFIX$ path - that used to produce `<Arma 3>\example\addons\example`,
+ * which Arma does not mount. Instead a real @Mod folder is created next to the bundled mod:
+ *
+ *   <Arma 3>\@ExampleMod\mod.cpp       generated (name = "ExampleMod")
+ *   <Arma 3>\@ExampleMod\addons\example -> <workspace>\@ExampleMod\addons\example
+ *
+ * and, in `addon` junction mode, `<Arma 3>\z\example\addons\example` points at the same
+ * working copy so the reloader can resolve `z\<tag>\addons\<name>\...`.
+ */
+function openModFolder(armaDirectory: string, mod: Mod): string | undefined {
+    // A folder that already is a proper mod (@Mod with mod.cpp or config.cpp) is passed as is.
+    if (mod.hasModFiles) {
+        return mod.directory;
+    }
+
+    const target = path.join(armaDirectory, modFolderName(mod));
+    const addonsFolder = path.join(target, "addons");
+
+    try {
+        if (isLink(target)) {
+            fs.rmdirSync(target);
+        }
+
+        fs.mkdirSync(addonsFolder, { recursive: true });
+
+        const modCpp = path.join(target, "mod.cpp");
+        const modCppContent = `name = "${path.basename(mod.directory)}";\n`;
+
+        if (!fs.existsSync(modCpp) || fs.readFileSync(modCpp, "utf8") !== modCppContent) {
+            fs.writeFileSync(modCpp, modCppContent, "utf8");
+        }
+
+        for (const addon of mod.addons) {
+            // The user does not have to create $PBOPREFIX$: the addon is linked by its folder
+            // name and the file is written from the workspace layout so Arma mounts it the way
+            // the reloader expects.
+            ensurePrefixFile(addon);
+
+            const linkPath = path.join(addonsFolder, path.basename(addon.localDirectory));
+            linkDirectory(linkPath, addon.localDirectory, []);
+        }
+
+        log(`Mod folder: ${target} -> ${mod.directory}`);
+        return target;
+    } catch (error) {
+        log(`Could not prepare ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        return mod.directory;
+    }
 }
 
 /**
@@ -261,22 +366,29 @@ export function workspaceAddons(): Addon[] {
     return workspaceMods().flatMap(mod => mod.addons);
 }
 
-/** Writes %LOCALAPPDATA%\SqfReloader\config.json so the DLL uses the configured port. */
+/**
+ * Writes %LOCALAPPDATA%\SqfReloader\config.json so the DLL uses the configured port.
+ *
+ * `pboPrefixes` lists the workspace addons: the SQF reloader needs them because a function tag
+ * and its addon folder are not always the same name (tag "example" in "@ExampleMod\addons\example").
+ */
 export function writeApiConfig(settings: Settings): string {
     const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
     fs.mkdirSync(directory, { recursive: true });
 
     const url = new URL(settings.apiUrl);
     const file = path.join(directory, "config.json");
+    const pboPrefixes = workspaceAddons().map(addon => addon.prefix.replace(/\\/g, "/"));
 
     fs.writeFileSync(file, JSON.stringify({
         host: url.hostname || "127.0.0.1",
         port: url.port ? Number(url.port) : 8765,
         autoStart: true,
-        sourceDirectory: ""
+        sourceDirectory: "",
+        pboPrefixes
     }, null, 2), "utf8");
 
-    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765})`);
+    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765}); addons: ${pboPrefixes.join(", ") || "none"}`);
     return file;
 }
 
@@ -296,7 +408,7 @@ export function verifyWorkspaceAddons(armaDirectory: string, addons: Addon[]): s
     const warnings: string[] = [];
 
     for (const addon of addons) {
-        const linkPath = path.join(armaDirectory, ...addon.prefix.split("\\"));
+        const linkPath = addonLinkPath(armaDirectory, addon);
         const target = currentLinkTarget(linkPath);
 
         if (!target) {

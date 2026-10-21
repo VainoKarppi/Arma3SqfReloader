@@ -38,9 +38,12 @@ try {
     // --- first run: empty folder, mod + mission ------------------------------
     const result = writeTemplate(sandbox, true, false);
     check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
-    check("files written", result.files.length === 9, `${result.files.length} files`);
+    check("files written", result.files.length === 12, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
+    check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
+    check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "example", "$PBOPREFIX$")));
+    check("missions have a mission.sqm", fs.existsSync(path.join(result.missionDirectory, "mission.sqm")) && fs.existsSync(path.join(result.mpMissionDirectory, "mission.sqm")));
 
     // --- the extension has to see it as a mod -------------------------------
     const mods = findMods(sandbox);
@@ -48,7 +51,7 @@ try {
     check("exampleMod() helper finds it", exampleMod(sandbox)?.name === TEMPLATE_MOD_NAME);
 
     const addon = mods[0]?.addons[0];
-    check("one addon with the example prefix", addon?.prefix === "example\\addons\\example", addon?.prefix);
+    check("one addon with the z\\example\\addons\\example prefix", addon?.prefix === "z\\example\\addons\\example", addon?.prefix);
     check("function tag is example", addon?.tag === "example", addon?.tag);
 
     // --- reloadability: file -> variable -> source path SqfReloader looks for ---
@@ -56,7 +59,7 @@ try {
     check("fn_hello.sqf exists", fs.existsSync(hello));
 
     const addonForFile = findAddonForFile(hello);
-    check("fn_hello.sqf belongs to the addon", addonForFile?.prefix === "example\\addons\\example", addonForFile?.prefix);
+    check("fn_hello.sqf belongs to the addon", addonForFile?.prefix === "z\\example\\addons\\example", addonForFile?.prefix);
 
     const variable = addonForFile ? toFunctionVariable(addonForFile, hello) : "";
     check("function variable is example_fnc_hello", variable === "example_fnc_hello", variable);
@@ -65,7 +68,7 @@ try {
     // SqfReloader_fnc_reloadFunction resolves this to \z\example\addons\example\functions\fn_hello.sqf
     check(
         "Arma fileExists() path matches the reload candidate",
-        armaPath === "\\example\\addons\\example\\functions\\fn_hello.sqf",
+        armaPath === "\\z\\example\\addons\\example\\functions\\fn_hello.sqf",
         armaPath
     );
 
@@ -85,14 +88,14 @@ try {
     const before = fs.readFileSync(hello, "utf8");
     fs.writeFileSync(hello, `${before}\n// edited by the user\n`, "utf8");
     const second = writeTemplate(sandbox, true, false);
-    check("second run skips existing files", second.skipped.length === 9, `${second.skipped.length} skipped`);
+    check("second run skips existing files", second.skipped.length === 12, `${second.skipped.length} skipped`);
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
 
     // --- mod-only variant ---------------------------------------------------
     const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
     const modOnly = writeTemplate(modOnlyRoot, false, false);
-    check("mod-only variant writes no mission", !modOnly.missionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")));
-    check("mod-only variant writes 7 files", modOnly.files.length === 7, `${modOnly.files.length} files`);
+    check("mod-only variant writes no mission", !modOnly.missionDirectory && !modOnly.mpMissionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")) && !fs.existsSync(path.join(modOnlyRoot, "mpmissions")));
+    check("mod-only variant writes 6 files (no $PBOPREFIX$)", modOnly.files.length === 6, `${modOnly.files.length} files`);
     fs.rmSync(modOnlyRoot, { recursive: true, force: true });
 
     // --- extension .vscode/settings.json must be valid JSON ---------------

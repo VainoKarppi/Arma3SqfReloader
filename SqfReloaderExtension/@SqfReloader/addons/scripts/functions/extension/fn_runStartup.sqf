@@ -21,6 +21,30 @@ if (_message == "") exitWith {
 
 diag_log format ["[SqfReloader] startup: %1", _message];
 
+// Make custom mod functions callable by name in Eden's debug console immediately.
+[] call SqfReloader_fnc_reloadFunctions;
+
+// The extension writes the $PBOPREFIX$ of every workspace addon to its config, so reloads can
+// resolve a tag to the addon folder name (tag "example" lives in "z\example\addons\instance").
+private _config = ["ApiPboPrefixes", []] call SqfReloader_fnc_call;
+private _pairs = [];
+
+{
+    private _segments = (_x arrayIntersect _x) select {_x != ""};
+    private _root = toLower (_segments param [0, ""]);
+    private _tag = toLower ((if (_root in ["z", "x"]) then {_segments param [1, ""]} else {_segments param [0, ""]}));
+    private _name = toLower (_segments param [(count _segments) - 1, ""]);
+
+    if (_tag != "" && {_name != ""}) then {
+        // ["tag", "instance"] and ["tag", "tag"] so both the mounted folder and the tag work.
+        _pairs pushBack [_tag, _name];
+        _pairs pushBack [_tag, _tag];
+        _pairs pushBack [_tag, "main"];
+    };
+} forEach (if (isNil "_config") then {[]} else {_config});
+
+missionNamespace setVariable ["SqfReloader_var_addonNames", _pairs];
+
 // Optional project hook, e.g. in description.ext:
 //   class SqfReloader { StartupCode = "call compile preprocessFileLineNumbers 'dev/setup.sqf';"; };
 private _code = getText (missionConfigFile >> "SqfReloader" >> "StartupCode");

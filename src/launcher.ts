@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import { findArmaDirectory, pickArmaDirectory, toArmaPath } from "./arma";
 import { getStatus } from "./api";
 import { log, logError, readSettings, Settings, updateSetting } from "./settings";
-import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
+import { PreparedLaunch, ensurePrefixFile, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
 
 export interface LaunchOptions {
@@ -16,6 +16,9 @@ export interface LaunchOptions {
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
+let rptPoll: ReturnType<typeof setInterval> | undefined;
+let rptFile = "";
+let rptOffset = 0;
 
 /**
  * One-click launch: prepares the DLL + mods, starts arma3_x64.exe with -mod= and waits for
@@ -52,6 +55,12 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     }
 
     try {
+        // Play is the one step that makes a mod playable: it writes missing $PBOPREFIX$ files
+        // and then the config (which lists those prefixes for the SQF reloader).
+        for (const addon of workspaceAddons()) {
+            ensurePrefixFile(addon);
+        }
+
         writeApiConfig(settings);
 
         const mods = workspaceMods();
@@ -69,6 +78,8 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         } else {
             log("No mod found in the workspace; launching with @SqfReloader only.");
         }
+
+        log(`-mod= entries: ${launch.mods.join(" ; ")}`);
 
         startProcess(launch, settings, options);
 
@@ -121,12 +132,57 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
     });
 
     log(`Launched pid ${armaProcess.pid ?? "?"}.`);
+    startRptMonitor();
 
     armaProcess.on("error", error => logError("arma3_x64.exe could not be started", error));
     armaProcess.on("exit", (code, signal) => {
         log(`Arma 3 exited (${signal ?? code ?? "?"}).`);
         armaProcess = undefined;
     });
+}
+
+/** Forward new SQF diagnostics for files mounted under z\\ into the VS Code output channel. */
+function startRptMonitor(): void {
+    if (rptPoll) clearInterval(rptPoll);
+    rptFile = "";
+    rptOffset = 0;
+    rptPoll = setInterval(() => {
+        try {
+            const files = fs.readdirSync(armaLogDirectory())
+                .filter(name => /^arma3_x64_.*\.rpt$/i.test(name))
+                .map(name => path.join(armaLogDirectory(), name))
+                .filter(file => fs.statSync(file).isFile())
+                .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+            const latest = files[0];
+            if (!latest) return;
+            if (latest !== rptFile) {
+                rptFile = latest;
+                rptOffset = 0;
+            }
+            const stat = fs.statSync(rptFile);
+            if (stat.size < rptOffset) rptOffset = 0;
+            if (stat.size === rptOffset) return;
+            const fd = fs.openSync(rptFile, "r");
+            const buffer = Buffer.alloc(stat.size - rptOffset);
+            fs.readSync(fd, buffer, 0, buffer.length, rptOffset);
+            fs.closeSync(fd);
+            rptOffset = stat.size;
+            const lines = buffer.toString("utf8").split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+                if (!/\b(error|warning)\b/i.test(lines[i])) continue;
+                const block = lines.slice(i, Math.min(lines.length, i + 12));
+                if (block.some(line => /Invalid path \(only relative paths supported\)/i.test(line))) continue;
+                if (!block.some(line => /\\z\\/i.test(line) || /\bz\\/i.test(line))) continue;
+                for (const line of block) {
+                    if (line.trim()) log(`[Arma RPT] ${line.trim()}`);
+                    if (/^\s*\d{2}:\d{2}:\d{2}\s+(?:Error|Warning)\b/i.test(line) && line !== lines[i]) break;
+                }
+            }
+        } catch {
+            // The log may not exist until Arma starts; retry on the next poll.
+        }
+    }, 1000);
+    rptPoll.unref?.();
 }
 
 /** Command line handed to arma3_x64.exe (also used by scripts/verify-launch-args.js). */

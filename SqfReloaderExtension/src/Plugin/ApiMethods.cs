@@ -36,6 +36,13 @@ internal static class ApiMethods {
     [ArmaMethod]
     public static long ApiPort() => RestApiServer.Port;
 
+    /// <summary>
+    /// $PBOPREFIX$ of every workspace addon (from config.json), so SQF can resolve a function
+    /// tag such as "example" to its addon folder ("@ExampleMod\addons\example" -> "example").
+    /// </summary>
+    [ArmaMethod]
+    public static object?[] ApiPboPrefixes() => RestApiServer.ConfiguredPboPrefixes.Cast<object?>().ToArray();
+
     [ArmaMethod]
     public static string ApiLogLevel(string level = "info") {
         ArmaLog.CurrentLogLevel = level.ToLowerInvariant() switch {

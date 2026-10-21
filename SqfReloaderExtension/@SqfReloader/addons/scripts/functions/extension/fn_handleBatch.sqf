@@ -2,7 +2,7 @@
 // Unpacks a coalesced batch of messages: [[function, data], [function, data], ...]
 // Messages are handled in order and synchronously so later work sees earlier results.
 
-params [["_batch", "[]", [""]]];
+params [["_batch", "[]", ["", []]]];
 
 private _messages = if (_batch isEqualType "") then {parseSimpleArray _batch} else {_batch};
 

@@ -1,62 +1,61 @@
 // SqfReloader_fnc_reloadFunctions
-// Recompiles functions from their .sqf sources - no mission restart, no repacking.
-//
-//   [] call SqfReloader_fnc_reloadFunctions;                  // this mod's own functions
-//   [["MyTag_fnc_one"]] call SqfReloader_fnc_reloadFunctions; // only the listed variables
-//
-// Returns the number of recompiled functions.
-//
-// Without arguments the DLL's source index is used (the installer keeps the plain
-// fn_*.sqf files in <arma>\z\sqfreloader\addons\sqfreloader\source) plus every function other
-// mods opt into with
-//   SqfReloader_reloadable[] = {"TAG_fnc_name", ...};
-// in their CfgPatches entry.
-//
-// With arguments, the path is derived from the variable name:
-//   TAG_fnc_name -> \z\<tag>\addons\<tag>\source\fn_name.sqf
-//                   \z\<tag>\addons\<tag>\functions\fn_name.sqf
-//                   \x\<tag>\addons\... and unpacked \@<tag>\addons\... folders
-// The file is compiled from disk, so it does not have to be inside a PBO.
+// Registers reloadable CfgFunctions in missionNamespace using their configured Arma paths.
+// The optional argument is either a function variable name or an array of variable names.
 
-params [["_functions", [], [[]]]];
+params [["_requested", [], [[]]]];
 
 if !(call SqfReloader_fnc_init) exitWith {0};
 
+private _wanted = _requested;
+if (_wanted isEqualType "") then { _wanted = [_wanted] };
+private _filter = _wanted apply {toLower _x};
 private _count = 0;
-
-if (_functions isEqualTo []) exitWith {
-    private _index = ["FunctionIndex", ["z\sqfreloader\addons\sqfreloader"]] call SqfReloader_fnc_call;
-
-    if (!isNil "_index") then {
-        {
-            if (_x isEqualType [] && {count _x >= 3}) then {
-                _x params ["_fn", "_family", "_path"];
-
-                // fn_init stays as loaded from the PBO: reloading it would replace the
-                // function that is currently running.
-                if (_fn != "init" && {fileExists _path}) then {
-                    missionNamespace setVariable [format ["SqfReloader_fnc_%1", _fn], compile preprocessFileLineNumbers _path];
-                    _count = _count + 1;
-                };
-            };
-        } forEach (_index param [0, []]);
-    };
-
-    {
-        {
-            if ([_x] call SqfReloader_fnc_reloadFunction != "") then {_count = _count + 1};
-        } forEach getArray (_x >> "SqfReloader_reloadable");
-    } forEach ("true" configClasses (configFile >> "CfgPatches"));
-
-    diag_log format ["[SqfReloader] reloaded %1 function(s)", _count];
-
-    _count
-};
+private _seen = [];
+private _functions = configFile >> "CfgFunctions";
 
 {
-    if ([_x] call SqfReloader_fnc_reloadFunction != "") then {_count = _count + 1};
-} forEach _functions;
+    private _tagClass = _x;
+    private _tag = getText (_tagClass >> "tag");
+    if (_tag isEqualTo "") then {_tag = configName _tagClass};
+    if (toLower _tag == "bis") then {continue};
 
-diag_log format ["[SqfReloader] reloaded %1 of %2 requested function(s)", _count, count _functions];
+    {
+        private _category = _x;
+        private _base = getText (_category >> "file");
+        if (_base isEqualTo "") then {continue};
+
+        {
+            private _function = _x;
+            private _name = configName _function;
+            private _variable = format ["%1_fnc_%2", _tag, _name];
+            private _key = toLower _variable;
+
+            if (_key in _seen) then {continue};
+            if (count _filter > 0 && {!(_key in _filter)}) then {continue};
+            _seen pushBack _key;
+
+            private _relativeBase = _base;
+            if ((_relativeBase select [0, 1]) in ["/", "\\"]) then {
+                _relativeBase = _relativeBase select [1];
+            };
+            // Only process addon files mounted through a relative Arma prefix. Some mods
+            // declare Windows absolute paths here, which preprocessFileLineNumbers rejects.
+            if !((toLower _relativeBase select [0, 2]) in ["z\\", "x\\"]) then {continue};
+            private _source = format ["%1\\fn_%2.sqf", _relativeBase, _name];
+
+            if (fileExists _source) then {
+                missionNamespace setVariable [_variable, compile preprocessFileLineNumbers _source];
+                _count = _count + 1;
+                if (count _filter > 0) then {
+                    diag_log format ["[SqfReloader] reloaded %1", _variable];
+                };
+            };
+        } forEach ("true" configClasses _category);
+    } forEach ("true" configClasses _tagClass);
+} forEach ("true" configClasses _functions);
+
+if (count _filter == 0 && {_count > 0}) then {
+    diag_log format ["[SqfReloader] registered/reloaded %1 CfgFunctions function(s)", _count];
+};
 
 _count

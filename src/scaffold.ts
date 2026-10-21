@@ -23,7 +23,10 @@ export interface ScaffoldResult {
     files: string[];
     /** Template files that already existed and were left untouched. */
     skipped: string[];
+    /** Single-player mission (missions\example.Altis). */
     missionDirectory?: string;
+    /** Multiplayer mission (mpmissions\example.Altis). */
+    mpMissionDirectory?: string;
 }
 
 /**
@@ -58,7 +61,6 @@ export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<Sc
 
     const result = writeTemplate(target, withMission, options.force ?? existing !== undefined);
     appendScaffoldLog(`TEMPLATE written ${result.files.length} files`);
-
     log(`Example mod: ${result.modDirectory}`);
 
     for (const file of result.files) {
@@ -108,10 +110,8 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
         files.push(file);
     };
 
-    // The $PBOPREFIX$ sits in the addon folder itself: its second segment is the function tag,
-    // so z\<tag>\addons\<tag>\functions\fn_x.sqf becomes <tag>_fnc_x (what SqfReloader reloads).
-    const prefix = `${TEMPLATE_TAG}\\addons\\${TEMPLATE_TAG}`;
-    write(path.join(addonDirectory, "$PBOPREFIX$"), prefix);
+    // No $PBOPREFIX$ file: the prefix is derived from the layout (example\addons\example) and
+    // written automatically on Play, so the template stays free of bookkeeping files.
     write(path.join(modDirectory, "mod.cpp"), modCpp());
     write(path.join(addonDirectory, "config.cpp"), configCpp());
 
@@ -123,15 +123,26 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
     write(path.join(root, ".vscode", "settings.json"), vscodeSettings());
 
     let missionDirectory: string | undefined;
+    let mpMissionDirectory: string | undefined;
 
     if (withMission) {
-        missionDirectory = path.join(root, "missions", `${TEMPLATE_TAG}.Altis`);
-
-        write(path.join(missionDirectory, "description.ext"), descriptionExt());
-        write(path.join(missionDirectory, "initPlayerLocal.sqf"), missionInitPlayerLocal());
+        missionDirectory = writeMission(path.join(root, "missions", `${TEMPLATE_TAG}.Altis`), write, false);
+        mpMissionDirectory = writeMission(path.join(root, "mpmissions", `${TEMPLATE_TAG}.Altis`), write, true);
     }
 
-    return { modDirectory, files, skipped, missionDirectory };
+    return { modDirectory, files, skipped, missionDirectory, mpMissionDirectory };
+}
+
+/**
+ * Writes one test mission: a mission.sqm (Eden needs it), description.ext and the init script.
+ * The multiplayer copy gets the MP header keys, so it shows up in the host/join lists.
+ */
+function writeMission(directory: string, write: (file: string, content: string) => void, multiplayer: boolean): string {
+    write(path.join(directory, "mission.sqm"), missionSqm(multiplayer));
+    write(path.join(directory, "description.ext"), descriptionExt(multiplayer));
+    write(path.join(directory, "initPlayerLocal.sqf"), missionInitPlayerLocal());
+
+    return directory;
 }
 
 /** The generated example mod, when it exists in the workspace. */
@@ -142,7 +153,7 @@ export function exampleMod(root: string): Mod | undefined {
 async function askForMission(): Promise<boolean> {
     const choice = await vscode.window.showQuickPick(
         [
-            { label: "Mod + test mission", description: "Also writes missions\\example.Altis, which calls the functions on spawn.", value: true },
+            { label: "Mod + test mission", description: "Also writes missions\\example.Altis (SP) and mpmissions\\example.Altis (MP), which call the functions on spawn.", value: true },
             { label: "Mod only", description: "Use the example functions in your own mission.", value: false }
         ],
         { title: "Arma 3 SQF Reloader: example mod", ignoreFocusOut: true }
@@ -273,11 +284,59 @@ _sum
 `;
 }
 
-function descriptionExt(): string {
+/**
+ * Minimal, valid Altis mission: Eden reads mission.sqm, falls back to the "Default" entities of
+ * the mission (none here) and runs description.ext + initPlayerLocal.sqf as usual. Arma fills in
+ * the remaining keys itself when the mission is edited and saved.
+ */
+function missionSqm(multiplayer: boolean): string {
+    return `version = 54;
+class Mission {
+    addOns[] = {"A3_Map_Altis", "A3_Functions_F"};
+    addOnsAuto[] = {"A3_Map_Altis"};
+    randomSeed = 1;
+    class Intel {
+        briefingName = "Example counter";
+        overviewText = "Minimal mission that runs the example mod functions.";
+        timeOfChanges = 0;
+        startWeather = 0.3;
+        forecastWeather = 0.4;
+        startWind = 0.2;
+        forecastWind = 0.2;
+        startWaves = 0.2;
+        forecastWaves = 0.2;
+        startLightning = 0;
+        forecastLightning = 0;
+        year = 2035;
+        month = 6;
+        day = 24;
+        hour = 12;
+        minute = 0;
+    };
+${multiplayer ? `    class Multiplayer {
+        gameType = 1;
+        minPlayers = 1;
+        maxPlayers = 8;
+        maxPlayable = 1;
+    };
+` : ""}    class Entities {
+        items = 0;
+        class Item0 {};
+    };
+    class EditorData {
+        class Camera {
+            position[] = {3300, 3900, 20};
+        };
+    };
+};
+`;
+}
+
+function descriptionExt(multiplayer: boolean): string {
     return `class Header {
     gameType = "Coop";
     minPlayers = 1;
-    maxPlayers = 1;
+    maxPlayers = ${multiplayer ? 8 : 1};
     playerCount = 1;
     author = "Arma 3 SQF Reloader";
     onLoadName = "Example counter";
@@ -309,7 +368,7 @@ function vscodeSettings(): string {
     "sqfReloader.armaDirectory": "",
     "sqfReloader.junctionMode": "addon",
     "sqfReloader.reloadOnSave": "reload",
-    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors"
+    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"
 }
 `;
 }

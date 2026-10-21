@@ -7,15 +7,20 @@ import { Settings, log } from "./settings";
 export interface Addon {
     /** Folder that contains $PBOPREFIX$ (e.g. ...\MyMod\addons\core). */
     localDirectory: string;
-    /** Prefix from $PBOPREFIX$, e.g. z\mymod\addons\core. */
+    /**
+     * Mount prefix written to $PBOPREFIX$. Play always writes `z\<tag>\addons\<addon>`, with
+     * the tag read from CfgFunctions (so the addon is mounted as `\z\<tag>\addons\<addon>`).
+     */
     prefix: string;
     /**
      * Mod tag used by the SQF reloader (second segment: mymod for z\mymod\addons\core).
-     * The first segment is the mount root (z, x) and is not a tag.
+     * Comes from CfgFunctions `tag = "mymod"`, not from the folder name.
      */
     tag: string;
     /** Addon name (last prefix segment). */
     name: string;
+    /** Folder name without the mount root, e.g. instance for z\example\addons\instance. */
+    instance: string;
 }
 
 /** A mod folder that can be handed to Arma (-mod=). */
@@ -174,6 +179,20 @@ export function findMods(root: string): Mod[] {
                 result.push(describeMod(child));
             }
         }
+
+        // A workspace can also be a container (e.g. "<dev>\@MyMod" + "missions\"): look one
+        // level deeper, but never treat "<mod>\addons\<addon>" as a separate mod.
+        for (const child of safeReadDirs(root)) {
+            if (isAddonFolder(child)) {
+                continue;
+            }
+
+            for (const grandChild of safeReadDirs(child)) {
+                if (looksLikeMod(grandChild) && !isAddonFolder(grandChild)) {
+                    result.push(describeMod(grandChild));
+                }
+            }
+        }
     }
 
     // A workspace can also open a single addon folder (contains $PBOPREFIX$).
@@ -199,6 +218,83 @@ export function looksLikeMod(directory: string): boolean {
         || fs.existsSync(path.join(directory, "config.cpp"))
         || fs.existsSync(path.join(directory, "mod.cpp"))
         || fs.existsSync(path.join(directory, "$PBOPREFIX$"));
+}
+
+/**
+ * True when the folder is an addon rather than a mod: it has a $PBOPREFIX$, or it has a
+ * config.cpp but no addons\ folder and is not a mod root (mod.cpp).
+ */
+function isAddonFolder(directory: string): boolean {
+    if (fs.existsSync(path.join(directory, "$PBOPREFIX$"))) {
+        return true;
+    }
+
+    // A folder with only a config.cpp (and no addons\) is an addon, not a mod.
+    return !fs.existsSync(path.join(directory, "addons"))
+        && !fs.existsSync(path.join(directory, "mod.cpp"))
+        && fs.existsSync(path.join(directory, "config.cpp"));
+}
+
+/**
+ * Mission folder names Arma understands: "<name>.<World>". The world part must look like a
+ * world (Altis, VR, Tanoa, chernarus_summer), so folders such as ".vscode" or "v1.2" are not
+ * mistaken for missions.
+ */
+const MISSION_PATTERN = /^[^.\\/][^.\\/]*\.([A-Za-z][A-Za-z0-9_]{1,})$/;
+
+/** A mission folder found in the workspace. */
+export interface MissionFolder {
+    directory: string;
+    /** True for mpmissions: linked into <Arma 3>\MPMissions only. */
+    multiplayer: boolean;
+}
+
+/**
+ * Finds mission folders ("<name>.<World>") that belong to this workspace: the workspace
+ * roots themselves and a few folders deeper, so `<dev>\missions\x.Altis` and
+ * `<mod>\missions\x.Altis` are both picked up.
+ *
+ * `multiplayer` is true for a mission below an `mpmissions` folder (or one whose
+ * description.ext only allows several players); those are linked into `<Arma 3>\MPMissions`
+ * only, single-player missions go to `<Arma 3>\Missions` (and to both, so they can be hosted).
+ */
+export function findMissions(roots: string[]): MissionFolder[] {
+    const result = new Map<string, MissionFolder>();
+
+    const isMission = (directory: string): boolean => {
+        // A mission folder holds a mission.sqm (editor) or at least a description.ext.
+        return MISSION_PATTERN.test(path.basename(directory))
+            && (fs.existsSync(path.join(directory, "mission.sqm")) || fs.existsSync(path.join(directory, "description.ext")));
+    };
+
+    const scan = (directory: string, depth: number, multiplayer: boolean): void => {
+        for (const child of safeReadDirs(directory)) {
+            const name = path.basename(child).toLowerCase();
+            const isMultiplayer = multiplayer || name === "mpmissions";
+
+            if (isMission(child)) {
+                result.set(path.resolve(child).toLowerCase(), { directory: child, multiplayer: isMultiplayer });
+            } else if (depth > 0 && !isAddonFolder(child) && name !== "addons") {
+                scan(child, depth - 1, isMultiplayer);
+            }
+        }
+    };
+
+    for (const root of roots) {
+        if (!fs.existsSync(root)) {
+            continue;
+        }
+
+        // The workspace root is a mission itself, or its missions/ folder is one level down.
+        if (isMission(root)) {
+            result.set(path.resolve(root).toLowerCase(), { directory: root, multiplayer: false });
+            continue;
+        }
+
+        scan(root, 2, false);
+    }
+
+    return [...result.values()];
 }
 
 /** Looks for the mod that contains the given file by walking up from it. */
@@ -231,7 +327,7 @@ function describeMod(directory: string): Mod {
             }
         }
     } else {
-        // The folder itself is the addon ($PBOPREFIX$ directly inside it).
+        // The folder itself is the addon (its sources lie directly inside it).
         const addon = readAddon(directory);
         if (addon) {
             addons.push(addon);
@@ -246,33 +342,126 @@ function describeMod(directory: string): Mod {
     };
 }
 
-/** Reads the addon description from a folder, if it has a valid $PBOPREFIX$. */
+/**
+ * Reads the addon description from a folder.
+ *
+ * The mount prefix is always `z\<tag>\addons\<addon>`, where
+ *  * <tag>    is the `tag = "..."` of the addon's CfgFunctions block (the name the SQF side
+ *              reloads as `<tag>_fnc_<name>`), falling back to the folder name, and
+ *  * <addon>  is the folder name below `addons\` (or "main" for a loose folder).
+ *
+ * The $PBOPREFIX$ file is optional for reading; Play rewrites it before every launch.
+ */
 export function readAddon(directory: string): Addon | undefined {
-    const prefixFile = path.join(directory, "$PBOPREFIX$");
+    const hasSources = fs.existsSync(path.join(directory, "config.cpp"))
+        || fs.existsSync(path.join(directory, "functions"));
 
-    if (!fs.existsSync(prefixFile)) {
+    if (!hasSources) {
         return undefined;
     }
 
-    const prefix = normalizePrefix(fs.readFileSync(prefixFile, "utf8"));
-    const segments = prefix.split("\\").filter(Boolean);
-
-    if (segments.length < 1) {
-        return undefined;
-    }
-
-    // z\mymod\addons\core -> tag "mymod"; the first segment (z/x) is the mount root.
-    // A $PBOPREFIX$ without a mount root (mymod\addons\core) still names its tag first.
-    const first = segments[0].toLowerCase();
-    const tagIsFirst = first !== "z" && first !== "x";
-    const tag = tagIsFirst || segments.length < 2 ? segments[0] : segments[1];
+    const folder = path.basename(directory).toLowerCase();
+    const parent = path.basename(path.dirname(directory)).toLowerCase();
+    const insideAddons = parent === "addons";
+    const fileName = insideAddons ? folder : "main";
+    const tag = (readFunctionTag(directory) ?? (insideAddons ? folder : parent.replace(/^@/, ""))).toLowerCase();
 
     return {
         localDirectory: directory,
-        prefix,
-        tag: tag.toLowerCase(),
-        name: (segments[segments.length - 1] ?? path.basename(directory)).toLowerCase()
+        prefix: `z\\${tag}\\addons\\${fileName}`,
+        tag,
+        name: fileName,
+        instance: fileName
     };
+}
+
+/**
+ * Tag declared in the addon's config.cpp: `class CfgFunctions { class <tag> { tag = "<tag>"; } }`.
+ * Only the first CfgFunctions block is read; comments are ignored so a commented example does
+ * not win.
+ */
+export function readFunctionTag(directory: string): string | undefined {
+    for (const name of ["config.cpp", "config.bin"]) {
+        const file = path.join(directory, name);
+
+        if (!fs.existsSync(file)) {
+            continue;
+        }
+
+        const text = stripCppComments(fs.readFileSync(file, "utf8"));
+        const block = /class\s+CfgFunctions\s*\{/i.exec(text);
+
+        if (!block) {
+            continue;
+        }
+
+        const body = text.slice(block.index);
+        const declared = /\btag\s*=\s*"([^"]+)"/i.exec(body);
+
+        if (declared) {
+            return declared[1].trim();
+        }
+
+        // No explicit tag: Arma uses the CfgFunctions class name.
+        const className = /class\s+CfgFunctions\s*\{\s*class\s+([\w]+)/i.exec(body);
+
+        if (className) {
+            return className[1];
+        }
+    }
+
+    return undefined;
+}
+
+/** Removes // and /* *\/ comments without touching string literals. */
+function stripCppComments(text: string): string {
+    let result = "";
+    let index = 0;
+
+    while (index < text.length) {
+        const char = text[index];
+        const next = text[index + 1];
+
+        if (char === '"') {
+            const end = text.indexOf('"', index + 1);
+            const stop = end === -1 ? text.length : end + 1;
+            result += text.slice(index, stop);
+            index = stop;
+            continue;
+        }
+
+        if (char === "/" && next === "/") {
+            const end = text.indexOf("\n", index);
+            index = end === -1 ? text.length : end;
+            continue;
+        }
+
+        if (char === "/" && next === "*") {
+            const end = text.indexOf("*/", index + 2);
+            index = end === -1 ? text.length : end + 2;
+            continue;
+        }
+
+        result += char;
+        index++;
+    }
+
+    return result;
+}
+
+/**
+ * Prefix used when a folder has no CfgFunctions tag (a plain script folder): keeps the old
+ * `<addon>\addons\<addon>` shape so unrelated layouts still mount predictably.
+ */
+export function inferPrefix(directory: string): string {
+    const name = path.basename(directory);
+    const parent = path.basename(path.dirname(directory));
+
+    if (parent.toLowerCase() === "addons") {
+        return `${name}\\addons\\${name}`;
+    }
+
+    return name;
 }
 
 export function normalizePrefix(value: string): string {
@@ -288,6 +477,36 @@ export function normalizePrefix(value: string): string {
 export function toArmaPath(addon: Addon, filePath: string): string {
     const relative = path.relative(addon.localDirectory, filePath).replace(/[\/\\]+/g, "\\");
     return `\\${addon.prefix}\\${relative}`;
+}
+
+/**
+ * Arma path any script file is reachable at, derived from the file name for the reloader: the
+ * mounted addon folder first, then every conventional layout the game searches (the same
+ * candidates `SqfReloader_fnc_reloadFunction` uses on the SQF side).
+ *
+ * fn_hello.sqf in @ExampleMod\addons\example -> \example\addons\example\fn_hello.sqf and
+ * \z\example\addons\example\fn_hello.sqf etc. Used to answer "can Arma see this file?" even
+ * when the addon is mounted from a different root than its $PBOPREFIX$.
+ */
+export function armaPathCandidates(addon: Addon, filePath: string): string[] {
+    const relative = path.relative(addon.localDirectory, filePath).replace(/[\/\\]+/g, "\\");
+    const tag = addon.tag;
+    const name = addon.instance;
+    const folder = path.basename(addon.localDirectory).toLowerCase();
+    const normalized = relative.replace(/^functions\\/i, "");
+
+    // The mounted path is \z\<tag>\addons\<instance>. The other entries cover mods that were
+    // mounted the old ways (prefix without z\, the folder name as tag, ...).
+    return dedupe([
+        `\\${addon.prefix}\\${relative}`,
+        `\\x\\${tag}\\addons\\${name}\\${relative}`,
+        `\\${tag}\\addons\\${name}\\${relative}`,
+        `\\z\\${folder}\\addons\\${name}\\${relative}`,
+        `\\${folder}\\addons\\${name}\\${relative}`,
+        `\\@${tag}\\addons\\${name}\\${relative}`,
+        `\\@${tag}\\addons\\${folder}\\${relative}`,
+        `\\${addon.prefix}\\${normalized}`
+    ]);
 }
 
 /** Mission variable for a function file, e.g. fn_reload -> Tag_fnc_reload (undefined when not a fn_*.sqf). */

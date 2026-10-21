@@ -35,11 +35,18 @@ internal static class RestApiServer {
     public static string Host { get; private set; } = "127.0.0.1";
     public static string Url => $"http://{Host}:{Port}/api/";
 
+    /// <summary>
+    /// $PBOPREFIX$ of the workspace addons, from config.json. Reported by apiStatus so SQF can
+    /// resolve a function tag to its addon folder for hot reloads.
+    /// </summary>
+    public static IReadOnlyList<string> ConfiguredPboPrefixes { get; private set; } = Array.Empty<string>();
+
     public static string Start() {
         lock (Gate) {
             if (IsRunning) return $"Already running on {Url}";
 
             ApiConfig config = ApiConfig.Load();
+            ConfiguredPboPrefixes = config.PboPrefixes;
 
             if (!string.IsNullOrEmpty(config.SourceDirectory) && System.IO.Directory.Exists(config.SourceDirectory))
                 ReloadPlugin.SourceDirectory = config.SourceDirectory;
@@ -197,10 +204,6 @@ internal static class RestApiServer {
                     foreach (object? item in list)
                         if (item is string name && !string.IsNullOrWhiteSpace(name))
                             queue.Add(name);
-                } else {
-                    foreach (object? function in ReloadPlugin.ListFunctions())
-                        if (function != null)
-                            queue.Add(function);
                 }
 
                 MessageQueue.Enqueue("RELOAD", SimpleSerializer.ToArma(new object?[] { queue.ToArray() }));

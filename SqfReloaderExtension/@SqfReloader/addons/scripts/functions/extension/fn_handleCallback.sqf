@@ -2,14 +2,14 @@
 // Entry point for every ExtensionCallback sent by the DLL.
 // [_function, _dataString] call SqfReloader_fnc_handleCallback
 
-params [["_function", "", [""]], ["_data", "", [""]]];
+params [["_function", "", [""]], ["_data", "", ["", []]]];
 
 if (_function isEqualTo "") exitWith {};
 if (_function == "BATCH") exitWith {
     [_data] call SqfReloader_fnc_handleBatch;
 };
 
-private _parsed = parseSimpleArray _data;
+private _parsed = if (_data isEqualType "") then {parseSimpleArray _data} else {_data};
 
 if (SqfReloader_var_debug) then {
     diag_log format ["[SqfReloader] callback %1: %2", _function, _data];

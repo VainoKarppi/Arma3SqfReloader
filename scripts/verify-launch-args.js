@@ -21,8 +21,8 @@ Module._resolveFilename = function (request, ...rest) {
 const { readSettings } = require(path.join(repoRoot, "out", "settings.js"));
 const { launchArguments } = require(path.join(repoRoot, "out", "launcher.js"));
 const { prepareRuntime, bundledModFolder } = require(path.join(repoRoot, "out", "runtime.js"));
-const { findMods } = require(path.join(repoRoot, "out", "arma.js"));
-const { readLinkTarget } = require(path.join(repoRoot, "out", "junctions.js"));
+const { findMods, findMissions } = require(path.join(repoRoot, "out", "arma.js"));
+const { readLinkTarget, addonLinkPath } = require(path.join(repoRoot, "out", "junctions.js"));
 
 /** Reads sqfReloader.* from <workspace>/.vscode/settings.json (JSONC, comments stripped). */
 function workspaceSettings(workspace) {
@@ -126,10 +126,29 @@ check("no <arma>\\SqfReloader folder", !fs.existsSync(path.join(armaDirectory, "
 
 for (const mod of mods) {
     for (const addon of mod.addons) {
-        const linkPath = path.join(armaDirectory, ...addon.prefix.split("\\"));
+        const linkPath = addonLinkPath(armaDirectory, addon);
 
         check(`${addon.prefix} linked into the Arma folder`, resolvedPath(linkPath) === resolvedPath(addon.localDirectory), linkPath);
-        check(`scripts visible through the link (${addon.prefix})`, fs.existsSync(path.join(linkPath, "functions", "fn_hello.sqf")));
+        check(`the link is below the z\\ mount root (not the Arma root)`, linkPath.toLowerCase().includes(`\\z\\`), linkPath);
+        check(`$PBOPREFIX$ exists (generated on Play)`, fs.existsSync(path.join(addon.localDirectory, "$PBOPREFIX$")), addon.localDirectory);
+        check(`scripts visible through the link (${addon.prefix})`, fs.existsSync(path.join(linkPath, "functions")) || fs.existsSync(path.join(linkPath, "config.cpp")));
+    }
+
+    check(`${mod.name} is handed to Arma as a @Mod folder`, mod.hasModFiles || fs.existsSync(path.join(armaDirectory, mod.name.startsWith("@") ? mod.name : `@${mod.name}`, "mod.cpp")), mod.directory);
+}
+
+const missions = findMissions([workspace]);
+const mpNames = new Set(missions.filter(mission => mission.multiplayer).map(mission => path.basename(mission.directory).toLowerCase()));
+
+for (const mission of missions) {
+    const name = path.basename(mission.directory);
+    const folders = mission.multiplayer
+        ? ["MPMissions"]
+        : ["Missions", "MPMissions"].filter(folder => folder !== "MPMissions" || !mpNames.has(name.toLowerCase()));
+
+    for (const folder of folders) {
+        const linkPath = path.join(armaDirectory, folder, name);
+        check(`${name} linked into ${folder}`, resolvedPath(linkPath) === resolvedPath(mission.directory), linkPath);
     }
 }
 

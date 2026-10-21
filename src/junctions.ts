@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";
-import { Addon, Mod } from "./arma";
+import { Addon, MissionFolder, Mod } from "./arma";
 import { JunctionMode, log } from "./settings";
 
 /** A link created (or found) by this extension. */
@@ -27,9 +27,9 @@ const REGISTRY_FILE = ".sqfreloader-links.json";
 
 /**
  * Links the mod into the Arma folder so both Arma and the reloader read the files from the
- * working copy. Default layout is `addon`: every $PBOPREFIX$ folder becomes
- * `<arma>\z\<tag>\addons\<name>` (or `x\...` when the prefix uses x). `module` mode links
- * the whole @Mod folder into the Arma root instead.
+ * working copy. Default layout is `addon`: every addon folder becomes
+ * `<arma>\z\<tag>\addons\<addon>` (tag read from CfgFunctions). `module` mode links the whole
+ * @Mod folder into the Arma root instead.
  */
 export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMode): LinkResult {
     const links: Link[] = [];
@@ -48,7 +48,7 @@ export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMo
         }
 
         for (const addon of mod.addons) {
-            const linkPath = path.join(armaDirectory, ...addon.prefix.split("\\"));
+            const linkPath = addonLinkPath(armaDirectory, addon);
             const link = ensureDirectoryLink(linkPath, addon.localDirectory, warnings);
 
             if (link) {
@@ -61,8 +61,42 @@ export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMo
     return { links, warnings };
 }
 
+const MOUNT_ROOTS = ["z", "x"];
+
+/**
+ * Path in the Arma folder where an addon is linked so both Arma and the reloader see the
+ * working copy: `<Arma 3>\z\<tag>\addons\<addon>`.
+ *
+ * `addon.prefix` is already that layout (`readAddon` builds it from the CfgFunctions tag), so
+ * a prefix that starts with z\ or x\ is used verbatim. A bare prefix is placed below z\ -
+ * joining it onto the Arma root produced the bogus `<Arma 3>\example\addons\example`.
+ */
+export function addonLinkPath(armaDirectory: string, addon: Addon): string {
+    const segments = addon.prefix.split("\\").filter(Boolean);
+
+    if (segments.length > 0 && MOUNT_ROOTS.includes(segments[0].toLowerCase())) {
+        return path.join(armaDirectory, ...segments);
+    }
+
+    return path.join(armaDirectory, "z", ...segments);
+}
+
+/**
+ * Links the workspace's `@Mod` folder into `<Arma 3>\z\@<Mod>` (a junction to the folder that
+ * is open in VS Code), so Arma finds the mod below the z\ mount root as
+ * `z\@ExampleMod\addons\example` even without -mod=.
+ */
+export function linkModIntoZ(armaDirectory: string, mod: Mod): LinkResult {
+    const name = mod.name.startsWith("@") ? mod.name : `@${mod.name}`;
+    const linkPath = path.join(armaDirectory, "z", name);
+    const warnings: string[] = [];
+    const link = ensureDirectoryLink(linkPath, mod.directory, warnings);
+
+    return { links: link ? [link] : [], warnings };
+}
+
 /** Creates the link unless the path is already correct. */
-function ensureDirectoryLink(linkPath: string, target: string, warnings: string[]): Link | undefined {
+function ensureDirectoryLink(linkPath: string, target: string, warnings: string[], replace = false): Link | undefined {
     const resolvedTarget = path.resolve(target);
 
     if (fs.existsSync(linkPath)) {
@@ -74,8 +108,20 @@ function ensureDirectoryLink(linkPath: string, target: string, warnings: string[
             return { linkPath, target: resolvedTarget, kind: "existing" };
         }
 
-        warnings.push(`${linkPath} already exists and points to ${currentTarget ?? "a real folder"}; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
-        return undefined;
+        // A mission link that points at an older copy is refreshed; a real folder is never
+        // touched, because it is user data.
+        if (replace && currentTarget) {
+            try {
+                fs.rmdirSync(linkPath);
+                log(`Refreshed link: ${linkPath} (${currentTarget} -> ${resolvedTarget})`);
+            } catch (error) {
+                warnings.push(`Could not refresh ${linkPath}: ${error instanceof Error ? error.message : String(error)}`);
+                return undefined;
+            }
+        } else {
+            warnings.push(`${linkPath} already exists and points to ${currentTarget ?? "a real folder"}; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
+            return undefined;
+        }
     }
 
     try {
@@ -159,6 +205,57 @@ function registerLinks(armaDirectory: string, links: Link[]): void {
     }
 }
 
+/**
+ * Links the workspace missions into `<Arma 3>\Missions` and `<Arma 3>\MPMissions` so they show
+ * up in the editor's mission lists without copying.
+ *
+ * A mission from an `mpmissions` folder is linked into `MPMissions` only; a single-player
+ * mission goes to both (Arma lists `Missions` for single player and both are valid for hosting).
+ *
+ * These are plain directory junctions created here (not registered in the link registry):
+ * unlike the addon links they are re-done on every launch, and the registry is what
+ * "uninstall" removes.
+ */
+export function linkMissions(armaDirectory: string, missions: MissionFolder[]): LinkResult {
+    const links: Link[] = [];
+    const warnings: string[] = [];
+
+    // A mission is mounted under its folder name (example.Altis), so two workspaces missions
+    // with the same name would fight over the same link. Multiplayer missions win, because
+    // they can only live in MPMissions; the single-player one then keeps Missions only.
+    const multiplayerNames = new Set(
+        missions.filter(mission => mission.multiplayer).map(mission => path.basename(mission.directory).toLowerCase())
+    );
+
+    for (const mission of missions) {
+        const name = path.basename(mission.directory);
+
+        if (!mission.multiplayer && multiplayerNames.has(name.toLowerCase())) {
+            warnings.push(`${name} also exists as a multiplayer mission (mpmissions\\${name}); the multiplayer one is linked into MPMissions and the single-player one into Missions only.`);
+        }
+
+        const folders = mission.multiplayer ? ["MPMissions"] : MISSION_FOLDERS;
+
+        for (const folder of folders) {
+            const linkPath = path.join(armaDirectory, folder, name);
+
+            if (!mission.multiplayer && folder === "MPMissions" && multiplayerNames.has(name.toLowerCase())) {
+                continue;
+            }
+
+            const link = ensureDirectoryLink(linkPath, mission.directory, warnings, true);
+
+            if (link) {
+                links.push(link);
+            }
+        }
+    }
+
+    return { links, warnings };
+}
+
+const MISSION_FOLDERS = ["Missions", "MPMissions"];
+
 export function readRegistry(armaDirectory: string): Registration[] {
     try {
         const content = fs.readFileSync(registryPath(armaDirectory), "utf8");
@@ -206,7 +303,7 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
 
 /** What Arma would read for an addon right now. */
 export function verifyAddonLink(armaDirectory: string, addon: Addon): { ok: boolean; resolved?: string } {
-    const linkPath = path.join(armaDirectory, ...addon.prefix.split("\\"));
+    const linkPath = addonLinkPath(armaDirectory, addon);
     const resolved = readLinkTarget(linkPath);
 
     if (!resolved) {

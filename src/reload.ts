@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { findAddonForFile, toArmaPath, toFunctionVariable } from "./arma";
+import { Addon, findAddonForFile, armaPathCandidates, toArmaPath, toFunctionVariable } from "./arma";
 import { evalCode, listFunctions, recompileCommand, reloadEverything, reloadFunctions, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
 
@@ -71,7 +71,7 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
 
         if (result.success) {
             // Reloading returns instantly; verify the file really exists in Arma's view.
-            const check = await verifyFunctionVisible(settings, variable, armaPath);
+            const check = await verifyFunctionVisible(settings, variable, addon, document.fileName);
             return check.ok
                 ? { ok: true, message: `Reloaded ${variable}.` }
                 : { ok: false, message: check.message, detail: check.detail };
@@ -126,13 +126,16 @@ export async function reloadAll(settings: Settings, silent = false): Promise<Rel
 }
 
 /**
- * After /api/reload, make sure the file the previous step resolved to is still there. The
- * extension's FunctionIndex only lists its own sources, so user mods are checked through
- * /api/eval (fileExists) and otherwise reported as "queued".
+ * After /api/reload, make sure Arma can read the file the function was compiled from. The
+ * addon may be mounted through more than one root (its $PBOPREFIX$ and the z\ link), so every
+ * conventional path is probed; "queued" is only reported when Arma does not answer at all.
  */
-async function verifyFunctionVisible(settings: Settings, variable: string, armaPath: string): Promise<ReloadOutcome> {
+async function verifyFunctionVisible(settings: Settings, variable: string, addon: Addon, filePath: string): Promise<ReloadOutcome> {
+    const candidates = armaPathCandidates(addon, filePath);
+    const checks = candidates.map(candidate => `fileExists ${sqfString(candidate)}`).join(" || ");
+
     try {
-        const result = await evalCode(settings, `fileExists ${sqfString(armaPath)}`);
+        const result = await evalCode(settings, checks);
 
         if (result.success) {
             return { ok: true, message: `Reloaded ${variable}.` };
@@ -141,6 +144,7 @@ async function verifyFunctionVisible(settings: Settings, variable: string, armaP
         // Arma may not answer /api/eval; that is not a reload failure.
     }
 
+    log(`Arma cannot see ${variable} at ${candidates.join(", ")}.`);
     return { ok: true, message: `Reload queued for ${variable}.` };
 }
 

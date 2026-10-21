@@ -1,4 +1,10 @@
-// Checks the $PBOPREFIX$ -> function tag rule for the layouts the reloader must support.
+// Checks how the function tag and the mount prefix are derived.
+//
+// The tag comes from CfgFunctions (`tag = "...";`), and the mounted layout is always
+// z\<tag>\addons\<addon folder>. A stale $PBOPREFIX$ does not influence either of them,
+// because Play rewrites the file from CfgFunctions before launching.
+//
+// Run from the repository root:  node scripts/verify-tags.js
 "use strict";
 
 const path = require("path");
@@ -16,33 +22,61 @@ Module._resolveFilename = function (request, ...rest) {
     return originalResolve.call(this, request, ...rest);
 };
 
-const { readAddon } = require(path.join(repoRoot, "out", "arma.js"));
+const { readAddon, readFunctionTag } = require(path.join(repoRoot, "out", "arma.js"));
 
+/** [config.cpp body or null, addon folder name, expected tag, expected prefix] */
 const cases = [
-    // [prefix, expected tag, expected name]
-    ["z\\mymod\\addons\\core", "mymod", "core"],
-    ["x\\other\\addons\\main", "other", "main"],
-    ["mymod\\addons\\core", "mymod", "core"],
-    ["example\\addons\\example", "example", "example"],
-    ["launchmod\\addons\\core", "launchmod", "core"]
+    ['class CfgFunctions { class example { tag = "example"; }; };', "example", "example", "z\\example\\addons\\example"],
+    ['class CfgFunctions { class mymod { tag = "mymod"; }; };', "mymod", "mymod", "z\\mymod\\addons\\mymod"],
+    ['class CfgFunctions { class Core { tag = "sre"; }; };', "instance", "sre", "z\\sre\\addons\\instance"],
+    ['class CfgFunctions { class launch { }; };', "core", "launch", "z\\launch\\addons\\core"],
+    ['class CfgFunctions { // tag = "commented";\n class real { tag = "real"; }; };', "real", "real", "z\\real\\addons\\real"],
+    [null, "plain", "plain", "z\\plain\\addons\\plain"]
 ];
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-tags-"));
-let failed = 0;
+const failures = [];
 
 try {
-    for (const [prefix, tag, name] of cases) {
-        const folder = path.join(dir, tag, name);
-        fs.mkdirSync(folder, { recursive: true });
-        fs.writeFileSync(path.join(folder, "$PBOPREFIX$"), prefix, "utf8");
+    let index = 0;
 
-        const addon = readAddon(folder);
-        const ok = addon && addon.tag === tag && addon.name === name;
-        console.log(`  ${ok ? "PASS" : "FAIL"}  ${prefix} -> ${addon ? `${addon.tag}/${addon.name}` : "<none>"}`);
-        failed += ok ? 0 : 1;
+    for (const [config, folder, tag, prefix] of cases) {
+        const addonDir = path.join(dir, `@Mod${index++}`, "addons", folder);
+        fs.mkdirSync(addonDir, { recursive: true });
+
+        if (config) {
+            fs.writeFileSync(path.join(addonDir, "config.cpp"), config, "utf8");
+        } else {
+            fs.mkdirSync(path.join(addonDir, "functions"), { recursive: true });
+        }
+
+        // A stale or hand-made file must not change the result.
+        fs.writeFileSync(path.join(addonDir, "$PBOPREFIX$"), "stale\\addons\\stale", "utf8");
+
+        const addon = readAddon(addonDir);
+        const ok = addon && addon.tag === tag && addon.prefix === prefix;
+        console.log(`  ${ok ? "PASS" : "FAIL"}  ${folder} -> ${addon ? `${addon.tag} / ${addon.prefix}` : "<none>"}`);
+        if (!ok) {
+            failures.push(`${folder}: expected ${tag} / ${prefix}`);
+        }
+    }
+
+    // The tag reader on its own: an explicit tag wins over the class name.
+    const first = path.join(dir, "@Mod0", "addons", "example");
+    const tag = readFunctionTag(first);
+    const ok = tag === "example";
+    console.log(`  ${ok ? "PASS" : "FAIL"}  readFunctionTag -> ${tag}`);
+    if (!ok) {
+        failures.push(`readFunctionTag -> ${tag}`);
     }
 } finally {
     fs.rmSync(dir, { recursive: true, force: true });
 }
 
-process.exit(failed === 0 ? 0 : 1);
+console.log("");
+if (failures.length > 0) {
+    console.log(`TAG VERIFY FAILED (${failures.length}): ${failures.join(", ")}`);
+    process.exit(1);
+}
+
+console.log("TAG VERIFY PASSED");
