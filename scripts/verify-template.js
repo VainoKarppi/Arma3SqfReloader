@@ -44,6 +44,15 @@ try {
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
     check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "example", "$PBOPREFIX$")));
     check("missions have a mission.sqm", fs.existsSync(path.join(result.missionDirectory, "mission.sqm")) && fs.existsSync(path.join(result.mpMissionDirectory, "mission.sqm")));
+
+    // The SP and MP scenarios are two distinct Eden files: both place a BLUFOR and an OPFOR
+    // fire team, but only the MP one marks the OPFOR leader playable for the lobby.
+    const spSqm = fs.readFileSync(path.join(result.missionDirectory, "mission.sqm"), "utf8");
+    const mpSqm = fs.readFileSync(path.join(result.mpMissionDirectory, "mission.sqm"), "utf8");
+    check("mission.sqm uses the Eden v54 format", /^version=54;/.test(spSqm) && /^version=54;/.test(spSqm));
+    check("both scenarios place a BLUFOR and an OPFOR group", [spSqm, mpSqm].every(sqm => (sqm.match(/side="West"/g) ?? []).length === 5 && (sqm.match(/side="East"/g) ?? []).length === 5));
+    check("SP scenario has no playable MP slot", !/isPlayable=1;/.test(spSqm));
+    check("MP scenario marks the OPFOR leader playable", /isPlayable=1;/.test(mpSqm) && /property="speaker";/.test(mpSqm));
     check("mission CfgFunctions declares the live test", /class CfgFunctions[\s\S]*class liveTest/.test(fs.readFileSync(path.join(result.missionDirectory, "description.ext"), "utf8")));
     check("live test function exists in both missions", fs.existsSync(path.join(result.missionDirectory, "functions", "fn_liveTest.sqf")) && fs.existsSync(path.join(result.mpMissionDirectory, "functions", "fn_liveTest.sqf")));
 

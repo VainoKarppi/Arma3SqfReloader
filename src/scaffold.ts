@@ -146,7 +146,7 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
  * The multiplayer copy gets the MP header keys, so it shows up in the host/join lists.
  */
 function writeMission(directory: string, write: (file: string, content: string) => void, multiplayer: boolean): string {
-    write(path.join(directory, "mission.sqm"), missionSqm());
+    write(path.join(directory, "mission.sqm"), missionSqm(multiplayer));
     write(path.join(directory, "description.ext"), descriptionExt(multiplayer));
     write(path.join(directory, "initPlayerLocal.sqf"), missionInitPlayerLocal());
     write(path.join(directory, "functions", "fn_liveTest.sqf"), missionLiveTest());
@@ -291,16 +291,455 @@ _sum
 `;
 }
 
-/** Minimal Eden scenario file; Arma fills in optional mission data when saved from the editor. */
-function missionSqm(): string {
-    // Bohemia's minimal Eden scenario format. Arma fills in optional mission classes on save.
-    return `version=53;
+/**
+ * Eden scenario file for the example test mission.
+ *
+ * Both variants place a BLUFOR fire team and an OPFOR fire team on Altis so the test mission
+ * has something to shoot at. The multiplayer variant marks the OPFOR team leader playable
+ * (`isPlayable=1`) with a speaker/pitch custom attribute, which is what makes the mission show
+ * up as a hostable/joinable MP scenario.
+ */
+function missionSqm(multiplayer: boolean): string {
+    const missionEntities = multiplayer ? missionEntitiesMultiplayer() : missionEntitiesSingleplayer();
+
+    return `version=54;
 class EditorData
 {
-    class Camera {};
+	moveGridStep=1;
+	angleGridStep=0.2617994;
+	scaleGridStep=1;
+	autoGroupingDist=10;
+	toggles=1;
+	class ItemIDProvider
+	{
+		nextID=10;
+	};
+	class Camera
+	{
+		pos[]={9971.6152,38.041138,11984.754};
+		dir[]={-0.089041486,-0.3954865,0.91415292};
+		up[]={-0.038340669,0.91847187,0.39362833};
+		aside[]={0.99529487,2.7590431e-08,0.096944958};
+	};
+};
+binarizationWanted=0;
+sourceName="example";
+addons[]=
+{
+	"A3_Characters_F"
+};
+class AddonsMetaData
+{
+	class List
+	{
+		items=1;
+		class Item0
+		{
+			className="A3_Characters_F";
+			name="Arma 3 Alpha - Characters and Clothing";
+			author="Bohemia Interactive";
+			url="https://www.arma3.com";
+		};
+	};
 };
 randomSeed=1;
+class ScenarioData
+{
+	author="Razer";
+};
+class Mission
+{
+	class Intel
+	{
+		timeOfChanges=1800.0002;
+		startWeather=0.30000001;
+		startWind=0.1;
+		startWaves=0.1;
+		forecastWeather=0.30000001;
+		forecastWind=0.1;
+		forecastWaves=0.1;
+		forecastLightnings=0.1;
+		year=2035;
+		month=6;
+		day=24;
+		hour=12;
+		minute=0;
+		startFogDecay=0.014;
+		forecastFogDecay=0.014;
+	};
+	class Entities
+	{
+		items=2;
+${missionEntities}
+	};
+};
 `;
+}
+
+/** Single-player variant: BLUFOR fire team with the player as team leader, plus an OPFOR team. */
+function missionEntitiesSingleplayer(): string {
+    return `		class Item0
+		{
+			dataType="Group";
+			side="West";
+			class Entities
+			{
+				items=4;
+				class Item0
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9959.3701,11.814472,12038.22};
+					};
+					side="West";
+					flags=7;
+					class Attributes
+					{
+						rank="SERGEANT";
+						isPlayer=1;
+					};
+					id=1;
+					type="B_Soldier_TL_F";
+				};
+				class Item1
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9964.3701,11.917388,12033.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.44999999;
+						rank="CORPORAL";
+					};
+					id=2;
+					type="B_soldier_AR_F";
+				};
+				class Item2
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9954.3701,12.264382,12033.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=3;
+					type="B_Soldier_GL_F";
+				};
+				class Item3
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9969.3701,11.989189,12028.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=4;
+					type="B_soldier_LAT_F";
+				};
+			};
+			class Attributes
+			{
+			};
+			id=0;
+		};
+		class Item1
+		{
+			dataType="Group";
+			side="East";
+			class Entities
+			{
+				items=4;
+				class Item0
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9962.2861,12.324856,12202.177};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=7;
+					class Attributes
+					{
+						rank="SERGEANT";
+					};
+					id=6;
+					type="O_Soldier_TL_F";
+				};
+				class Item1
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9957.4238,12.757553,12207.311};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.44999999;
+						rank="CORPORAL";
+					};
+					id=7;
+					type="O_Soldier_AR_F";
+				};
+				class Item2
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9967.4199,12.104147,12207.039};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=8;
+					type="O_Soldier_GL_F";
+				};
+				class Item3
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9952.5615,13.112259,12212.444};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=9;
+					type="O_Soldier_LAT_F";
+				};
+			};
+			class Attributes
+			{
+			};
+			id=5;
+		};`;
+}
+
+/**
+ * Multiplayer variant: same two fire teams, but the OPFOR team leader is playable and carries
+ * a speaker/pitch attribute so the MP lobby shows a proper slot.
+ */
+function missionEntitiesMultiplayer(): string {
+    return `		class Item0
+		{
+			dataType="Group";
+			side="West";
+			class Entities
+			{
+				items=4;
+				class Item0
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9959.3701,11.814472,12038.22};
+					};
+					side="West";
+					flags=7;
+					class Attributes
+					{
+						rank="SERGEANT";
+						isPlayer=1;
+					};
+					id=1;
+					type="B_Soldier_TL_F";
+				};
+				class Item1
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9964.3701,11.917388,12033.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.44999999;
+						rank="CORPORAL";
+					};
+					id=2;
+					type="B_soldier_AR_F";
+				};
+				class Item2
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9954.3701,12.264382,12033.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=3;
+					type="B_Soldier_GL_F";
+				};
+				class Item3
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9969.3701,11.989189,12028.22};
+					};
+					side="West";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=4;
+					type="B_soldier_LAT_F";
+				};
+			};
+			class Attributes
+			{
+			};
+			id=0;
+		};
+		class Item1
+		{
+			dataType="Group";
+			side="East";
+			class Entities
+			{
+				items=4;
+				class Item0
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9962.2861,12.324855,12202.177};
+						angles[]={0,3.1687324,0};
+					};
+					side="East";
+					flags=7;
+					class Attributes
+					{
+						rank="SERGEANT";
+						isPlayable=1;
+					};
+					id=6;
+					type="O_Soldier_TL_F";
+					atlOffset=-9.5367432e-07;
+					class CustomAttributes
+					{
+						class Attribute0
+						{
+							property="speaker";
+							expression="_this setspeaker _value;";
+							class Value
+							{
+								class data
+								{
+									singleType="STRING";
+									value="Male01PER";
+								};
+							};
+						};
+						class Attribute1
+						{
+							property="pitch";
+							expression="_this setpitch _value;";
+							class Value
+							{
+								class data
+								{
+									singleType="SCALAR";
+									value=1.01;
+								};
+							};
+						};
+						nAttributes=2;
+					};
+				};
+				class Item1
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9957.4238,12.757553,12207.311};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.44999999;
+						rank="CORPORAL";
+					};
+					id=7;
+					type="O_Soldier_AR_F";
+				};
+				class Item2
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9967.4199,12.104147,12207.039};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=8;
+					type="O_Soldier_GL_F";
+				};
+				class Item3
+				{
+					dataType="Object";
+					class PositionInfo
+					{
+						position[]={9952.5615,13.112259,12212.444};
+						angles[]={0,3.1687291,-0};
+					};
+					side="East";
+					flags=5;
+					class Attributes
+					{
+						skill=0.40000001;
+					};
+					id=9;
+					type="O_Soldier_LAT_F";
+				};
+			};
+			class Attributes
+			{
+			};
+			id=5;
+			atlOffset=-9.5367432e-07;
+		};`;
 }
 function descriptionExt(multiplayer: boolean): string {
     return `class Header {
