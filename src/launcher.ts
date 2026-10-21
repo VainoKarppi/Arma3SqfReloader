@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
 import { findArmaDirectory, pickArmaDirectory, toArmaPath } from "./arma";
-import { getStatus } from "./api";
 import { log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { PreparedLaunch, ensurePrefixFile, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
@@ -90,15 +89,6 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
 
         startProcess(launch, settings, options);
 
-        // Wait for the API so the first save is not lost.
-        const ready = await waitForApi(settings, 60000);
-
-        if (ready) {
-            log("SqfReloader is online; saving SQF now recompiles it in the running game.");
-        } else {
-            log(`SqfReloader did not answer within 60 s. Check the Arma log (${armaLogHint()}) and the extension output.`);
-        }
-
         return true;
     } catch (error) {
         logError("launch failed", error);
@@ -116,11 +106,6 @@ export function armaLogDirectory(): string {
     const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(require("os").homedir(), "AppData", "Local");
 
     return path.join(localAppData, "Arma 3");
-}
-
-/** Path hint used in log messages: <c>...\Arma 3\arma3_x64_*.rpt</c>. */
-function armaLogHint(): string {
-    return path.join(armaLogDirectory(), "arma3_x64_*.rpt");
 }
 
 function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions): void {
@@ -325,38 +310,6 @@ export function isRunning(): boolean {
     } catch {
         return false;
     }
-}
-
-/** Polls GET /api/status until the game answers (or the timeout expires). */
-export async function waitForApi(settings: Settings, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    let lastError: unknown;
-
-    while (Date.now() < deadline) {
-        try {
-            const status = await getStatus(settings);
-
-            if (status.status === "ok" && status.gameConnected) {
-                log(`SqfReloader ready: version ${status.version}, ${settings.apiUrl}`);
-                return true;
-            }
-
-            if (status.status === "ok") {
-                // REST is up, waiting for the SQF callback (mission/editor still loading).
-                log("SqfReloader REST is up, waiting for the game callback...");
-            }
-        } catch (error) {
-            lastError = error;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    if (lastError) {
-        log(`Last connection error: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
-    }
-
-    return false;
 }
 
 /**

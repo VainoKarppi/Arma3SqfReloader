@@ -1,336 +1,124 @@
-# Arma 3 SQF Reloader (VS Code)
+# Arma 3 SQF Reloader
 
-Write SQF in VS Code, press one button, and Arma 3 starts with your mod. Save a script and
-the running game recompiles it immediately - no restart, no PBO rebuild, no manual `-mod=`
-setup.
+Edit SQF in VS Code and reload it in a running Arma 3 session when you save. The extension
+starts Arma with your mod and SqfReloader, links your addon files for file patching, and sends
+changed function names to the game.
 
-The extension is the front end of **SqfReloader**: a native Arma extension (`SqfReloader_x64.dll`)
-plus a small mod (`@SqfReloader`) that exposes a local REST API inside the game. Both ship
-inside the `.vsix`, so installing the extension is all a developer has to do.
+## How it works
 
 ```text
- VS Code (this extension)                    Arma 3
- ------------------------                    ------
- Install vsix  ->  ships SqfReloader_x64.dll + @SqfReloader
- "SqfReloader: Play"  ->  arma3_x64.exe -filePatching -noBattlEye
-                          -mod="<your mod>";"<arma>\@SqfReloader"
-      save fn_x.sqf
-           | POST /api/reload {"functions":["mymod_fnc_x"]}
-           +--------------------------------> SqfReloader_x64.dll (REST)
-                                                   | ExtensionCallback
-                                                   v
-                                      @SqfReloader: compile <arma>\z\<tag>\addons\<addon>\...
-                                                   | (junction to your working copy)
-                                                   v
-                                            missionNamespace mymod_fnc_x
+  VS CODE                                             ARMA 3
+┌──────────────────┐                      ┌──────────────────────────────┐
+│ Play             │ ── launch game ─────▶│ Arma 3 + your mod +          │
+└──────────────────┘                      │ @SqfReloader                 │
+                                          └──────────────┬───────────────┘
+                                                         │ API starts and
+                                                         │ game callback connects
+                                                         ▼
+┌──────────────────┐   POST function     ┌──────────────────────────────┐
+│ Save fn_name.sqf │ ── name on save ───▶│ SqfReloader local API         │
+└──────────────────┘                    └──────────────┬───────────────┘
+         ▲                                              │
+         │                                              ▼
+         │                                  ┌──────────────────────────────┐
+         │                                  │ Compile from z\tag\addons\  │
+         │                                  │ addon\functions\fn_name.sqf │
+         │                                  └──────────────┬───────────────┘
+         │                                                 │
+         │                                                 ▼
+         │                                  ┌──────────────────────────────┐
+         └──── next call uses new code ────│ missionNamespace             │
+                                            │ TAG_fnc_name                 │
+                                            └──────────────────────────────┘
+
+  At startup, workspace functions are injected when the game callback is ready.
 ```
 
----
+## Install
 
-## 1. Install (one time)
+Install the `.vsix` from VS Code, or run:
 
 ```powershell
-code --install-extension arma3-sqf-reloader-<version>.vsix
+code --install-extension .\arma3-sqf-reloader-<version>.vsix
 ```
 
-Nothing else. The extension contains the complete `@SqfReloader` mod:
+The extension includes the SqfReloader Arma mod and native DLL. You do not need to install
+those separately.
 
-* `mod.cpp` and `logo.paa`,
-* `addons\scripts.pbo` - the packed addon (prefix `scripts`, `config.cpp` + all `functions\`),
-* `SqfReloader_x64.dll` (NativeAOT Arma extension with the REST server), in the mod root,
-* the launcher that copies `@SqfReloader` into the Arma 3 folder and starts the game.
+## Try the example
 
-That folder is the only thing that gets installed into Arma 3 - no DLL next to
-`arma3_x64.exe`, no `<Arma 3>\SqfReloader` folder, no `replacement\` folder and no unpacked
-addon copy. Installing a newer `.vsix` replaces the whole `@SqfReloader` folder (new PBO, new
-DLL) the next time you press **Play**.
+1. Open an empty folder in VS Code.
+2. Run **SqfReloader: Create example mod (try the reloader)** from the Command Palette.
+3. Run **SqfReloader: Play** and wait for the extension to connect.
+4. Edit and save `fn_hello.sqf`.
+5. In Arma’s debug console, run `[] call example_fnc_hello;` to check the updated function.
 
-The DLL sits in the **mod root** because Arma resolves extensions from the executable folder
-or the mod root only - a `dll\` subfolder makes it report
-`CallExtension 'SqfReloader' could not be found`.
+The example includes `@ExampleMod`, an addon with three functions, and an optional test mission.
 
-To build the VSIX yourself, see [Building](#7-building-everything).
+## Use your own mod
 
-## 2. Try it in an empty folder
+Open the mod folder or a workspace containing it. The addon needs a `$PBOPREFIX$` or a
+`CfgFunctions` tag so the extension can map SQF files to Arma paths and function names. Run
+**SqfReloader: Play** to set up links and start Arma with your mod.
 
-No mod yet? Open **any empty folder** in VS Code and run:
+On launch, the extension keeps checking for SqfReloader. When the game callback is ready, it
+injects workspace `fn_*.sqf` functions into `missionNamespace`. You can open Eden later; the
+initial injection does not depend on opening it within a fixed time.
 
-```
-SqfReloader: Create example mod (try the reloader)
-```
+When you save a `fn_*.sqf` file, the extension sends its function name to Arma. SqfReloader
+compiles the source through the addon’s `z\<tag>\addons\<addon>` link and updates the
+function in `missionNamespace`. Compile errors from the Arma `.rpt` appear in the SqfReloader
+output and as VS Code diagnostics.
 
-You get a complete, working mod plus a test mission:
+## Commands
 
-```text
-@ExampleMod/
-  mod.cpp
-  addons/example/
-    config.cpp               CfgFunctions tag "example"
-    functions/fn_hello.sqf   example_fnc_hello   - writes a systemChat line
-    functions/fn_add.sqf     example_fnc_add     - 20 + 22
-    functions/fn_showCounter.sqf  example_fnc_showCounter - calls both
-missions/example.Altis/      optional single-player test mission (setting below)
-    mission.sqm              minimal Altis mission, editable in Eden
-    description.ext          SqfReloader >> StartupCode hook
-    initPlayerLocal.sqf      calls the functions 2 s after spawn
-mpmissions/example.Altis/    optional multiplayer copy (MP header keys, 8 players)
-.vscode/settings.json        sqfReloader.* defaults for this project
-```
-
-There is no `$PBOPREFIX$` file to look after: **Play** derives the mount path from the
-`tag = "...";` of the addon's `CfgFunctions` block, writes `<Arma 3>\z\<tag>\addons\<addon>
-into `$PBOPREFIX$` (replacing a stale file on every launch) and links the addon there.
-
-The command links the mod into your Arma 3 folder right away and offers **Play Arma 3**.
-Existing files are never overwritten: run it again and you are asked before the template
-files are recreated (`sqfReloader.createExampleWithMission` controls the missions).
-
-Then try the reload:
-
-1. **SqfReloader: Play**, wait until the status bar turns green.
-2. Open `fn_hello.sqf`, change the message, save.
-3. In the debug console run `[] call example_fnc_hello;` - the new text appears.
-
-Both missions do the same on spawn, so you can also just open one in Eden and press *Play*.
-Play links them into `<Arma 3>\Missions` and `<Arma 3>\MPMissions`.
-
-## 3. Start Arma 3 with your own mod
-
-1. Open your mod folder in VS Code (the folder with `addons\` and `mod.cpp`, e.g.
-   `...\@MyMod`, or a whole development folder that contains it). The extension activates on
-   `**/*.sqf`, `mod.cpp` and `$PBOPREFIX$`.
-2. On first activation it detects the Arma 3 installation (registry, Steam libraries and
-   common paths). Only if detection fails does it ask for the folder once and store it in
-   `sqfReloader.armaDirectory`.
-3. Click **SqfReloader** in the status bar, or run **SqfReloader: Play** from the command palette.
-
-`Play` does all of this:
-
-| Step | Detail |
+| Command | Action |
 | --- | --- |
-| Deploy the runtime | copies the bundled `@SqfReloader` (`mod.cpp`, `logo.paa`, `addons\scripts.pbo`, `SqfReloader_x64.dll`) into `<Arma 3>\@SqfReloader` as a plain folder, replacing any older copy. Legacy `<Arma 3>\SqfReloader_x64.dll`, `<Arma 3>\SqfReloader`, `dll\`, `replacement\` and the unpacked addon copy are removed. |
-| Link your mod | every addon is linked as `<Arma 3>\z\<tag>\addons\<addon>`, where `<tag>` is the `tag = "...";` from its `CfgFunctions`. The whole `@Mod` folder is also junctioned as `<Arma 3>\z\@<Mod>`. Your mod is *not* packed into a PBO. |
-| Link your missions | every `missions\<name>.<World>` folder (or a `<name>.<World>` opened directly) becomes a junction in `<Arma 3>\Missions` and `<Arma 3>\MPMissions`; a mission under `mpmissions\` goes to `<Arma 3>\MPMissions` only. |
-| Start the game | `arma3_x64.exe -filePatching -mod="<your mod>";"<Arma 3>\@SqfReloader" -noBattlEye` |
-| Wait for the API | polls `GET /api/status` for up to 60 s, then the status bar turns green. |
+| **SqfReloader: Play** | Set up the workspace links and start Arma. |
+| **SqfReloader: Stop Arma 3** | Close Arma and remove this extension’s mod links. |
+| **SqfReloader: Check connection** | Check the API and game callback. |
+| **SqfReloader: Reload current function** | Reload the active SQF function. |
+| **SqfReloader: Reload all functions** | Reload workspace functions. |
+| **SqfReloader: Toggle reload on save** | Turn automatic reload on or off. |
+| **SqfReloader: Show output** | Open extension logs and Arma error messages. |
 
-No `-init=` parameter is needed: `@SqfReloader` starts itself from its own
-`Cfg3DEN >> EventHandlers >> init` (the same hook EdenOnline uses), which the engine runs
-whenever the Eden Editor display is created - on start-up, on mission new/load and when the
-main menu starts a mission. `SqfReloader_fnc_runStartup` is safe to call repeatedly; it also runs
-the mission's own `SqfReloader >> StartupCode` if the mission defines one.
+Other commands set up mods, remove extension-created links, open the Arma folder, and create the
+example project.
 
-`-filePatching` is required so Arma can read your junctioned mod. `-noBattlEye` is added because
-BattlEye cannot load an unsigned extension; add `-be` to `sqfReloader.extraLaunchArguments` if you
-really need it.
+## Settings
 
-Already have Arma 3 running? **SqfReloader: Check connection** re-attaches instead of launching
-a second instance.
-
-## 4. Hot reload on save
-
-Open a `fn_*.sqf` file and save it. The extension resolves the function name from the file
-and the addon from the nearest `$PBOPREFIX$`, then sends:
-
-```http
-POST /api/reload
-{"functions":["mymod_fnc_hello"]}
-```
-
-`@SqfReloader` recompiles the file from the junction inside the Arma folder and stores it as
-`mymod_fnc_hello` in `missionNamespace`, so the next call uses the new code.
-
-| File saved | What happens |
+| Setting | Purpose |
 | --- | --- |
-| `fn_*.sqf` | that one function is recompiled |
-| `config.cpp`, `*.hpp`, `init.sqf`, helpers | the mod's reloadable functions are recompiled |
+| `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection. |
+| `sqfReloader.enabled` | Enable or disable reload on save. |
+| `sqfReloader.apiUrl` | SqfReloader API address. Default: `http://127.0.0.1:8765/api`. |
+| `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
+| `sqfReloader.junctionMode` | Link per addon (`addon`) or per mod (`module`). |
 
-All custom functions declared in `CfgFunctions` can be recompiled; no `CfgPatches` opt-in list
-is needed. `recompile = 1` is not required for SqfReloader's scan.
+## Troubleshooting
 
-`TAG_fnc_name` is compiled from `\z\<tag>\addons\<tag>\source\fn_name.sqf`,
-`\z\<tag>\addons\<tag>\functions\fn_name.sqf`, `\x\<tag>\addons\...` or an unpacked
-`\@<tag>\addons\...`, which is why the junction matters: Arma must be able to read your
-working copy at that path.
+**The extension cannot find Arma.** Set `sqfReloader.armaDirectory` to the folder containing
+`arma3_x64.exe`.
 
-## 5. Settings
+**The game is running but the extension is waiting.** Open a mission in Eden once. SqfReloader
+starts its API when the editor initializes; the extension will inject the initial functions
+after the game callback connects.
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `sqfReloader.armaDirectory` | `""` | Arma 3 folder; auto-detected when empty. |
-| `sqfReloader.enabled` | `true` | Master switch for reload on save. |
-| `sqfReloader.apiUrl` | `http://127.0.0.1:8765/api` | SqfReloader REST base URL. |
-| `sqfReloader.requestTimeout` | `3000` | Request timeout in ms. |
-| `sqfReloader.autoJunction` | `true` | Link the open mod into the Arma folder automatically. |
-| `sqfReloader.junctionMode` | `addon` | `addon` (per addon) or `module` (whole `@Mod`). |
-| `sqfReloader.reloadOnSave` | `reload` | `reload` (recompile the variable), `recompile` (content posted to `/api/command`), `off`. |
-| `sqfReloader.notifyOnError` | `true` | Warn when Arma is not reachable or a reload fails. |
-| `sqfReloader.extraLaunchArguments` | `-noSplash -skipIntro -noPause` | Extra parameters for `Play` (e.g. `-window -showScriptErrors`). `-filePatching` and `-noBattlEye` are added automatically. |
-| `sqfReloader.createExampleWithMission` | `true` | **Create example mod** also writes the test mission. |
+**A function is undefined.** Confirm the mod is enabled in Arma and check **SqfReloader: Show
+output** for connection or compile errors.
 
-Example `.vscode/settings.json` of a mod project:
+**The saved code does not take effect.** Check the Arma `.rpt` and the SqfReloader output. The
+addon link must point to the workspace source under `<Arma 3>\z\<tag>\addons\<addon>`.
 
-```json
-{
-    "sqfReloader.armaDirectory": "D:\\SteamLibrary\\steamapps\\common\\Arma 3",
-    "sqfReloader.junctionMode": "addon",
-    "sqfReloader.reloadOnSave": "reload",
-    "sqfReloader.extraLaunchArguments": "-window -showScriptErrors -noSplash"
-}
-```
+## Build from source
 
-## 6. Commands
-
-| Command | What it does |
-| --- | --- |
-| **SqfReloader: Create example mod (try the reloader)** | Writes `@ExampleMod` (+ test mission) into the open folder and links it; works in an empty workspace. |
-| **SqfReloader: Play** | Deploys the runtime, links the mod and starts Arma 3. |
-| **SqfReloader: Stop Arma 3** | Closes the running game. |
-| **SqfReloader: Check connection** | `GET /api/status`; reports version, URL and whether the game callback is registered. |
-| **SqfReloader: Set up this mod (junction + config)** | Detects Arma 3, links the mod, stores the Arma folder. Also in the Explorer context menu. |
-| **SqfReloader: Set up all mods in this workspace** | Same for every workspace folder that looks like a mod. |
-| **SqfReloader: Reload current function** | Recompiles the active file through `/api/eval`. |
-| **SqfReloader: Reload all functions** | `POST /api/reload` without a filter. |
-| **SqfReloader: Toggle reload on save** | Flips `sqfReloader.enabled`. |
-| **SqfReloader: Remove junctions created by this extension** | Deletes only the links recorded in `.sqfreloader-links.json`. |
-| **SqfReloader: Open Arma 3 folder** / **SqfReloader: Show output** | Explorer / extension log. |
-
-## 7. Building everything
-
-Requirements: .NET SDK 10, Visual Studio 2022 Build Tools with *Desktop development with
-C++* (NativeAOT), Node.js 20+ and VS Code. Arma 3 Tools (AddonBuilder) is required: the
-shipped addon is a `.pbo`.
+Requirements: .NET SDK 10, Visual Studio 2022 Build Tools with C++ tools, Node.js 20+, VS Code,
+and Arma 3 Tools AddonBuilder.
 
 ```powershell
-# DLL + mod + VSIX (and install it)
-powershell -ExecutionPolicy Bypass -File build-all.ps1 -Install
-
-# Build an exact version: writes it to every version file, then builds it
-powershell -ExecutionPolicy Bypass -File build-all.ps1 -Version "2.3.0"
+powershell -ExecutionPolicy Bypass -File build-all.ps1
 ```
 
-`build-all.ps1` builds the native extension, packs
-`SqfReloaderExtension\@SqfReloader\addons\scripts` with Arma 3 Tools AddonBuilder into
-`addons\scripts.pbo` (prefix `scripts`, `-packonly` so `config.cpp` and the
-`functions\*.sqf` stay readable), puts the DLL next to `mod.cpp`, bundles that mod folder into
-`vscode-runtime/` inside the VSIX, compiles the TypeScript and packages
-`arma3-sqf-reloader-<version>.vsix`.
-
-The sources in `SqfReloaderExtension\@SqfReloader` are already laid out exactly like the shipped
-mod (`mod.cpp`, `logo.paa`, `addons\scripts\`), so `dist\@SqfReloader` is that tree plus the
-packed PBO and the DLL.
-
-**Version handling**
-
-| Invocation | Behavior |
-| --- | --- |
-| `build-all.ps1 -Version "2.3.0"` | Writes 2.3.0 to `SqfReloaderExtension.csproj`, `src\BuildStamp.cs`, `CfgPatches` in `config.cpp` and `package.json`/`package-lock.json`, then builds exactly 2.3.0 (no patch bump). |
-| `build-all.ps1` (no `-Version`) | Rebuilds the version already on disk and **replaces** `arma3-sqf-reloader-<version>.vsix`; nothing is bumped. |
-
-`-Version` must be `major.minor.patch`. The DLL reports `src\BuildStamp.cs`, which is what
-`/api/status` returns, so it always matches the VSIX.
-
-`-NoPbo` ships the unpacked addon folder instead of `scripts.pbo` (debugging only);
-`-AddonBuilder <path>` points at a non-default `AddonBuilder.exe` (or set `%ARMA3_ADDONBUILDER%`).
-
-| Output | Path |
-| --- | --- |
-| Native extension | `SqfReloaderExtension\dist\@SqfReloader\SqfReloader_x64.dll` |
-| Packed addon | `SqfReloaderExtension\dist\@SqfReloader\addons\scripts.pbo` |
-| Mod + installer zip | `SqfReloaderExtension\dist\@SqfReloader`, `dist\SqfReloader-Setup.zip` |
-| VS Code extension | `arma3-sqf-reloader-<version>.vsix` (contains `vscode-runtime\mod\@SqfReloader`) |
-
-Switches: `-InstallVsCode` / `-InstallArma` (only one half), `-SkipVsce` (compile only),
-`-Clean` (rebuild the DLL from scratch and drop old `.vsix` files).
-`-InstallArma` additionally runs the standalone installer
-(`SqfReloaderExtension\tools\install.ps1`), which is only needed if you want to play without the
-VS Code extension.
-
-## 8. Troubleshooting
-
-**`Arma 3 was not found` / `arma3_x64.exe not found`**
-Set `sqfReloader.armaDirectory` to the folder that contains `arma3_x64.exe` (Steam: *Manage >
-Browse local files*).
-
-**Arma starts but the status bar stays grey**
-Look at *SqfReloader: Show output*: the launch line shows the exact command line. Check that
-`@SqfReloader` is listed in the game's *Expansions* and that the Arma `.rpt` log
-(`%LOCALAPPDATA%\Arma 3\arma3_x64_*.rpt`) contains `SqfReloader`. The API only starts when the
-Eden Editor display is created, so open a mission in Eden (or press Play) at least once.
-
-**`CallExtension 'SqfReloader' could not be found`**
-`SqfReloader_x64.dll` must be in the mod root (`<Arma 3>\@SqfReloader\SqfReloader_x64.dll`) or
-next to `arma3_x64.exe`. A `dll\` subfolder is **not** searched by Arma. Re-run **Play** so the
-extension redeploys the file.
-
-**`SqfReloader is not listening on http://127.0.0.1:8765/api`**
-The game runs, but the API did not start: launch through **SqfReloader: Play**, or start it
-manually once per session with `[] call SqfReloader_fnc_apiStart;`. `SqfReloader_fnc_diagnose`
-prints one line per possible problem.
-
-**No `Play` possible (e.g. a launcher you cannot bypass)**
-Add `-filePatching -mod="<Arma 3>\@SqfReloader" -noBattlEye` to the Steam launch options and
-start the game normally; `@SqfReloader` starts the API from its `Cfg3DEN` init, so everything else
-(hot reload, junctions) keeps working.
-
-**`example_fnc_hello` is undefined in the example mod**
-The function comes from `CfgFunctions`, so the mission must be started *with* `@ExampleMod`
-(use **Play**, or enable it in *Expansions*). In the debug console
-`[] call example_fnc_add;` is the quickest sanity check - it needs no dialog.
-
-**A reload is queued but the game keeps running old code**
-The path Arma compiles is `<Arma 3>\z\<tag>\addons\<addon>\...`. Check with *SqfReloader: Show
-output* that the file is linked to your working copy, and that Arma sees the same prefix:
-`"\z\<tag>\addons\<addon>\functions\fn_x.sqf"` must return `true` in `fileExists`.
-
-**"already exists and points to a real folder"**
-Something else already occupies that path (an installed PBO folder). Remove or rename it,
-then run *SqfReloader: Set up this mod* again.
-
-**Editing SqfReloader's own SQF**
-The sources live in `SqfReloaderExtension\@SqfReloader\addons\scripts`. Edit them there (or use the
-**Create example mod** template for your own mods) and rebuild with `build-all.ps1`; the shipped
-`@SqfReloader` only contains `scripts.pbo`, so there is no unpacked copy to edit at runtime.
-
-**Logs**
-Extension log: *SqfReloader: Show output*; file log: `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log`.
-
-## 9. Developing the extension
-
-```powershell
-npm install
-npm run compile          # or: npm run watch
-# F5 in VS Code runs "Run Extension" (Extension Development Host)
-npm run package          # vsix
-node scripts\verify-template.js      # example mod template + mod discovery
-node scripts\verify-tags.js          # $PBOPREFIX$ -> function tag rule
-node scripts\verify-reloader.js      # file-patching config + reloader scripts
-node scripts\verify-launch-args.js --workspace <modFolder> [--arma <armaFolder>]
-                                     # deploys the runtime + junctions, prints the command line
-node scripts\verify-extension.js <modFolder> <armaFolder>   # logic test against a live API
-```
-
-`ARMA_API_TEST_OUTPUT=<file>` makes the extension run one command shortly after activation
-(`ARMA_API_TEST_TEMPLATE=1` for **Create example mod**, otherwise `Play`) and mirror its log
-into that file, which is how the launcher and the template are verified without UI
-automation.
-
-Repository layout:
-
-```text
-src/                     VS Code extension (TypeScript)
-  extension.ts           activation, commands, save handler, status bar
-  scaffold.ts            "Create example mod" template writer
-  runtime.ts             bundled DLL/mod deployment, junctions, config
-  reloader.ts            file-patching config + reloader.sqf generation
-  launcher.ts            Play/Stop: start arma3_x64.exe, wait for the REST API
-  arma.ts                Arma install + mod/$PBOPREFIX$ discovery
-  junctions.ts           junction creation, registry, cleanup
-  reload.ts              reload strategies (reload / recompile / eval fallback)
-  api.ts                 SqfReloader REST client
-  settings.ts            settings + output channel
-vscode-runtime/          DLL + @SqfReloader copied into the VSIX by build-all.ps1 (generated)
-SqfReloaderExtension/        native extension + Arma mod (C#, SQF, build/test tools)
-build-all.ps1            builds DLL, mod and VSIX
-scripts/                 verification helpers
-```
+The build creates the native extension, packages the SqfReloader Arma mod, compiles the VS Code
+extension, and produces a `.vsix`. Add `-Install` to install the VS Code extension after the
+build. See `build-all.ps1` for additional options.
