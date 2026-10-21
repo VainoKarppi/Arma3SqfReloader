@@ -5,7 +5,7 @@ import { findMods, Mod } from "./arma";
 import { log, readSettings } from "./settings";
 import { startupScript } from "./runtime";
 
-/** Tag of the generated example mod; drives the PBO prefix and the function names. */
+/** Tag of the generated example mod; drives the SqfReloader runtime path and function names. */
 export const TEMPLATE_TAG = "example";
 export const TEMPLATE_MOD_NAME = "@ExampleMod";
 
@@ -118,8 +118,8 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
         files.push(file);
     };
 
-    // No $PBOPREFIX$ file: the prefix is derived from the layout (example\addons\example) and
-    // written automatically on Play, so the template stays free of bookkeeping files.
+    // No $PBOPREFIX$ file: SqfReloader derives its runtime path from the layout and CfgFunctions,
+    // leaving the template free of packaging metadata and bookkeeping files.
     write(path.join(modDirectory, "mod.cpp"), modCpp());
     write(path.join(addonDirectory, "config.cpp"), configCpp());
 

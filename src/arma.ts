@@ -3,13 +3,13 @@ import * as fs from "fs";
 import * as path from "path";
 import { Settings, log } from "./settings";
 
-/** A folder that Arma mounts, described by its $PBOPREFIX$. */
+/** A source addon folder mounted by SqfReloader at its derived runtime path. */
 export interface Addon {
-    /** Folder that contains $PBOPREFIX$ (e.g. ...\MyMod\addons\core). */
+    /** Folder containing config.cpp and/or functions (e.g. ...\MyMod\addons\core). */
     localDirectory: string;
     /**
-     * Mount prefix written to $PBOPREFIX$. Play always writes `z\<tag>\addons\<addon>`, with
-     * the tag read from CfgFunctions (so the addon is mounted as `\z\<tag>\addons\<addon>`).
+     * SqfReloader runtime mount path `z\<tag>\addons\<addon>`, derived from CfgFunctions.
+     * This is independent of the developer's PBO prefix file, which is never modified.
      */
     prefix: string;
     /**
@@ -195,8 +195,8 @@ export function findMods(root: string): Mod[] {
         }
     }
 
-    // A workspace can also open a single addon folder (contains $PBOPREFIX$).
-    if (result.length === 0 && fs.existsSync(path.join(root, "$PBOPREFIX$"))) {
+    // A workspace can also open a single addon folder directly; no $PBOPREFIX$ is required.
+    if (result.length === 0) {
         const addon = readAddon(root);
 
         if (addon) {
@@ -217,22 +217,18 @@ export function looksLikeMod(directory: string): boolean {
     return fs.existsSync(path.join(directory, "addons"))
         || fs.existsSync(path.join(directory, "config.cpp"))
         || fs.existsSync(path.join(directory, "mod.cpp"))
-        || fs.existsSync(path.join(directory, "$PBOPREFIX$"));
+        || fs.existsSync(path.join(directory, "functions"));
 }
 
 /**
- * True when the folder is an addon rather than a mod: it has a $PBOPREFIX$, or it has a
- * config.cpp but no addons\ folder and is not a mod root (mod.cpp).
+ * True when the folder is an addon rather than a mod: it has source files but no addons\ folder
+ * and is not a mod root (mod.cpp).
  */
 function isAddonFolder(directory: string): boolean {
-    if (fs.existsSync(path.join(directory, "$PBOPREFIX$"))) {
-        return true;
-    }
-
-    // A folder with only a config.cpp (and no addons\) is an addon, not a mod.
+    // A source folder with no addons\ is an addon, not a mod.
     return !fs.existsSync(path.join(directory, "addons"))
         && !fs.existsSync(path.join(directory, "mod.cpp"))
-        && fs.existsSync(path.join(directory, "config.cpp"));
+        && (fs.existsSync(path.join(directory, "config.cpp")) || fs.existsSync(path.join(directory, "functions")));
 }
 
 /**
@@ -350,7 +346,8 @@ function describeMod(directory: string): Mod {
  *              reloads as `<tag>_fnc_<name>`), falling back to the folder name, and
  *  * <addon>  is the folder name below `addons\` (or "main" for a loose folder).
  *
- * The $PBOPREFIX$ file is optional for reading; Play rewrites it before every launch.
+ * `$PBOPREFIX$` is deliberately neither read nor written. Its contents belong to the developer's
+ * packaging and manual-launch setup; SqfReloader mounts sources separately under Arma's z\ tree.
  */
 export function readAddon(directory: string): Addon | undefined {
     const hasSources = fs.existsSync(path.join(directory, "config.cpp"))
@@ -476,10 +473,8 @@ export function normalizePrefix(value: string): string {
 /**
  * Arma path a script is mounted at, e.g. z\tag\addons\example\functions\fn_thing.sqf.
  *
- * The addon's own prefix is authoritative: it is what $PBOPREFIX$ declares and what the
- * junction in the Arma folder is created from. Deriving the path from the @Mod folder name
- * (z\@ExampleMod\...) produced a path that only existed in CfgFunctions, so the reloader
- * compiled "<empty>" (the debug console showed {}).
+ * The addon's runtime path is derived from its CfgFunctions tag and the extension-created
+ * junction in Arma's z\ tree. The developer's PBO prefix remains untouched.
  *
  * No leading backslash, like `addon.prefix` and `addonLinkPath()`: the SQF side accepts
  * both, but one convention keeps the logs and verifiers readable.
@@ -507,7 +502,7 @@ export function toArmaPath(addon: Addon, filePath: string): string {
  *
  * fn_hello.sqf in @ExampleMod\addons\example -> \example\addons\example\fn_hello.sqf and
  * \z\example\addons\example\fn_hello.sqf etc. Used to answer "can Arma see this file?" even
- * when the addon is mounted from a different root than its $PBOPREFIX$.
+ * when the addon is mounted from a different root than its configured PBO prefix.
  */
 export function armaPathCandidates(addon: Addon, filePath: string): string[] {
     const relative = path.relative(addon.localDirectory, filePath).replace(/[\/\\]+/g, "\\");
@@ -542,7 +537,7 @@ export function toFunctionVariable(addon: Addon, filePath: string): string | und
     return `${addon.tag}_fnc_${functionName}`;
 }
 
-/** Finds the addon that owns a file (the deepest $PBOPREFIX$ above it). */
+/** Finds the source addon that owns a file (the deepest folder with config.cpp/functions). */
 export function findAddonForFile(filePath: string): Addon | undefined {
     let directory = path.dirname(filePath);
 

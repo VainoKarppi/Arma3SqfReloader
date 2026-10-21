@@ -57,8 +57,10 @@ The example includes `@ExampleMod`, an addon with three functions, and an option
 
 ## Use your own mod
 
-Open the mod folder or a workspace containing it. The addon needs a `$PBOPREFIX$` or a
-`CfgFunctions` tag so the extension can map SQF files to Arma paths and function names. Run
+Open the mod folder or a workspace containing it. No `$PBOPREFIX$` file is required, and the
+extension never creates or changes one. It derives function names from `CfgFunctions` and mounts
+the source addon under its own `z\<tag>\addons\<addon>` path for live reloads. Your existing
+prefix remains available for normal PBO builds and loading the mod manually. Run
 **SqfReloader: Play** to set up links and start Arma with your mod.
 
 On launch, the extension keeps checking for SqfReloader. When the game callback is ready, it

@@ -107,6 +107,14 @@ const runtime = {
     modDirectory: path.join(runtimeRoot, "mod", "@SqfReloader")
 };
 
+const prefixesBeforeLaunch = new Map();
+for (const mod of mods) {
+    for (const addon of mod.addons) {
+        const file = path.join(addon.localDirectory, "$PBOPREFIX$");
+        prefixesBeforeLaunch.set(file, fs.existsSync(file) ? fs.readFileSync(file) : undefined);
+    }
+}
+
 const launch = prepareRuntime(runtime, armaDirectory, settings, mods);
 const modFolder = bundledModFolder(armaDirectory);
 
@@ -130,7 +138,12 @@ for (const mod of mods) {
 
         check(`${addon.prefix} linked into the Arma folder`, resolvedPath(linkPath) === resolvedPath(addon.localDirectory), linkPath);
         check(`the link is below the z\\ mount root (not the Arma root)`, linkPath.toLowerCase().includes(`\\z\\`), linkPath);
-        check(`$PBOPREFIX$ exists (generated on Play)`, fs.existsSync(path.join(addon.localDirectory, "$PBOPREFIX$")), addon.localDirectory);
+        const prefixFile = path.join(addon.localDirectory, "$PBOPREFIX$");
+        const prefixBefore = prefixesBeforeLaunch.get(prefixFile);
+        const prefixAfter = fs.existsSync(prefixFile) ? fs.readFileSync(prefixFile) : undefined;
+        check(`developer $PBOPREFIX$ is left unchanged`, prefixBefore === undefined
+            ? prefixAfter === undefined
+            : prefixAfter !== undefined && prefixBefore.equals(prefixAfter), prefixFile);
         check(`scripts visible through the link (${addon.prefix})`, fs.existsSync(path.join(linkPath, "functions")) || fs.existsSync(path.join(linkPath, "config.cpp")));
     }
 

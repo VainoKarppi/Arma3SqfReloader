@@ -173,7 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const result = await scaffoldExample();
 
         if (result) {
-            // Pick up the new $PBOPREFIX$ right away (and create the junctions eagerly).
+            // Discover the new addon sources right away and create the runtime links eagerly.
             await ensureJunctions(readSettings());
             await refreshStatus();
         }

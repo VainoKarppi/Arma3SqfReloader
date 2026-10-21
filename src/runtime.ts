@@ -130,17 +130,11 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     }
 
     // --- 2. User mods -----------------------------------------------------
-    // The working copy has to be visible to Arma at a stable path. $PBOPREFIX$ folders are
-    // linked into z\... (or x\...) so -mod= can also point at the original mod folder.
+    // The working copy has to be visible to Arma at a stable path. Addons are linked into
+    // SqfReloader's z\... runtime tree; developer PBO-prefix files are left untouched.
     const modFolders: string[] = [];
 
     for (const mod of mods) {
-        // Every Play rewrites $PBOPREFIX$ from CfgFunctions (z\<tag>\addons\<addon>), so an
-        // outdated or hand-made file can never mount the addon at a different path.
-        for (const addon of mod.addons) {
-            writePrefixFile(addon);
-        }
-
         const open = openModFolder(armaDirectory, mod);
         if (!open) {
             continue;
@@ -202,39 +196,10 @@ export function modFolderName(mod: Mod): string {
 }
 
 /**
- * Writes the addon's $PBOPREFIX$ as `z\<tag>\addons\<addon>`, with the tag taken from the
- * addon's CfgFunctions block. Called on every Play, so an outdated file is replaced instead of
- * being trusted.
- */
-export function writePrefixFile(addon: Addon): string | undefined {
-    const file = path.join(addon.localDirectory, "$PBOPREFIX$");
-
-    try {
-        const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
-
-        if (current === addon.prefix) {
-            return file;
-        }
-
-        fs.writeFileSync(file, addon.prefix, "utf8");
-        log(`${current === undefined ? "Created" : "Updated"} ${file} (${addon.prefix})`);
-        return file;
-    } catch (error) {
-        log(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
-    }
-}
-
-/** Backwards-compatible alias: writes the prefix only when the file is missing. */
-export function ensurePrefixFile(addon: Addon): string | undefined {
-    return writePrefixFile(addon);
-}
-
-/**
  * Folder where the user's mod is handed to Arma (-mod=).
  *
  * A bare addon folder (`addons\example`, or a prefix without a mount root) must never be
- * linked at its $PBOPREFIX$ path - that used to produce `<Arma 3>\example\addons\example`,
+ * linked at its source prefix path - that used to produce `<Arma 3>\example\addons\example`,
  * which Arma does not mount. Instead a real @Mod folder is created next to the bundled mod:
  *
  *   <Arma 3>\@ExampleMod\mod.cpp       generated (name = "ExampleMod")
@@ -267,11 +232,6 @@ function openModFolder(armaDirectory: string, mod: Mod): string | undefined {
         }
 
         for (const addon of mod.addons) {
-            // The user does not have to create $PBOPREFIX$: the addon is linked by its folder
-            // name and the file is written from the workspace layout so Arma mounts it the way
-            // the reloader expects.
-            ensurePrefixFile(addon);
-
             const linkPath = path.join(addonsFolder, path.basename(addon.localDirectory));
             linkDirectory(linkPath, addon.localDirectory, []);
         }
@@ -367,7 +327,7 @@ export function workspaceMods(): Mod[] {
     return mods.filter(mod => mod.addons.length > 0 || mod.hasModFiles);
 }
 
-/** Addons of the workspace mods (used by the reloader for $PBOPREFIX$ lookups). */
+/** Addons of the workspace mods, discovered from config.cpp/functions source folders. */
 export function workspaceAddons(): Addon[] {
     return workspaceMods().flatMap(mod => mod.addons);
 }
@@ -375,8 +335,8 @@ export function workspaceAddons(): Addon[] {
 /**
  * Writes %LOCALAPPDATA%\SqfReloader\config.json so the DLL uses the configured port.
  *
- * `pboPrefixes` lists the workspace addons: the SQF reloader needs them because a function tag
- * and its addon folder are not always the same name (tag "example" in "@ExampleMod\addons\example").
+ * `pboPrefixes` is a legacy API field containing SqfReloader's derived z\ runtime paths, not
+ * developer `$PBOPREFIX$` values. The API uses these paths to map function tags to addons.
  */
 export function writeApiConfig(settings: Settings): string {
     const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
@@ -436,8 +396,7 @@ export function startupScript(): string {
 }
 
 /**
- * Validates that Arma can see the user's scripts: the $PBOPREFIX$ folder must resolve inside
- * the Arma folder to the working copy.
+ * Validates that Arma can see the user's scripts through SqfReloader's z\ runtime links.
  */
 export function verifyWorkspaceAddons(armaDirectory: string, addons: Addon[]): string[] {
     const warnings: string[] = [];

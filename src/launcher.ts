@@ -4,7 +4,7 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { findArmaDirectory, findMissions, pickArmaDirectory, toArmaPath } from "./arma";
 import { log, logError, readSettings, Settings, updateSetting } from "./settings";
-import { PreparedLaunch, ensurePrefixFile, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
+import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
 import { cleanupSnapshots } from "./reload";
 
@@ -62,12 +62,6 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     }
 
     try {
-        // Play is the one step that makes a mod playable: it writes missing $PBOPREFIX$ files
-        // and then the config (which lists those prefixes for the SQF reloader).
-        for (const addon of workspaceAddons()) {
-            ensurePrefixFile(addon);
-        }
-
         writeApiConfig(settings);
 
         const mods = workspaceMods();
@@ -361,7 +355,7 @@ export function ensureAddonLinks(armaDirectory: string, settings: Settings): str
     const addons = workspaceAddons();
 
     if (mods.length === 0) {
-        return ["No mod found in this workspace (expected a folder with addons/ and $PBOPREFIX$)."];
+        return ["No mod addons found in this workspace. Add an addon folder with config.cpp or functions/."];
     }
 
     const { warnings } = createLinks(armaDirectory, mods, settings.junctionMode);

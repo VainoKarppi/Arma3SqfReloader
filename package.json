@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "2.9.77",
+  "version": "2.9.80",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     "onStartupFinished",
     "onCommand:sqfReloader.createExample",
     "workspaceContains:**/*.sqf",
-    "workspaceContains:**/$PBOPREFIX$"
+    "workspaceContains:**/addons/**"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -132,7 +132,7 @@
             "module"
           ],
           "enumDescriptions": [
-            "Link each PBO prefix (folder with $PBOPREFIX$) into <arma>\\z\\<tag>\\addons\\<name>. Works even when the mod folder lives anywhere.",
+            "Link each detected addon source folder into <arma>\\z\\<tag>\\addons\\<name>. The developer's $PBOPREFIX$ is left untouched.",
             "Link the whole mod folder (@Mod) into <arma>\\<@Mod>. Closest to the normal -mod= layout."
           ],
           "default": "addon",

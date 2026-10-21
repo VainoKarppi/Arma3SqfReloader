@@ -76,7 +76,7 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     const addon = findAddonForFile(document.fileName);
 
     if (!addon) {
-        const message = `${path.basename(document.fileName)} is not inside a folder with $PBOPREFIX$, so Arma cannot load it. Use "SqfReloader: Set up this mod" first.`;
+        const message = `${path.basename(document.fileName)} is not inside a recognized addon source folder (config.cpp or functions/). Use "SqfReloader: Set up this mod" first.`;
         log(message);
         notify(settings, message);
         return { ok: false, message };
@@ -382,7 +382,7 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     const addon = findAddonForFile(document.fileName);
 
     if (!addon) {
-        return { ok: false, message: "The file is not inside a mod addon ($PBOPREFIX$ not found)." };
+        return { ok: false, message: "The file is not inside a recognized mod addon (config.cpp or functions/ not found)." };
     }
 
     const variable = toFunctionVariable(addon, document.fileName);

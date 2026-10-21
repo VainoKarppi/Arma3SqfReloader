@@ -40,7 +40,7 @@ export async function setupMod(mod: Mod, settings: Settings, silent = false): Pr
     }
 
     if (mod.addons.length === 0) {
-        const warning = `${mod.directory} has no folder with $PBOPREFIX$, so there is nothing to link.`;
+        const warning = `${mod.directory} has no addon source folder with config.cpp or functions/, so there is nothing to link.`;
         log(warning);
 
         if (!silent) {
@@ -202,7 +202,7 @@ export async function ensureJunctions(settings: Settings): Promise<void> {
     const linkable = mods.filter(mod => mod.addons.length > 0);
 
     if (linkable.length === 0) {
-        log("No mod with $PBOPREFIX$ in the workspace; junctions were not created.");
+        log("No addon source folders with config.cpp or functions/ were found; junctions were not created.");
         return;
     }
 
@@ -226,5 +226,5 @@ export function describeAddons(addons: Addon[]): string {
 }
 
 export function addonExists(directory: string): boolean {
-    return fs.existsSync(path.join(directory, "$PBOPREFIX$"));
+    return fs.existsSync(path.join(directory, "config.cpp")) || fs.existsSync(path.join(directory, "functions"));
 }
