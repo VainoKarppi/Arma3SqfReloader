@@ -10,7 +10,7 @@ namespace SqfReloader;
 /// writes this file so the API binds to the right port without touching SQF.
 /// </summary>
 internal sealed class ApiConfig {
-    public const int DefaultPort = 8765;
+    public const int DefaultPort = 8764;
     public const string DefaultHost = "127.0.0.1";
 
     public string Host { get; init; } = DefaultHost;

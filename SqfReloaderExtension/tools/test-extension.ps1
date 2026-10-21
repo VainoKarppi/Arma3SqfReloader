@@ -45,7 +45,7 @@ param(
     [switch]$KeepRunning,
     [switch]$NoBuild,
     [switch]$Reinstall,
-    [int]$Port = 8765
+    [int]$Port = 8764
 )
 
 $ErrorActionPreference = "Stop"

@@ -2,7 +2,7 @@
     // Recommended workspace settings for developing this repository.
     // When a user opens *their* mod folder, the extension settings below are what matter.
     "sqfReloader.enabled": true,
-    "sqfReloader.apiUrl": "http://127.0.0.1:8765/api",
+    "sqfReloader.apiUrl": "http://127.0.0.1:8764/api",
     "sqfReloader.autoJunction": true,
     "sqfReloader.junctionMode": "addon",
     "sqfReloader.reloadOnSave": "reload",

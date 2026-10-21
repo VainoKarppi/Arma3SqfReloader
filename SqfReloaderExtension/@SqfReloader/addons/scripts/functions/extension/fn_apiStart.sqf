@@ -1,6 +1,6 @@
 // SqfReloader_fnc_apiStart
 // Starts the REST API. Synchronous, so the port is bound when this returns.
-//   [] call SqfReloader_fnc_apiStart;          // port/host from %LOCALAPPDATA%\SqfReloader\config.json (default 127.0.0.1:8765)
+//   [] call SqfReloader_fnc_apiStart;          // port/host from %LOCALAPPDATA%\SqfReloader\config.json (default 127.0.0.1:8764)
 //   [9000, "127.0.0.1"] call SqfReloader_fnc_apiStart;
 // Returns the extension message ("REST API listening on http://...") or "" on failure.
 

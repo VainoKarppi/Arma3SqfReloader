@@ -55,8 +55,51 @@ internal static class RestApiServer {
             if (!string.IsNullOrEmpty(config.SourceDirectory) && System.IO.Directory.Exists(config.SourceDirectory))
                 ReloadPlugin.SourceDirectory = config.SourceDirectory;
 
+            if (!CanBind(config.Host, config.Port, out string reason)) {
+                ArmaLog.Error($"API port {config.Host}:{config.Port} is already taken ({reason}); trying the next free port.");
+                int fallback = FindFreePort(config.Host, config.Port);
+                ArmaLog.Error($"API fallback: using {config.Host}:{fallback}. Update sqfReloader.apiUrl in VS Code (or SqfReloader_fnc_apiStart {fallback}) to reach it.");
+                return StartCore(config.Host, fallback);
+            }
+
             return StartCore(config.Host, config.Port);
         }
+    }
+
+    /// <summary>
+    /// HttpListener binds the whole prefix, so two extensions listening on 127.0.0.1:8764 are
+    /// mutually exclusive. Probing first keeps the error understandable: otherwise Windows only
+    /// answers "conflicts with an existing registration on the machine".
+    /// </summary>
+    private static bool CanBind(string host, int port, out string reason) {
+        try {
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://{host}:{port}/");
+            listener.Start();
+            listener.Stop();
+            listener.Close();
+            reason = string.Empty;
+            return true;
+        } catch (Exception ex) {
+            reason = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>First free port at or above <paramref name="preferred"/> (40 ports are tried).</summary>
+    private static int FindFreePort(string host, int preferred) {
+        for (int offset = 1; offset <= 40; offset++) {
+            int candidate = preferred + offset;
+            if (candidate > 65535) break;
+            if (CanBind(host, candidate, out _)) return candidate;
+        }
+
+        // Everything above is taken: try below as a last resort.
+        for (int candidate = preferred - 1; candidate >= 1024; candidate--) {
+            if (CanBind(host, candidate, out _)) return candidate;
+        }
+
+        return preferred;
     }
 
     public static string Start(int port, string host = "127.0.0.1") {
@@ -79,10 +122,38 @@ internal static class RestApiServer {
             _ = Task.Run(() => AcceptLoop(listener, _cts.Token));
 
             ArmaLog.Log($"REST API listening on {Url}");
+            if (port != DefaultListeningPort())
+                PublishPort(port);
+
             return $"REST API listening on {Url}";
         } catch (Exception ex) {
             ArmaLog.Error($"Could not start REST API on {host}:{port}: {ex.Message}");
             return $"Failed to start REST API on {host}:{port}: {ex.Message}";
+        }
+    }
+
+    private static int DefaultListeningPort() => ApiConfig.Load().Port;
+
+    /// <summary>
+    /// When the fallback port is used, write it back to config.json so the next launch and the
+    /// VS Code extension agree on it without anyone editing a setting by hand.
+    /// </summary>
+    private static void PublishPort(int port) {
+        try {
+            ApiConfig current = ApiConfig.Load();
+            if (current.Port == port) return;
+
+            new ApiConfig {
+                Host = current.Host,
+                Port = port,
+                AutoStart = current.AutoStart,
+                SourceDirectory = current.SourceDirectory,
+                PboPrefixes = current.PboPrefixes,
+                WorkspaceFunctions = current.WorkspaceFunctions
+            }.Save();
+            ArmaLog.Warning($"SqfReloader config.json now points at the fallback port {port}. Set sqfReloader.apiUrl to http://{Host}:{port}/api in VS Code to use it.");
+        } catch (Exception ex) {
+            ArmaLog.Warning($"Could not persist the REST API port {port}: {ex.Message}");
         }
     }
 

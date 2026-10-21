@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon, toArmaPath, toFunctionVariable } from "./arma";
 import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
+import { DEFAULT_HOST, DEFAULT_PORT, findFreePort } from "./ports";
 import { log, logError, readSettings, Settings } from "./settings";
 import { ArmaProfileSelection, selectArmaProfile } from "./profile";
 
@@ -23,6 +24,14 @@ import { ArmaProfileSelection, selectArmaProfile } from "./profile";
  *
  * Nothing else is generated into the folder - Arma reads all SQF from scripts.pbo.
  */
+/** Port SqfReloader answered on during this VS Code session (from config.json/last launch). */
+let activePort: number | undefined;
+
+/** Port the last written API config used, or undefined before the first launch/setup. */
+export function currentApiPort(): number | undefined {
+    return activePort;
+}
+
 export interface Runtime {
     /** Absolute path of the bundled @SqfReloader mod. */
     modDirectory: string;
@@ -337,12 +346,28 @@ export function workspaceAddons(): Addon[] {
  *
  * `pboPrefixes` is a legacy API field containing SqfReloader's derived z\ runtime paths, not
  * developer `$PBOPREFIX$` values. The API uses these paths to map function tags to addons.
+ *
+ * When the preferred port is taken - 8764 is also used by other Arma tooling such as
+ * EdenOnline, and Windows then refuses the HttpListener prefix with "conflicts with an
+ * existing registration on the machine" - the first free port is written instead. The chosen
+ * port is also exposed through {@link currentApiPort} so every request targets the same one.
+ *
+ * `probe` skips the check while Arma is running: the game itself holds the port then.
  */
-export function writeApiConfig(settings: Settings): string {
+export async function writeApiConfig(settings: Settings, probe = true): Promise<number> {
     const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
     fs.mkdirSync(directory, { recursive: true });
 
     const url = new URL(settings.apiUrl);
+    const host = url.hostname || DEFAULT_HOST;
+    const preferredPort = url.port ? Number(url.port) : DEFAULT_PORT;
+    const port = probe ? await findFreePort(preferredPort, host) : (activePort ?? preferredPort);
+
+    if (probe && port !== preferredPort) {
+        log(`Port ${preferredPort} is already in use (another Arma tool or a previous SqfReloader run); using ${port}.`);
+    }
+
+    activePort = port;
     const file = path.join(directory, "config.json");
     const addons = workspaceAddons();
     const pboPrefixes = addons.map(addon => addon.prefix.replace(/\\/g, "/"));
@@ -374,16 +399,16 @@ export function writeApiConfig(settings: Settings): string {
     }
 
     fs.writeFileSync(file, JSON.stringify({
-        host: url.hostname || "127.0.0.1",
-        port: url.port ? Number(url.port) : 8765,
+        host,
+        port,
         autoStart: true,
         sourceDirectory: "",
         pboPrefixes,
         workspaceFunctions
     }, null, 2), "utf8");
 
-    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765}); addons: ${pboPrefixes.join(", ") || "none"}; functions: ${workspaceFunctions.length}`);
-    return file;
+    log(`SqfReloader config written: ${file} (${host}:${port}); addons: ${pboPrefixes.join(", ") || "none"}; functions: ${workspaceFunctions.length}`);
+    return port;
 }
 
 /**

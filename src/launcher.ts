@@ -7,6 +7,12 @@ import { getOutput, log, logError, readSettings, Settings, updateSetting } from 
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
 import { cleanupSnapshots } from "./reload";
+import { parseApiUrl } from "./ports";
+
+/** Port the configured sqfReloader.apiUrl asks for, before any fallback is applied. */
+function requestedApiPort(settings: Settings): number {
+    return parseApiUrl(vscode.workspace.getConfiguration("sqfReloader").get<string>("apiUrl", "") || settings.apiUrl).port;
+}
 
 export interface LaunchOptions {
     /** Extra launch parameters, e.g. "-window -noSplash". */
@@ -64,7 +70,9 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     }
 
     try {
-        writeApiConfig(settings);
+        // Probe before starting the game: once Arma runs, its own listener owns the port, so a
+        // busy 8764 (EdenOnline, an older SqfReloader instance) has to be detected up front.
+        const port = await writeApiConfig(settings, true);
 
         const mods = workspaceMods();
         const launch = prepareRuntime(runtime, armaDirectory, settings, mods);
@@ -84,6 +92,10 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
 
         log(`-mod= entries: ${launch.mods.join(" ; ")}`);
 
+        if (port !== requestedApiPort(settings)) {
+            vscode.window.setStatusBarMessage(`SqfReloader API moved to port ${port} (${requestedApiPort(settings)} is in use).`, 8000);
+        }
+
         startProcess(launch, settings, options);
 
         return true;
@@ -99,8 +111,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
  * Folder Arma writes its .rpt logs to: <c>%LOCALAPPDATA%\Arma 3</c> (single player profile).
  * Resolved at runtime because the output channel does not expand environment variables.
  */
-export function armaLogDirectory(): string {
-    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(require("os").homedir(), "AppData", "Local");
+export function armaLogDirectory(): string {    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(require("os").homedir(), "AppData", "Local");
 
     return path.join(localAppData, "Arma 3");
 }

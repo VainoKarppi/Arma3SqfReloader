@@ -97,7 +97,7 @@ example project.
 | --- | --- |
 | `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection. |
 | `sqfReloader.enabled` | Enable or disable reload on save. |
-| `sqfReloader.apiUrl` | SqfReloader API address. Default: `http://127.0.0.1:8765/api`. |
+| `sqfReloader.apiUrl` | SqfReloader API address. Default: `http://127.0.0.1:8764/api`. |
 | `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
 | `sqfReloader.junctionMode` | Link per addon (`addon`) or per mod (`module`). |
 

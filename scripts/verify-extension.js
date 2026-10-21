@@ -30,7 +30,7 @@ const file = path.join(modFolder, "addons", "core", "functions", "fn_hello.sqf")
 function settings() {
     return {
         enabled: true,
-        apiUrl: "http://127.0.0.1:8765/api",
+        apiUrl: "http://127.0.0.1:8764/api",
         armaDirectory: armaFolder,
         requestTimeout: 3000,
         autoJunction: false,

@@ -20,7 +20,7 @@ EdenOnline's scripts (extension call -> callback -> dispatch), it shares no code
 | GET | `/api/status` | - |
 | GET | `/api/functions` | - |
 
-Default endpoint: `http://127.0.0.1:8765/api/` (config: `%LOCALAPPDATA%\SqfReloader\config.json`).
+Default endpoint: `http://127.0.0.1:8764/api/` (config: `%LOCALAPPDATA%\SqfReloader\config.json`).
 
 ## Quick start
 
@@ -33,8 +33,8 @@ Default endpoint: `http://127.0.0.1:8765/api/` (config: `%LOCALAPPDATA%\SqfReloa
    `[] call SqfReloader_fnc_apiStart;` from a script.
 
 ```powershell
-curl.exe -s http://127.0.0.1:8765/api/status
-curl.exe -s -X POST http://127.0.0.1:8765/api/eval -H "Content-Type: application/json" -d "{\"code\":\"systemChat 'from REST'\"}"
+curl.exe -s http://127.0.0.1:8764/api/status
+curl.exe -s -X POST http://127.0.0.1:8764/api/eval -H "Content-Type: application/json" -d "{\"code\":\"systemChat 'from REST'\"}"
 ```
 
 ## Layout
@@ -72,7 +72,7 @@ SqfReloaderExtension/
 ## Installer options
 
 ```text
-tools\install.ps1 [-ArmaDir <path>] [-ModsDir <path>] [-Port 8765] [-HostName 127.0.0.1]
+tools\install.ps1 [-ArmaDir <path>] [-ModsDir <path>] [-Port 8764] [-HostName 127.0.0.1]
                   [-SkipLaunchOptions] [-NoBuild] [-Release] [-AddonBuilder <path>] [-NoVersionBump]
 ```
 
@@ -135,7 +135,7 @@ allowlist in `CfgPatches`.
 or push single functions through the API:
 
 ```powershell
-curl.exe -s -X POST http://127.0.0.1:8765/api/reload -H "Content-Type: application/json" -d "{\"functions\":[\"MyTag_fnc_one\"]}"
+curl.exe -s -X POST http://127.0.0.1:8764/api/reload -H "Content-Type: application/json" -d "{\"functions\":[\"MyTag_fnc_one\"]}"
 ```
 
 `TAG_fnc_name` is resolved in `\z\<tag>\addons\<tag>\source\fn_name.sqf`,
@@ -151,7 +151,7 @@ missionNamespace setVariable ["SqfReloader_var_handler_MyEvent", { params ["_a"]
 ```
 
 ```powershell
-curl.exe -s -X POST http://127.0.0.1:8765/api/send -H "Content-Type: application/json" -d "{\"function\":\"MyEvent\",\"data\":[1,\"two\",[3,4],true,nil]}"
+curl.exe -s -X POST http://127.0.0.1:8764/api/send -H "Content-Type: application/json" -d "{\"function\":\"MyEvent\",\"data\":[1,\"two\",[3,4],true,nil]}"
 ```
 
 ## Protocol notes

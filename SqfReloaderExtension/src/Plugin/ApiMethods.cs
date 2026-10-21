@@ -24,7 +24,7 @@ internal static class ApiMethods {
 
     /// <summary>Starts the REST API synchronously so SQF knows the real outcome.</summary>
     [ArmaMethod]
-    public static string ApiStart(double port = 8765, string host = "127.0.0.1") =>
+    public static string ApiStart(double port = 8764, string host = "127.0.0.1") =>
         RestApiServer.Start((int)port, string.IsNullOrWhiteSpace(host) ? ApiConfig.DefaultHost : host);
 
     [ArmaMethod]

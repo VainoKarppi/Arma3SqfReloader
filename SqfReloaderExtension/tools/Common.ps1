@@ -618,7 +618,7 @@ function New-ModPackage {
 
 function Write-ApiConfig {
     param(
-        [int]$Port = 8765,
+        [int]$Port = 8764,
         [string]$HostName = "127.0.0.1",
         [string]$SourceDirectory = ""
     )

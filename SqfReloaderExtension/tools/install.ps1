@@ -18,7 +18,7 @@
     Folder that receives @SqfReloader. Defaults to the Arma 3 folder.
 
 .PARAMETER Port
-    REST API port written to the config (default 8765).
+    REST API port written to the config (default 8764).
 
 .PARAMETER HostName
     REST API bind address (default 127.0.0.1).
@@ -36,14 +36,14 @@
     powershell -ExecutionPolicy Bypass -File tools\install.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File tools\install.ps1 -ArmaDir "D:\SteamLibrary\steamapps\common\Arma 3" -Port 8765
+    powershell -ExecutionPolicy Bypass -File tools\install.ps1 -ArmaDir "D:\SteamLibrary\steamapps\common\Arma 3" -Port 8764
 #>
 
 [CmdletBinding()]
 param(
     [string]$ArmaDir,
     [string]$ModsDir,
-    [int]$Port = 8765,
+    [int]$Port = 8764,
     [string]$HostName = "127.0.0.1",
     [switch]$SkipLaunchOptions,
     [switch]$NoBuild,

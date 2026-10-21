@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { currentApiPort } from "./runtime";
 
 export type ReloadMode = "reload" | "recompile" | "off";
 export type JunctionMode = "addon" | "module";
@@ -28,7 +29,7 @@ export function readSettings(): Settings {
 
     return {
         enabled: config.get<boolean>("enabled", true),
-        apiUrl: trimSlash(config.get<string>("apiUrl", "http://127.0.0.1:8765/api")),
+        apiUrl: trimSlash(resolveApiUrl(config.get<string>("apiUrl", "http://127.0.0.1:8764/api"))),
         armaDirectory: config.get<string>("armaDirectory", "").trim(),
         armaProfile: config.get<string>("armaProfile", "").trim(),
         requestTimeout: Math.max(500, config.get<number>("requestTimeout", 3000)),
@@ -48,6 +49,33 @@ export async function updateSetting<T>(key: string, value: T, target = vscode.Co
 
 function trimSlash(value: string): string {
     return value.replace(/\/+$/, "");
+}
+
+/**
+ * Overrides the configured port with the port that was written to SqfReloader's config.json.
+ *
+ * Port 8764 is commonly taken by other Arma tools (EdenOnline, an earlier SqfReloader build),
+ * and the DLL then answers "Failed to listen ... conflicts with an existing registration on
+ * the machine". The launcher writes the resolved port back, so requests have to follow it.
+ */
+function resolveApiUrl(apiUrl: string): string {
+    const port = currentApiPort();
+
+    if (!port) {
+        return apiUrl;
+    }
+
+    try {
+        const url = new URL(apiUrl);
+        if (Number(url.port || 0) === port) {
+            return apiUrl;
+        }
+
+        url.port = String(port);
+        return url.toString();
+    } catch {
+        return apiUrl;
+    }
 }
 
 let channel: vscode.OutputChannel | undefined;
