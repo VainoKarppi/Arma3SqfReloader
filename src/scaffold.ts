@@ -77,10 +77,17 @@ export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<Sc
         log("No Arma 3 folder configured yet; it is detected or asked for on the first Play.");
     }
 
-    const choice = await vscode.window.showInformationMessage(
+    const readyNotification = vscode.window.showInformationMessage(
         `Example mod ready. Click Play to start Arma 3 with it.`,
         "Play Arma 3"
     );
+    const notificationTimeout = setTimeout(() => {
+        // VS Code's message API has no per-notification timeout. Closing the notification
+        // resolves the message promise with undefined if the user did not choose an action.
+        void vscode.commands.executeCommand("workbench.action.closeNotification");
+    }, 7_000);
+    const choice = await readyNotification;
+    clearTimeout(notificationTimeout);
 
     if (choice === "Play Arma 3") {
         void vscode.commands.executeCommand("sqfReloader.play");

@@ -95,10 +95,10 @@ export function activate(context: vscode.ExtensionContext): void {
         const started = await launchArma(runtime, settings);
 
         if (started) {
-            const injection = await registerWorkspaceFunctions(settings);
-            if (!injection.ok && injection.message !== "No workspace functions found.") {
-                log(`Workspace function injection failed: ${injection.message}`);
-            }
+            // Arma may take longer to initialize the SqfReloader API on later launches.
+            // Keep waiting for the game callback so functions are injected even when Eden
+            // is opened well after the launcher timeout.
+            void injectWorkspaceFunctionsWhenReady(settings);
             await refreshStatus();
         } else {
             await refreshStatus();
@@ -255,6 +255,36 @@ export function activate(context: vscode.ExtensionContext): void {
     describeWorkspace();
     installTestHook(context, playCommand);
     void refreshStatus();
+}
+
+async function injectWorkspaceFunctionsWhenReady(settings: Settings): Promise<void> {
+    let reportedWaiting = false;
+
+    while (isRunning()) {
+        try {
+            const status = await getStatus(settings);
+
+            if (status.gameConnected === true) {
+                const injection = await registerWorkspaceFunctions(settings);
+
+                if (injection.ok || injection.message === "No workspace functions found.") {
+                    return;
+                }
+
+                log(`Workspace function injection failed: ${injection.message}`);
+            } else if (!reportedWaiting) {
+                log("Initial workspace function injection is waiting for Arma's mission callback.");
+                reportedWaiting = true;
+            }
+        } catch {
+            if (!reportedWaiting) {
+                log("Initial workspace function injection is waiting for the SqfReloader API.");
+                reportedWaiting = true;
+            }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 }
 
 export function deactivate(): void {

@@ -315,7 +315,12 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
             const zRoot = path.resolve(armaDirectory, "z");
             const relativeToZ = path.relative(zRoot, path.resolve(entry.linkPath));
             if (relativeToZ !== ".." && !relativeToZ.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToZ)) {
-                removeEmptyDirectories(path.dirname(entry.linkPath), zRoot);
+                // Keep the shared z mount root for other mods. Remove only empty folders
+                // below z\<TAG>, including the tag directory itself.
+                const segments = relativeToZ.split(path.sep);
+                if (segments.length > 0) {
+                    removeEmptyDirectories(path.dirname(entry.linkPath), path.join(zRoot, segments[0]));
+                }
             }
         } else {
             failed.push(entry.linkPath);
