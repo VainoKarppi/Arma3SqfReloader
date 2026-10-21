@@ -171,10 +171,14 @@ export function startRptMonitor(): void {
             const stat = fs.statSync(rptFile);
             if (stat.size < rptOffset) rptOffset = 0;
             if (stat.size === rptOffset) return;
+            // Keep the RPT descriptor open only for the duration of this read.
             const fd = fs.openSync(rptFile, "r");
             const buffer = Buffer.alloc(stat.size - rptOffset);
-            fs.readSync(fd, buffer, 0, buffer.length, rptOffset);
-            fs.closeSync(fd);
+            try {
+                fs.readSync(fd, buffer, 0, buffer.length, rptOffset);
+            } finally {
+                fs.closeSync(fd);
+            }
             rptOffset = stat.size;
             const lines = (rptPartial + buffer.toString("utf8")).split(/\r?\n/);
             rptPartial = lines.pop() ?? "";
@@ -215,10 +219,11 @@ function reportRptError(block: string[], reportedPath: string, lineNumber: numbe
     const filePath = resolveWorkspaceSqfPath(reportedPath);
     if (!filePath) return;
 
-    const errorText = block
-        .map(line => /\bError\s+(?!in expression)(.+)/i.exec(line)?.[1])
+    const positionText = block.map(line => /Error position:\s*(.*)/i.exec(line)?.[1]).find(Boolean);
+    const messageText = block
+        .map(line => /\bError\s+(?!in expression|position)(.+)/i.exec(line)?.[1])
         .find(Boolean) ?? "SQF compile error";
-    const detail = errorText.replace(/\s+/g, " ").trim();
+    const detail = `${messageText.replace(/\s+/g, " ").trim()}${positionText ? ` — position: ${positionText.replace(/\s+/g, " ").trim()}` : ""}`;
     log(`[Arma RPT] ${path.basename(filePath)}:${lineNumber}: ${detail}`);
 
     const diagnostics = rptDiagnostics;
@@ -234,6 +239,7 @@ function reportRptError(block: string[], reportedPath: string, lineNumber: numbe
     );
     diagnostic.source = "Arma RPT";
     diagnostics.set(uri, [diagnostic]);
+    void vscode.window.showErrorMessage(`[Arma RPT] ${path.basename(filePath)}:${lineNumber}: ${detail}`);
 }
 
 function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {

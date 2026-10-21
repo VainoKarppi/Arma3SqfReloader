@@ -93,8 +93,9 @@ export async function reloadAll(settings: Settings, silent = false): Promise<Rel
 }
 
 function compileAssignment(variable: string, armaPath: string): string {
-    return `missionNamespace setVariable [${sqfString(variable)}, compile preprocessFileLineNumbers ${sqfString(armaPath)}];\n` +
-        `diag_log format ["[SqfReloader] recompiled %1 from %2", ${sqfString(variable)}, ${sqfString(armaPath)}];`;
+    return `private _sqfReloadFunction = compile preprocessFileLineNumbers ${sqfString(armaPath)};\n` +
+        `missionNamespace setVariable [${sqfString(variable)}, _sqfReloadFunction];\n` +
+        `diag_log format ["[SqfReloader] registered %1 from %2 (isNil=%3)", ${sqfString(variable)}, ${sqfString(armaPath)}, isNil {missionNamespace getVariable ${sqfString(variable)}}];`;
 }
 
 /** Injects every workspace fn_*.sqf into missionNamespace through its z\ mod junction. */
@@ -138,7 +139,7 @@ export async function registerWorkspaceFunctions(settings: Settings): Promise<Re
         return { ok: false, message: "No workspace functions found." };
     }
 
-    assignments.push(`diag_log format ["[SqfReloader] injected %1 workspace functions", ${assignments.length}];`);
+    assignments.push(`diag_log format ["[SqfReloader] workspace injection finished: %1 functions", ${assignments.length}];`);
 
     try {
         const result = await evalCode(settings, assignments.join("\n"));

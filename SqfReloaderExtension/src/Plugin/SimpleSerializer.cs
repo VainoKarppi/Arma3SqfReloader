@@ -31,7 +31,9 @@ internal static class SimpleSerializer {
         _ => Quote(Convert.ToString(value, CultureInfo.InvariantCulture) ?? "")
     };
 
-    private static string Quote(string value) => $"\"{value.Replace("\\", "\\\\").Replace("\"", "\"\"")}\"";
+    // SQF treats backslashes in quoted strings literally (also for preprocess paths).
+    // Doubling them here survives parseSimpleArray and changes the actual path seen by SQF.
+    private static string Quote(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 
     private static string ToArmaSequence(IEnumerable sequence) =>
         "[" + string.Join(",", sequence.Cast<object?>().Select(ToArma)) + "]";
