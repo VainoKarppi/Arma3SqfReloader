@@ -26,6 +26,9 @@ internal sealed class ApiConfig {
     /// </summary>
     public IReadOnlyList<string> PboPrefixes { get; init; } = Array.Empty<string>();
 
+    /// <summary>Workspace functions to re-register in each new mission namespace: [name, Arma path].</summary>
+    public IReadOnlyList<object?[]> WorkspaceFunctions { get; init; } = Array.Empty<object?[]>();
+
     public static string Directory { get; } = ResolveDirectory();
 
     public static string FilePath => Path.Combine(Directory, "config.json");
@@ -47,7 +50,8 @@ internal sealed class ApiConfig {
                 Port = map.TryGetValue("port", out object? port) && port is long portNumber ? (int)portNumber : DefaultPort,
                 AutoStart = !(map.TryGetValue("autoStart", out object? autoStart) && autoStart is false),
                 SourceDirectory = map.TryGetValue("sourceDirectory", out object? source) && source is string sourceText ? sourceText : string.Empty,
-                PboPrefixes = ReadPrefixes(map.TryGetValue("pboPrefixes", out object? prefixes) ? prefixes : null)
+                PboPrefixes = ReadPrefixes(map.TryGetValue("pboPrefixes", out object? prefixes) ? prefixes : null),
+                WorkspaceFunctions = ReadWorkspaceFunctions(map.TryGetValue("workspaceFunctions", out object? functions) ? functions : null)
             };
         } catch (Exception ex) {
             ArmaLog.Warning($"Could not read {FilePath}: {ex.Message}");
@@ -64,7 +68,8 @@ internal sealed class ApiConfig {
                 ["port"] = (long)Port,
                 ["autoStart"] = AutoStart,
                 ["sourceDirectory"] = SourceDirectory,
-                ["pboPrefixes"] = PboPrefixes.Cast<object?>().ToList()
+                ["pboPrefixes"] = PboPrefixes.Cast<object?>().ToList(),
+                ["workspaceFunctions"] = WorkspaceFunctions.Cast<object?>().ToList()
             }));
         } catch (Exception ex) {
             ArmaLog.Warning($"Could not write {FilePath}: {ex.Message}");
@@ -80,6 +85,21 @@ internal sealed class ApiConfig {
         foreach (object? item in items) {
             if (item is string text && !string.IsNullOrWhiteSpace(text))
                 result.Add(text.Trim());
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<object?[]> ReadWorkspaceFunctions(object? value) {
+        if (value is not IEnumerable<object?> items)
+            return Array.Empty<object?[]>();
+
+        var result = new List<object?[]>();
+        foreach (object? item in items) {
+            if (item is not IEnumerable<object?> fields) continue;
+            object?[] pair = fields.Take(2).ToArray();
+            if (pair.Length == 2 && pair[0] is string { Length: > 0 } && pair[1] is string { Length: > 0 })
+                result.Add(pair);
         }
 
         return result;

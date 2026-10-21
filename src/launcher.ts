@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
-import { findArmaDirectory, pickArmaDirectory, toArmaPath } from "./arma";
+import { findArmaDirectory, findMissions, pickArmaDirectory, toArmaPath } from "./arma";
 import { log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { PreparedLaunch, ensurePrefixFile, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks } from "./junctions";
@@ -243,6 +243,20 @@ function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {
         if (fs.existsSync(candidate)) return candidate;
     }
 
+    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    for (const mission of findMissions(roots)) {
+        const marker = `missions\\${path.basename(mission.directory).toLowerCase()}\\`;
+        const markerIndex = lower.lastIndexOf(marker);
+        if (markerIndex < 0) continue;
+        const relative = normalized.slice(markerIndex + marker.length)
+            .replace(/\.sqfreloader-\d+-\d+\.sqf$/i, ".sqf")
+            .replace(/\\/g, path.sep);
+        if (!/\.sqf$/i.test(relative)) continue;
+        const candidate = path.resolve(mission.directory, relative);
+        const fromMission = path.relative(mission.directory, candidate);
+        if (!fromMission.startsWith("..") && !path.isAbsolute(fromMission) && fs.existsSync(candidate)) return candidate;
+    }
+
     return undefined;
 }
 
@@ -273,6 +287,13 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         args.push(...extra);
     }
 
+    // When profile auto-detection picked a named profile, explicitly launch that same profile.
+    // Otherwise Arma would default to Documents\Arma 3 while the mission junction targets the
+    // detected Documents\Arma 3 - Other Profiles\<name> folder.
+    if (launch.profile.launchName && !extra.some(argument => /^-name(?:=|$)/i.test(argument))) {
+        args.push(`-name="${launch.profile.launchName.replace(/"/g, "\\\"")}"`);
+    }
+
     if (options.mission) {
         args.push(`-mission=${options.mission}`);
     }
@@ -281,10 +302,27 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
 }
 
 function parseExtraArguments(value: string): string[] {
-    return value
-        .split(/\s+/)
-        .map(part => part.trim())
-        .filter(part => part.length > 0);
+    const argumentsList: string[] = [];
+    let current = "";
+    let quote: "\"" | "'" | undefined;
+
+    for (const character of value) {
+        if (quote) {
+            current += character;
+            if (character === quote) quote = undefined;
+        } else if (character === "\"" || character === "'") {
+            quote = character;
+            current += character;
+        } else if (/\s/.test(character)) {
+            if (current) argumentsList.push(current);
+            current = "";
+        } else {
+            current += character;
+        }
+    }
+
+    if (current) argumentsList.push(current);
+    return argumentsList;
 }
 
 export function isRunning(): boolean {

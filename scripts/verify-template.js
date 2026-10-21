@@ -38,12 +38,14 @@ try {
     // --- first run: empty folder, mod + mission ------------------------------
     const result = writeTemplate(sandbox, true, false);
     check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
-    check("files written", result.files.length === 12, `${result.files.length} files`);
+    check("files written", result.files.length === 14, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
     check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "example", "$PBOPREFIX$")));
     check("missions have a mission.sqm", fs.existsSync(path.join(result.missionDirectory, "mission.sqm")) && fs.existsSync(path.join(result.mpMissionDirectory, "mission.sqm")));
+    check("mission CfgFunctions declares the live test", /class CfgFunctions[\s\S]*class liveTest/.test(fs.readFileSync(path.join(result.missionDirectory, "description.ext"), "utf8")));
+    check("live test function exists in both missions", fs.existsSync(path.join(result.missionDirectory, "functions", "fn_liveTest.sqf")) && fs.existsSync(path.join(result.mpMissionDirectory, "functions", "fn_liveTest.sqf")));
 
     // --- the extension has to see it as a mod -------------------------------
     const mods = findMods(sandbox);
@@ -88,7 +90,7 @@ try {
     const before = fs.readFileSync(hello, "utf8");
     fs.writeFileSync(hello, `${before}\n// edited by the user\n`, "utf8");
     const second = writeTemplate(sandbox, true, false);
-    check("second run skips existing files", second.skipped.length === 12, `${second.skipped.length} skipped`);
+    check("second run skips existing files", second.skipped.length === 14, `${second.skipped.length} skipped`);
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
 
     // --- mod-only variant ---------------------------------------------------

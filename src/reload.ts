@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { Addon, findAddonForFile, toArmaPath, toFunctionVariable } from "./arma";
+import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionTag, toArmaPath, toFunctionVariable } from "./arma";
 import { evalCode, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
 import { workspaceAddons } from "./runtime";
@@ -13,6 +13,16 @@ export interface ReloadOutcome {
 }
 
 let snapshotSequence = 0;
+
+interface CompileSnapshot {
+    armaPath: string;
+    directory: string;
+}
+
+interface MissionFunction {
+    directory: string;
+    variable: string;
+}
 
 function notify(settings: Settings, message: string): void {
     if (settings.notifyOnError) {
@@ -33,6 +43,33 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
 
     if (document.uri.scheme !== "file" || !/\.(sqf|cpp|hpp)$/i.test(document.fileName)) {
         return { ok: true, message: "Not a saved SQF/C++ file." };
+    }
+
+    const missionFunction = findMissionFunction(document.fileName);
+
+    if (missionFunction) {
+        const mission = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath))
+            .find(candidate => path.resolve(candidate.directory).toLowerCase() === missionFunction.directory.toLowerCase());
+        if (!mission) {
+            return { ok: false, message: "Could not find the mission for this function." };
+        }
+
+        const originalArmaPath = `${path.basename(mission.directory)}\\${path.relative(mission.directory, document.fileName).replace(/[\\/]+/g, "\\")}`;
+        log(`Saved mission function ${document.fileName} -> ${missionFunction.variable}`);
+
+        try {
+            const snapshot = await writeMissionCompileSnapshot(mission.directory, document.fileName, document.getText(), settings);
+            scheduleSnapshotCleanup(snapshot.directory);
+            const result = await evalCode(settings, compileAssignment(missionFunction.variable, snapshot.armaPath));
+            return result.success
+                ? { ok: true, message: `Recompiled ${missionFunction.variable} from saved mission snapshot (${originalArmaPath}).` }
+                : { ok: false, message: result.error ?? "Mission function compile failed" };
+        } catch (error) {
+            logError("mission function compile request failed", error);
+            const message = error instanceof Error ? error.message : String(error);
+            notify(settings, message);
+            return { ok: false, message };
+        }
     }
 
     const addon = findAddonForFile(document.fileName);
@@ -57,9 +94,9 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     log(`Saved ${document.fileName} -> ${variable} (${armaPath})`);
 
     try {
-        const snapshot = writeCompileSnapshot(document.fileName, document.getText());
-        scheduleSnapshotCleanup(snapshot);
-        const code = compileAssignment(variable, toArmaPath(addon, snapshot));
+        const snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
+        scheduleSnapshotCleanup(snapshot.directory);
+        const code = compileAssignment(variable, snapshot.armaPath);
         const result = await evalCode(settings, code);
 
         return result.success
@@ -75,23 +112,109 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
 
 /**
  * Arma can keep a file-patching source open briefly while preprocessing it. Compile an
- * immutable sibling copy instead, so VS Code can replace the user's file on every save.
- * Keeping the copy in the same directory preserves relative #include resolution.
+ * immutable copy under the Arma installation's z tree so no generated files appear beside
+ * workspace sources. The addon's relative directory layout is mirrored for #include paths.
  */
-function writeCompileSnapshot(sourcePath: string, content: string): string {
-    const snapshotPath = `${sourcePath}.sqfreloader-${Date.now()}-${++snapshotSequence}.sqf`;
-    fs.writeFileSync(snapshotPath, content, { encoding: "utf8", flag: "wx" });
-    return snapshotPath;
+async function writeCompileSnapshot(addon: Addon, sourcePath: string, content: string, settings: Settings): Promise<CompileSnapshot> {
+    const hash = snapshotHash(addon.localDirectory);
+    return writeSnapshot(addon.localDirectory, sourcePath, content, settings, [hash], ["addons", addon.name]);
 }
 
-function scheduleSnapshotCleanup(snapshotPath: string, attempt = 0): void {
+async function writeMissionCompileSnapshot(missionDirectory: string, sourcePath: string, content: string, settings: Settings): Promise<CompileSnapshot> {
+    const hash = snapshotHash(missionDirectory);
+    return writeSnapshot(missionDirectory, sourcePath, content, settings, ["Missions", hash], ["missions", path.basename(missionDirectory)]);
+}
+
+function snapshotHash(directory: string): string {
+    return require("crypto").createHash("sha1")
+        .update(path.resolve(directory).toLowerCase())
+        .digest("hex")
+        .slice(0, 10) as string;
+}
+
+async function writeSnapshot(
+    sourceRoot: string,
+    sourcePath: string,
+    content: string,
+    settings: Settings,
+    cacheSegments: string[],
+    sourceSegments: string[]
+): Promise<CompileSnapshot> {
+    const armaDirectory = await findArmaDirectory(settings);
+    if (!armaDirectory) {
+        throw new Error("Arma 3 was not found; set sqfReloader.armaDirectory to store the compile snapshot under its z folder.");
+    }
+
+    const id = `${Date.now()}-${++snapshotSequence}`;
+    const cacheRoot = path.join(armaDirectory, "z", "SqfReloader", "Snapshots", ...cacheSegments, id);
+    const cacheSourceRoot = path.join(cacheRoot, ...sourceSegments);
+    const relativeSource = path.relative(sourceRoot, sourcePath);
+    const relativeDirectory = path.dirname(relativeSource);
+    const sourceName = path.basename(sourcePath);
+    const snapshotName = sourceName.replace(/\.sqf$/i, `.sqfreloader-${id}.sqf`);
+    const snapshotPath = path.join(cacheSourceRoot, relativeDirectory, snapshotName);
+
+    fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+    fs.writeFileSync(snapshotPath, content, { encoding: "utf8", flag: "wx" });
+
+    // Copy quoted, relative #include dependencies into the parallel cache tree. This keeps
+    // them resolvable from the snapshot's mirrored directory without copying the whole addon.
+    const copyIncludes = (includedFile: string, includedText: string, visited: Set<string>): void => {
+        const key = path.resolve(includedFile).toLowerCase();
+        if (visited.has(key)) return;
+        visited.add(key);
+
+        const includePattern = /^\s*#\s*include\s+"([^\"]+)"/gim;
+        for (const match of includedText.matchAll(includePattern)) {
+            const includePath = path.resolve(path.dirname(includedFile), match[1]);
+            if (!fs.existsSync(includePath) || !fs.statSync(includePath).isFile()) continue;
+
+            const relativeInclude = path.relative(sourceRoot, includePath);
+            const destination = path.resolve(cacheSourceRoot, relativeInclude);
+            const relativeToCache = path.relative(cacheRoot, destination);
+            if (relativeToCache.startsWith("..") || path.isAbsolute(relativeToCache)) continue;
+
+            fs.mkdirSync(path.dirname(destination), { recursive: true });
+            fs.copyFileSync(includePath, destination);
+            copyIncludes(includePath, fs.readFileSync(includePath, "utf8"), visited);
+        }
+    };
+
+    copyIncludes(sourcePath, content, new Set());
+
+    const relativeCacheFile = path.relative(path.join(armaDirectory, "z"), snapshotPath).replace(/[\\/]+/g, "\\");
+    const armaPath = `z\\${relativeCacheFile}`;
+    return { armaPath, directory: cacheRoot };
+}
+
+function findMissionFunction(filePath: string): MissionFunction | undefined {
+    if (!/^fn_[\w-]+\.sqf$/i.test(path.basename(filePath))) return undefined;
+
+    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    for (const mission of findMissions(roots)) {
+        const relative = path.relative(mission.directory, filePath);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+
+        const tag = readFunctionTag(mission.directory);
+        if (!tag) continue;
+
+        return {
+            directory: path.resolve(mission.directory),
+            variable: `${tag}_fnc_${path.basename(filePath).slice(3, -4)}`
+        };
+    }
+
+    return undefined;
+}
+
+function scheduleSnapshotCleanup(snapshotDirectory: string, attempt = 0): void {
     const timer = setTimeout(() => {
         try {
-            fs.unlinkSync(snapshotPath);
+            fs.rmSync(snapshotDirectory, { recursive: true, force: true });
         } catch (error) {
             const code = (error as NodeJS.ErrnoException).code;
             if ((code === "EBUSY" || code === "EPERM" || code === "EACCES") && attempt < 10) {
-                scheduleSnapshotCleanup(snapshotPath, attempt + 1);
+                scheduleSnapshotCleanup(snapshotDirectory, attempt + 1);
             }
         }
     }, 10 * 60_000);
@@ -197,6 +320,16 @@ export async function sourceIndex(settings: Settings): Promise<string[]> {
 
 /** Forces a compile of one file through /api/eval (used by "Reload current function"). */
 export async function reloadFileNow(document: vscode.TextDocument, settings: Settings): Promise<ReloadOutcome> {
+    const missionFunction = findMissionFunction(document.fileName);
+    if (missionFunction) {
+        const snapshot = await writeMissionCompileSnapshot(missionFunction.directory, document.fileName, document.getText(), settings);
+        scheduleSnapshotCleanup(snapshot.directory);
+        const result = await evalCode(settings, compileAssignment(missionFunction.variable, snapshot.armaPath));
+        return result.success
+            ? { ok: true, message: `Recompiled ${missionFunction.variable} from the mission snapshot.` }
+            : { ok: false, message: result.error ?? "Mission function compile failed" };
+    }
+
     const addon = findAddonForFile(document.fileName);
 
     if (!addon) {
@@ -210,9 +343,9 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     }
 
     const armaPath = toArmaPath(addon, document.fileName);
-    const snapshot = writeCompileSnapshot(document.fileName, document.getText());
-    scheduleSnapshotCleanup(snapshot);
-    const code = compileAssignment(variable, toArmaPath(addon, snapshot));
+    const snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
+    scheduleSnapshotCleanup(snapshot.directory);
+    const code = compileAssignment(variable, snapshot.armaPath);
 
     const result = await evalCode(settings, code);
 

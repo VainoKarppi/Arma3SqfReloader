@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "2.9.65";
-        versionStr = "2.9.65";
-        versionAr[] = {2, 9, 65};
+        version = "2.9.71";
+        versionStr = "2.9.71";
+        versionAr[] = {2, 9, 71};
     };
 };
 
@@ -30,6 +30,8 @@ class CfgFunctions {
             class diagnose {};
             class runStartup {};
             class preInit { preInit = 1; };
+            class postInit { postInit = 1; };
+            class runEditorStartup {};
         };
 
         class Reload {
@@ -67,10 +69,10 @@ class Cfg3DEN {
     // cannot contain line breaks.
     class EventHandlers {
         class SqfReloader {
-            init = "[] call SqfReloader_fnc_runStartup; call SqfReloader_fnc_addEditorMenu;";
-            onMissionNew = "[] call SqfReloader_fnc_runStartup; call SqfReloader_fnc_addEditorMenu;";
-            onMissionLoad = "[] call SqfReloader_fnc_runStartup; call SqfReloader_fnc_addEditorMenu;";
-            onTerrainNew = "[] call SqfReloader_fnc_addEditorMenu;";
+            init = "[] call SqfReloader_fnc_runEditorStartup;";
+            onMissionNew = "[] call SqfReloader_fnc_runEditorStartup;";
+            onMissionLoad = "[] call SqfReloader_fnc_runEditorStartup;";
+            onTerrainNew = "call SqfReloader_fnc_addEditorMenu;";
         };
     };
 };

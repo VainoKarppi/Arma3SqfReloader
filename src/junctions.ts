@@ -235,7 +235,7 @@ function registerLinks(armaDirectory: string, links: Link[]): void {
  * unlike the addon links they are re-done on every launch, and the registry is what
  * "uninstall" removes.
  */
-export function linkMissions(armaDirectory: string, missions: MissionFolder[]): LinkResult {
+export function linkMissions(armaDirectory: string, profileDirectory: string, missions: MissionFolder[]): LinkResult {
     const links: Link[] = [];
     const warnings: string[] = [];
 
@@ -256,7 +256,7 @@ export function linkMissions(armaDirectory: string, missions: MissionFolder[]): 
         const folders = mission.multiplayer ? ["MPMissions"] : MISSION_FOLDERS;
 
         for (const folder of folders) {
-            const linkPath = path.join(armaDirectory, folder, name);
+            const linkPath = path.join(profileDirectory, folder, name);
 
             if (!mission.multiplayer && folder === "MPMissions" && multiplayerNames.has(name.toLowerCase())) {
                 continue;
@@ -266,6 +266,18 @@ export function linkMissions(armaDirectory: string, missions: MissionFolder[]): 
 
             if (link) {
                 links.push(link);
+            }
+        }
+
+        // Older versions linked workspace missions into the Arma install folder. Remove only
+        // those known links that still point at this workspace mission.
+        for (const folder of mission.multiplayer ? ["MPMissions"] : MISSION_FOLDERS) {
+            const oldPath = path.join(armaDirectory, folder, name);
+            const newPath = path.join(profileDirectory, folder, name);
+            if (path.resolve(oldPath).toLowerCase() === path.resolve(newPath).toLowerCase()) continue;
+            const oldTarget = readLinkTarget(oldPath);
+            if (oldTarget && path.resolve(oldTarget).toLowerCase() === path.resolve(mission.directory).toLowerCase()) {
+                removeLink(oldPath);
             }
         }
     }

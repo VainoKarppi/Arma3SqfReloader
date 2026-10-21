@@ -42,6 +42,12 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
+        // Offline saves are normal while editing; avoid sending a request or showing an API
+        // warning until an Arma process is actually running.
+        if (!isRunning()) {
+            return;
+        }
+
         // A save supersedes the previous Arma compile diagnostic; a new RPT block will add it back.
         rptDiagnostics.delete(document.uri);
 

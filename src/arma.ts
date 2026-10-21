@@ -381,7 +381,7 @@ export function readAddon(directory: string): Addon | undefined {
  * not win.
  */
 export function readFunctionTag(directory: string): string | undefined {
-    for (const name of ["config.cpp", "config.bin"]) {
+    for (const name of ["config.cpp", "config.bin", "description.ext"]) {
         const file = path.join(directory, name);
 
         if (!fs.existsSync(file)) {

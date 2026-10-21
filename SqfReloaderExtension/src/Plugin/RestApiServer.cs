@@ -41,12 +41,16 @@ internal static class RestApiServer {
     /// </summary>
     public static IReadOnlyList<string> ConfiguredPboPrefixes { get; private set; } = Array.Empty<string>();
 
+    /// <summary>[function name, Arma source path] entries for workspace functions.</summary>
+    public static IReadOnlyList<object?[]> ConfiguredWorkspaceFunctions { get; private set; } = Array.Empty<object?[]>();
+
     public static string Start() {
         lock (Gate) {
             if (IsRunning) return $"Already running on {Url}";
 
             ApiConfig config = ApiConfig.Load();
             ConfiguredPboPrefixes = config.PboPrefixes;
+            ConfiguredWorkspaceFunctions = config.WorkspaceFunctions;
 
             if (!string.IsNullOrEmpty(config.SourceDirectory) && System.IO.Directory.Exists(config.SourceDirectory))
                 ReloadPlugin.SourceDirectory = config.SourceDirectory;

@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon } from "./arma";
+import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon, toArmaPath, toFunctionVariable } from "./arma";
 import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
 import { log, logError, readSettings, Settings } from "./settings";
+import { ArmaProfileSelection, selectArmaProfile } from "./profile";
 
 /**
  * Everything the extension needs at runtime ships inside the .vsix (vscode-runtime/):
@@ -38,6 +39,8 @@ export interface PreparedLaunch {
     warnings: string[];
     /** The mods that were found in the workspace (for hot reload). */
     userMods: Mod[];
+    /** Profile folder containing the mission links, plus an inferred profile name if needed. */
+    profile: ArmaProfileSelection;
 }
 
 export function runtimeDirectory(context: vscode.ExtensionContext): string {
@@ -161,12 +164,13 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     }
 
     // --- 3. Missions -------------------------------------------------------
-    // Missions in the workspace are junctioned into <Arma 3>\Missions and \MPMissions so they
-    // can be opened from the editor without copying them (mpmissions\ only into MPMissions).
+    // Mission folders belong to the selected user profile, not the Arma install directory.
     const missions = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
-    const missionLinks = linkMissions(armaDirectory, missions);
+    const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments);
+    const missionLinks = linkMissions(armaDirectory, profile.directory, missions);
     warnings.push(...missionLinks.warnings);
 
+    log(`Arma profile mission folder: ${profile.directory} (${profile.reason}).`);
     if (missions.length > 0) {
         log(`Mission links: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
     }
@@ -177,7 +181,8 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
         mods: [...new Set([...modFolders, bundledMod])],
         modPath: bundledMod,
         warnings,
-        userMods: mods
+        userMods: mods,
+        profile
     };
 }
 
@@ -379,26 +384,55 @@ export function writeApiConfig(settings: Settings): string {
 
     const url = new URL(settings.apiUrl);
     const file = path.join(directory, "config.json");
-    const pboPrefixes = workspaceAddons().map(addon => addon.prefix.replace(/\\/g, "/"));
+    const addons = workspaceAddons();
+    const pboPrefixes = addons.map(addon => addon.prefix.replace(/\\/g, "/"));
+    const workspaceFunctions: [string, string][] = [];
+
+    for (const addon of addons) {
+        const visit = (sourceDirectory: string): void => {
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(sourceDirectory, { withFileTypes: true });
+            } catch {
+                return;
+            }
+
+            for (const entry of entries) {
+                const sourcePath = path.join(sourceDirectory, entry.name);
+                if (entry.isDirectory()) {
+                    visit(sourcePath);
+                    continue;
+                }
+
+                if (!entry.isFile() || !/^fn_[\w-]+\.sqf$/i.test(entry.name)) continue;
+                const variable = toFunctionVariable(addon, sourcePath);
+                if (variable) workspaceFunctions.push([variable, toArmaPath(addon, sourcePath)]);
+            }
+        };
+
+        visit(addon.localDirectory);
+    }
 
     fs.writeFileSync(file, JSON.stringify({
         host: url.hostname || "127.0.0.1",
         port: url.port ? Number(url.port) : 8765,
         autoStart: true,
         sourceDirectory: "",
-        pboPrefixes
+        pboPrefixes,
+        workspaceFunctions
     }, null, 2), "utf8");
 
-    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765}); addons: ${pboPrefixes.join(", ") || "none"}`);
+    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765}); addons: ${pboPrefixes.join(", ") || "none"}; functions: ${workspaceFunctions.length}`);
     return file;
 }
 
 /**
- * Startup call for missions that are launched outside the Eden Editor (e.g. -mission=).
- * Normally unnecessary: @SqfReloader starts itself from its own Cfg3DEN event handler.
+ * Startup call for a mission after Arma creates its missionNamespace (including Eden Preview).
+ * The Cfg3DEN handler starts the API in the editor namespace; mission startup must register the
+ * functions again after the editor-to-mission transition.
  */
 export function startupScript(): string {
-    return "call SqfReloader_fnc_runStartup;";
+    return "[] call SqfReloader_fnc_runStartup; [] call SqfReloader_fnc_reloadFunctions;";
 }
 
 /**

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { findMods, Mod } from "./arma";
 import { log, readSettings } from "./settings";
+import { startupScript } from "./runtime";
 
 /** Tag of the generated example mod; drives the PBO prefix and the function names. */
 export const TEMPLATE_TAG = "example";
@@ -145,9 +146,10 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
  * The multiplayer copy gets the MP header keys, so it shows up in the host/join lists.
  */
 function writeMission(directory: string, write: (file: string, content: string) => void, multiplayer: boolean): string {
-    write(path.join(directory, "mission.sqm"), missionSqm(multiplayer));
+    write(path.join(directory, "mission.sqm"), missionSqm());
     write(path.join(directory, "description.ext"), descriptionExt(multiplayer));
     write(path.join(directory, "initPlayerLocal.sqf"), missionInitPlayerLocal());
+    write(path.join(directory, "functions", "fn_liveTest.sqf"), missionLiveTest());
 
     return directory;
 }
@@ -289,54 +291,17 @@ _sum
 `;
 }
 
-/**
- * Minimal, valid Altis mission: Eden reads mission.sqm, falls back to the "Default" entities of
- * the mission (none here) and runs description.ext + initPlayerLocal.sqf as usual. Arma fills in
- * the remaining keys itself when the mission is edited and saved.
- */
-function missionSqm(multiplayer: boolean): string {
-    return `version = 54;
-class Mission {
-    addOns[] = {"A3_Map_Altis", "A3_Functions_F"};
-    addOnsAuto[] = {"A3_Map_Altis"};
-    randomSeed = 1;
-    class Intel {
-        briefingName = "Example counter";
-        overviewText = "Minimal mission that runs the example mod functions.";
-        timeOfChanges = 0;
-        startWeather = 0.3;
-        forecastWeather = 0.4;
-        startWind = 0.2;
-        forecastWind = 0.2;
-        startWaves = 0.2;
-        forecastWaves = 0.2;
-        startLightning = 0;
-        forecastLightning = 0;
-        year = 2035;
-        month = 6;
-        day = 24;
-        hour = 12;
-        minute = 0;
-    };
-${multiplayer ? `    class Multiplayer {
-        gameType = 1;
-        minPlayers = 1;
-        maxPlayers = 8;
-        maxPlayable = 1;
-    };
-` : ""}    class Entities {
-        items = 0;
-        class Item0 {};
-    };
-    class EditorData {
-        class Camera {
-            position[] = {3300, 3900, 20};
-        };
-    };
+/** Minimal Eden scenario file; Arma fills in optional mission data when saved from the editor. */
+function missionSqm(): string {
+    // Bohemia's minimal Eden scenario format. Arma fills in optional mission classes on save.
+    return `version=53;
+class EditorData
+{
+    class Camera {};
 };
+randomSeed=1;
 `;
 }
-
 function descriptionExt(multiplayer: boolean): string {
     return `class Header {
     gameType = "Coop";
@@ -348,6 +313,16 @@ function descriptionExt(multiplayer: boolean): string {
     onLoadMission = "Minimal mission that runs the example mod functions.";
 };
 
+class CfgFunctions {
+    class ExampleMission {
+        tag = "ExampleMission";
+        class Tests {
+            file = "functions";
+            class liveTest { recompile = 1; };
+        };
+    };
+};
+
 // SqfReloader_fnc_runStartup runs this once the mod's Cfg3DEN init started the REST API
 // (or when the VS Code launcher starts the mission).
 class SqfReloader {
@@ -357,13 +332,26 @@ class SqfReloader {
 }
 
 function missionInitPlayerLocal(): string {
-    return `// Runs for every player. @SqfReloader starts itself from its Cfg3DEN event handler.
+    return `// Runs in the playable mission after Eden has switched missionNamespace.
+// Register the workspace functions again for this mission instance.
+${startupScript()}
+
 if (!hasInterface) exitWith {};
 
 [] spawn {
     sleep 2;
     [] call ${TEMPLATE_TAG}_fnc_showCounter;
+    [] call ExampleMission_fnc_liveTest;
 };
+`;
+}
+
+function missionLiveTest(): string {
+    return `// Mission-local CfgFunctions hot-reload test.
+// Edit this message, save, then call [] call ExampleMission_fnc_liveTest; again.
+private _message = "Mission function v1 - edit and save fn_liveTest.sqf";
+systemChat _message;
+_message
 `;
 }
 

@@ -43,6 +43,10 @@ internal static class ApiMethods {
     [ArmaMethod]
     public static object?[] ApiPboPrefixes() => RestApiServer.ConfiguredPboPrefixes.Cast<object?>().ToArray();
 
+    /// <summary>Workspace functions to compile into the current mission namespace.</summary>
+    [ArmaMethod]
+    public static object?[] ApiWorkspaceFunctions() => RestApiServer.ConfiguredWorkspaceFunctions.Cast<object?>().ToArray();
+
     [ArmaMethod]
     public static string ApiLogLevel(string level = "info") {
         ArmaLog.CurrentLogLevel = level.ToLowerInvariant() switch {
