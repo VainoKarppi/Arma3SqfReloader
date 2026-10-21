@@ -11,8 +11,10 @@ import { cleanupSnapshots } from "./reload";
 export interface LaunchOptions {
     /** Extra launch parameters, e.g. "-window -noSplash". */
     extraArguments?: string[];
-    /** Maps/missions to open after starting (passed as -mission/-worldPosition). */
+    /** Existing game mission launch arguments, if any. */
     mission?: string;
+    /** Absolute mission.sqm path; Arma opens this scenario directly in Eden at startup. */
+    scenarioFile?: string;
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
@@ -109,9 +111,10 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
     log(`Starting: "${launch.executable}" ${args.join(" ")}`);
 
     // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
-    // quote each argument: -mod="A";"B" must reach the game unchanged. Arma splits -mod on ';',
-    // so the quotes matter (paths may contain spaces).
+    // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
     armaProcess = spawn(launch.executable, args, {
+        // Match the quoted argv[0] emitted by the working Arma Launcher command line.
+        argv0: `"${launch.executable}"`,
         cwd: launch.armaDirectory,
         detached: false,
         stdio: "ignore",
@@ -202,6 +205,19 @@ function consumeRptLine(line: string): void {
         return;
     }
 
+    const openMissionResult = /\[SqfReloader OpenMission:([^\]]+)\]\s*(.*)/.exec(line);
+    if (openMissionResult) {
+        const resultText = openMissionResult[2].replace(/"\s*$/, "").trimEnd();
+        if (resultText.toLowerCase() === "true") {
+            log("[Arma] Mission opened in Eden.");
+            void vscode.window.showInformationMessage("Mission opened in Eden.");
+        } else {
+            log("[Arma] Could not open the mission. Eden Editor must be active.");
+            void vscode.window.showWarningMessage("Arma is running, but Eden Editor is not active. Return to Eden and try again.");
+        }
+        return;
+    }
+
     if (/Invalid path \(only relative paths supported\)/i.test(line)) return;
 
     if (/\bError in expression\b/i.test(line)) {
@@ -287,11 +303,6 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     // @SqfReloader's replacement config must override the config inside scripts.pbo.
     const args: string[] = ["-filePatching"];
 
-    // -mod entries are separated by ';' (each entry may be quoted).
-    if (launch.mods.length > 0) {
-        args.push(`-mod=${launch.mods.map(folder => `"${folder}"`).join(";")}`);
-    }
-
     const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
     const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
 
@@ -308,7 +319,23 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     // Otherwise Arma would default to Documents\Arma 3 while the mission junction targets the
     // detected Documents\Arma 3 - Other Profiles\<name> folder.
     if (launch.profile.launchName && !launchExtras.some(argument => /^-name(?:=|$)/i.test(argument))) {
-        args.push(`-name="${launch.profile.launchName.replace(/"/g, "\\\"")}"`);
+        const profileName = launch.profile.launchName.replace(/"/g, "\\\"");
+        args.push(/\s/.test(profileName) ? `-name="${profileName}"` : `-name=${profileName}`);
+    }
+
+    // Arma parses a bare mission.sqm argument as the editor startup scenario. Keep it after
+    // profile and gameplay options, matching the working launcher command line; add its
+    // memory-load switch after the path, then put -mod last as in the known-good invocation.
+    if (options.scenarioFile) {
+        const scenarioFile = options.scenarioFile.replace(/"/g, "\\\"");
+        args.push(/\s/.test(scenarioFile) ? `"${scenarioFile}"` : scenarioFile);
+        args.push("-loadMissionToMemory");
+    }
+
+    // Arma expects the whole -mod value quoted as one argument, with semicolons separating
+    // paths inside it. Quoting each path separately makes Arma ignore the startup scenario.
+    if (launch.mods.length > 0) {
+        args.push(`"-mod=${launch.mods.map(uppercaseDriveLetter).join(";")}"`);
     }
 
     if (options.mission) {
@@ -316,6 +343,10 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     }
 
     return args;
+}
+
+function uppercaseDriveLetter(value: string): string {
+    return value.replace(/^([a-z]):/i, (_match, drive: string) => `${drive.toUpperCase()}:`);
 }
 
 function withoutProfileName(argumentsList: string[]): string[] {

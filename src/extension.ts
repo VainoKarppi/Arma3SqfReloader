@@ -1,14 +1,17 @@
 import * as vscode from "vscode";
-import { getStatus } from "./api";
+import * as fs from "fs";
+import * as path from "path";
+import { evalCode, getStatus, sqfString } from "./api";
 import { disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
-import { findArmaDirectory, findModForFile } from "./arma";
-import { removeAllLinks, removeModInZLink } from "./junctions";
+import { findArmaDirectory, findMissions, findModForFile, MissionFolder } from "./arma";
+import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
 import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
+import { selectArmaProfile } from "./profile";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -277,6 +280,103 @@ export function activate(context: vscode.ExtensionContext): void {
 
     register(context, "sqfReloader.runFile", async (resource?: unknown) => runFileCommand(resource, false));
     register(context, "sqfReloader.runFileWithParameters", async (resource?: unknown) => runFileCommand(resource, true));
+
+    register(context, "sqfReloader.openInEden", async (resource?: unknown) => {
+        const uri = resource instanceof vscode.Uri ? resource : vscode.window.activeTextEditor?.document.uri;
+        if (!uri || !/\.sqm$/i.test(uri.fsPath) || path.basename(uri.fsPath).toLowerCase() !== "mission.sqm" || !fs.existsSync(uri.fsPath)) {
+            vscode.window.showWarningMessage("Select a mission.sqm file to open in Eden.");
+            return;
+        }
+
+        const settings = readSettings();
+        if (!isRunning()) {
+            if (!runtime) {
+                vscode.window.showErrorMessage("The SqfReloader files bundled with this extension are missing. Reinstall the extension.");
+                return;
+            }
+
+            const missionDirectory = path.dirname(uri.fsPath);
+            const mission = findMissions([missionDirectory]).find(candidate =>
+                path.resolve(candidate.directory).toLowerCase() === path.resolve(missionDirectory).toLowerCase()
+            );
+            if (!mission) {
+                vscode.window.showWarningMessage("The selected mission must be in a folder named <Mission>.<World> and contain mission.sqm.");
+                return;
+            }
+
+            setStatus("$(sync~spin) Starting Arma 3...", false);
+            // Arma accepts a workspace mission.sqm directly as its startup editor scenario.
+            const started = await launchArma(runtime, settings, { scenarioFile: uri.fsPath });
+            if (started) {
+                vscode.window.showInformationMessage(`Starting Arma 3 and opening ${path.basename(path.dirname(uri.fsPath))} in Eden.`);
+                void injectWorkspaceFunctionsWhenReady(settings);
+            }
+            await refreshStatus();
+            return;
+        }
+
+        const armaDirectory = await findArmaDirectory(settings);
+        if (!armaDirectory) {
+            vscode.window.showErrorMessage("Arma 3 is running, but its installation folder could not be found. Set sqfReloader.armaDirectory.");
+            return;
+        }
+
+        const missionDirectory = path.dirname(uri.fsPath);
+        const foundMission = findMissions([
+            ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath),
+            missionDirectory
+        ]).find(mission => path.resolve(mission.directory).toLowerCase() === path.resolve(missionDirectory).toLowerCase());
+
+        if (!foundMission) {
+            vscode.window.showWarningMessage("The selected mission must be in a folder named <Mission>.<World> and contain mission.sqm.");
+            return;
+        }
+
+        const normalizedPath = missionDirectory.replace(/\\/g, "/").toLowerCase();
+        const mission: MissionFolder = {
+            ...foundMission,
+            multiplayer: foundMission.multiplayer || /(?:^|\/)mpmissions(?:\/|$)/.test(normalizedPath)
+        };
+        const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments, settings.armaProfile);
+        const missionContainer = mission.multiplayer ? "MPMissions" : "Missions";
+        let scenarioPath: string;
+        const relativeToProfile = path.relative(profile.directory, mission.directory);
+        const alreadyInProfile = relativeToProfile !== "" && !relativeToProfile.startsWith("..") && !path.isAbsolute(relativeToProfile);
+
+        if (alreadyInProfile) {
+            scenarioPath = relativeToProfile;
+        } else {
+            const links = linkMissions(armaDirectory, profile.directory, [mission]);
+            const linkPath = path.join(profile.directory, missionContainer, path.basename(mission.directory));
+            const linkCreated = links.links.some(link => path.resolve(link.linkPath).toLowerCase() === path.resolve(linkPath).toLowerCase());
+            if (!linkCreated) {
+                const reason = links.warnings[0] ?? `Could not link the mission into ${profile.directory}.`;
+                vscode.window.showErrorMessage(`Could not prepare this mission for Eden: ${reason}`);
+                return;
+            }
+            scenarioPath = path.join(missionContainer, path.basename(mission.directory));
+        }
+
+        const settingsNow = readSettings();
+        try {
+            await getStatus(settingsNow);
+        } catch {
+            vscode.window.showWarningMessage("Arma 3 is running, but SqfReloader is not connected. Open Eden with the @SqfReloader mod, then try again.");
+            return;
+        }
+
+        const requestId = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+        const code = `if (is3DEN) then { private _opened = load3DENScenario ${sqfString(scenarioPath)}; diag_log format ["[SqfReloader OpenMission:${requestId}] %1", _opened]; } else { diag_log format ["[SqfReloader OpenMission:${requestId}] %1", false]; };`;
+        const result = await evalCode(settingsNow, code);
+        if (!result.success) {
+            vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${result.error ?? "Could not send the Eden mission request."}`);
+            return;
+        }
+
+        const output = getOutput();
+        output.appendLine(`Queued Eden request to open ${path.basename(mission.directory)}. If Arma is at the main menu, it will run when the game callback becomes available.`);
+        output.show(true);
+    });
 
     register(context, "sqfReloader.removeJunctions", async () => {
         await removeJunctions(readSettings());

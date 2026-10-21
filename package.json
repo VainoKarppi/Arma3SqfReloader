@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "2.9.88",
+  "version": "2.9.95",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -66,6 +66,10 @@
         "title": "SqfReloader: Run in Arma With Parameters"
       },
       {
+        "command": "sqfReloader.openInEden",
+        "title": "SqfReloader: Open in Eden"
+      },
+      {
         "command": "sqfReloader.removeJunctions",
         "title": "SqfReloader: Remove junctions created by this extension"
       },
@@ -85,6 +89,10 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "sqfReloader.openInEden",
+          "when": "resourceExtname == .sqm"
+        },
+        {
           "command": "sqfReloader.reloadFile",
           "when": "resourceExtname == .sqf"
         },
@@ -98,6 +106,11 @@
         }
       ],
       "editor/context": [
+        {
+          "command": "sqfReloader.openInEden",
+          "when": "resourceExtname == .sqm",
+          "group": "sqfReloader@1"
+        },
         {
           "command": "sqfReloader.reloadFile",
           "when": "resourceExtname == .sqf",
@@ -115,6 +128,11 @@
         }
       ],
       "explorer/context": [
+        {
+          "command": "sqfReloader.openInEden",
+          "when": "resourceExtname == .sqm",
+          "group": "sqfReloader@1"
+        },
         {
           "command": "sqfReloader.runFile",
           "when": "resourceExtname == .sqf",
