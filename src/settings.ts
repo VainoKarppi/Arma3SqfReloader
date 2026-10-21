@@ -13,7 +13,7 @@ export interface Settings {
     junctionMode: JunctionMode;
     reloadOnSave: ReloadMode;
     notifyOnError: boolean;
-    /** Arguments added after -mod/-init when launching Arma (e.g. "-window -noSplash"). */
+    /** Extra arguments added when launching Arma (e.g. "-window -noSplash"). */
     extraLaunchArguments: string;
     /** "Create example mod" also writes a minimal test mission. */
     createExampleWithMission: boolean;

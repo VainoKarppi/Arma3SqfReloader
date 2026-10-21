@@ -192,10 +192,13 @@ export function stopRptMonitor(): void {
 function consumeRptLine(line: string): void {
     const runResult = /\[SqfReloader Run:([^\]]+)\]\s*(.*)/.exec(line);
     if (runResult) {
+        // Arma wraps diag_log string values in quotes in the RPT; strip its closing quote
+        // from the captured payload so it does not appear in either VS Code surface.
+        const resultText = runResult[2].replace(/"\s*$/, "").trimEnd();
         const output = getOutput();
-        output.appendLine(`[Arma result ${runResult[1]}] ${runResult[2]}`);
+        output.appendLine(`[Arma result ${runResult[1]}] ${resultText}`);
         output.show(true);
-        void vscode.window.showInformationMessage(`Arma SQF result: ${runResult[2]}`);
+        void vscode.window.showInformationMessage(`Arma SQF result: ${resultText}`);
         return;
     }
 
@@ -289,17 +292,8 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         args.push(`-mod=${launch.mods.map(folder => `"${folder}"`).join(";")}`);
     }
 
-    // Initialize SqfReloader at game startup, before the user opens Eden or selects a mission.
-    // Keep a caller-provided -init intact; Cfg3DEN and preInit still start the API on mission loads.
-
     const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
     const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
-
-    if (!launchExtras.some(argument => /^-init(?:=|$)/i.test(argument))) {
-        // This process uses verbatim Windows arguments. Quote the command value so its spaces
-        // stay inside -init, and keep SQF's required space between the code array and `call`.
-        args.push('-init="[] call SqfReloader_fnc_runStartup;"');
-    }
 
     // BattlEye cannot load unsigned extensions, so it is off unless the user asks for it.
     if (!launchExtras.some(argument => /^-(no)?be$/i.test(argument))) {
