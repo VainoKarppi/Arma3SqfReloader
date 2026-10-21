@@ -29,7 +29,7 @@ export async function setupMod(mod: Mod, settings: Settings, silent = false): Pr
 
     if (!armaDirectory) {
         if (!silent) {
-            vscode.window.showErrorMessage("Arma 3 was not found. Set \"armaApi.armaDirectory\" in the settings or pick the folder when asked.");
+            vscode.window.showErrorMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\" in the settings or pick the folder when asked.");
         }
 
         return undefined;
@@ -101,7 +101,7 @@ export async function setupWorkspace(settings: Settings): Promise<SetupResult | 
     const armaDirectory = await findArmaDirectory(settings) ?? await pickArmaDirectory(settings);
 
     if (!armaDirectory) {
-        vscode.window.showErrorMessage("Arma 3 was not found. Set \"armaApi.armaDirectory\" in the settings.");
+        vscode.window.showErrorMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\" in the settings.");
         return undefined;
     }
 
@@ -210,7 +210,7 @@ export async function ensureJunctions(settings: Settings): Promise<void> {
     const armaDirectory = await findArmaDirectory(settings);
 
     if (!armaDirectory) {
-        log("Arma 3 not found; junctions were not created. Use \"Arma API: Set up this mod\" to pick the folder.");
+        log("Arma 3 not found; junctions were not created. Use \"SqfReloader: Set up this mod\" to pick the folder.");
         return;
     }
 

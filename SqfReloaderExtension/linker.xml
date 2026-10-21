@@ -1,0 +1,6 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<linker>
+  <assembly fullname="SqfReloader_x64">
+    <type fullname="SqfReloader.*" preserve="all" />
+  </assembly>
+</linker>

@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>SqfReloader_x64</AssemblyName>
+    <RootNamespace>SqfReloader</RootNamespace>
+    <Version>2.0.18</Version>
+
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <DebugType>none</DebugType>
+    <PublishTrimmed>true</PublishTrimmed>
+    <StripSymbols>true</StripSymbols>
+    <Optimization>true</Optimization>
+    <IsTrimmable>false</IsTrimmable>
+    <NativeLib>Shared</NativeLib>
+    <DefaultItemExcludes>$(DefaultItemExcludes);tests/**;tools/**</DefaultItemExcludes>
+
+    <NoWarn>IL3002;IL2026;IL2065;IL3050;IL2069;IL3053;IDE0270;IDE0019;IL2062;IL2067;IL2070;IL2057;IL2075</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="linker.xml" />
+    <!-- Built explicitly by BuildNativeExports (NativeAOT does not compile ClCompile items). -->
+    <ClCompile Remove="exports.c" />
+  </ItemGroup>
+
+  <!--
+    NativeAOT links the shared library with a generated .def file that only lists the
+    UnmanagedCallersOnly entry points. The C exports Arma reads before the runtime starts
+    (RVExtensionFeatureFlags / RVExtensionGetFeatureFlags) must be added to that file and
+    the compiled object has to be part of the link, otherwise the linker drops them.
+  -->
+  <PropertyGroup>
+    <_SqfReloaderExportsSource>$(MSBuildProjectDirectory)\exports.c</_SqfReloaderExportsSource>
+    <_SqfReloaderExportsObject>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.obj</_SqfReloaderExportsObject>
+    <_SqfReloaderVcVarsAll Condition="'$(_SqfReloaderVcVarsAll)' == ''">$(VcToolChainPath)</_SqfReloaderVcVarsAll>
+  </PropertyGroup>
+
+  <Target Name="FindNativeToolchain" BeforeTargets="BuildNativeExports">
+    <PropertyGroup>
+      <_SqfReloaderVsRoot></_SqfReloaderVsRoot>
+    </PropertyGroup>
+
+    <Exec Command="&quot;$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"
+          ConsoleToMSBuild="true"
+          IgnoreExitCode="true"
+          Condition="'$(_SqfReloaderVcVarsAll)' == '' And Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe')">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_SqfReloaderVsRoot" />
+    </Exec>
+
+    <PropertyGroup>
+      <_SqfReloaderVcVarsAll Condition="'$(_SqfReloaderVcVarsAll)' == '' And '$(_SqfReloaderVsRoot)' != ''">$(_SqfReloaderVsRoot)\VC\Auxiliary\Build\vcvars64.bat</_SqfReloaderVcVarsAll>
+      <_SqfReloaderVcVarsAll>$([System.String]::Copy($(_SqfReloaderVcVarsAll)).Trim())</_SqfReloaderVcVarsAll>
+      <_SqfReloaderExportsObject>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.obj</_SqfReloaderExportsObject>
+      <_SqfReloaderExportsBatch>$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\native\$(TargetName).exports.cmd</_SqfReloaderExportsBatch>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="AddNativeExportsToDefFile" AfterTargets="IlcCompile" Condition="'$(NativeLib)' == 'Shared' and '$(ExportsFile)' != '' and Exists('$(ExportsFile)')">
+    <ReadLinesFromFile File="$(ExportsFile)">
+      <Output TaskParameter="Lines" ItemName="_SqfReloaderDefLine" />
+    </ReadLinesFromFile>
+
+    <PropertyGroup>
+      <_SqfReloaderDefHasFlags>false</_SqfReloaderDefHasFlags>
+      <_SqfReloaderDefHasFlags Condition="'@(_SqfReloaderDefLine)' != ''">true</_SqfReloaderDefHasFlags>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(ExportsFile)"
+                      Lines="@(_SqfReloaderDefLine);   RVExtensionFeatureFlags DATA;   RVExtensionGetFeatureFlags"
+                      Overwrite="true"
+                      Condition="'$(_SqfReloaderDefHasFlags)' != 'true'" />
+  </Target>
+
+  <!-- Compiles exports.c with the MSVC toolchain that NativeAOT uses and links the object. -->
+  <Target Name="BuildNativeExports" BeforeTargets="LinkNative" DependsOnTargets="FindNativeToolchain" Condition="'$(NativeLib)' == 'Shared'">
+    <ItemGroup Condition="'$(_SqfReloaderVcVarsAll)' != ''">
+      <LinkerArg Include="&quot;$(_SqfReloaderExportsObject)&quot;" />
+    </ItemGroup>
+
+    <Message Importance="low" Text="Compiling native exports: $(_SqfReloaderExportsSource)" Condition="'$(_SqfReloaderVcVarsAll)' != ''" />
+
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_SqfReloaderExportsObject)'))" Condition="'$(_SqfReloaderVcVarsAll)' != ''" />
+
+    <WriteLinesToFile File="$(_SqfReloaderExportsBatch)"
+                      Overwrite="true"
+                      Condition="'$(_SqfReloaderVcVarsAll)' != ''"
+                      Lines="call &quot;$(_SqfReloaderVcVarsAll)&quot;;cl.exe /nologo /c /O2 /GS- &quot;$(_SqfReloaderExportsSource)&quot; /Fo:&quot;$(_SqfReloaderExportsObject)&quot;;exit /b %ERRORLEVEL%" />
+
+    <Exec Command="cmd.exe /c &quot;$(_SqfReloaderExportsBatch)&quot;"
+          Condition="'$(_SqfReloaderVcVarsAll)' != ''"
+          StandardOutputImportance="low" />
+  </Target>
+
+</Project>

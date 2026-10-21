@@ -1,4 +1,4 @@
-﻿// End-to-end check of "Arma API: Play" for a real workspace, without starting Arma and without
+// End-to-end check of "SqfReloader: Play" for a real workspace, without starting Arma and without
 // VS Code: applies the workspace settings, deploys the runtime, links the mod, then prints the
 // command line Arma would get.
 //   node scripts/verify-launch-args.js --workspace "C:\path\to\mod" [--arma "E:\...\Arma 3"]
@@ -24,7 +24,7 @@ const { prepareRuntime, bundledModFolder } = require(path.join(repoRoot, "out", 
 const { findMods } = require(path.join(repoRoot, "out", "arma.js"));
 const { readLinkTarget } = require(path.join(repoRoot, "out", "junctions.js"));
 
-/** Reads armaApi.* from <workspace>/.vscode/settings.json (JSONC, comments stripped). */
+/** Reads sqfReloader.* from <workspace>/.vscode/settings.json (JSONC, comments stripped). */
 function workspaceSettings(workspace) {
     const file = path.join(workspace, ".vscode", "settings.json");
 
@@ -41,8 +41,8 @@ function workspaceSettings(workspace) {
     const result = {};
 
     for (const [key, value] of Object.entries(JSON.parse(text))) {
-        if (key.startsWith("armaApi.")) {
-            result[key.slice("armaApi.".length)] = value;
+        if (key.startsWith("sqfReloader.")) {
+            result[key.slice("sqfReloader.".length)] = value;
         }
     }
 
@@ -104,9 +104,7 @@ console.log(`Mods     : ${mods.map(mod => `${mod.name} [${mod.addons.map(addon =
 
 const runtimeRoot = path.join(repoRoot, "vscode-runtime");
 const runtime = {
-    dll: path.join(runtimeRoot, "ArmaApi_x64.dll"),
-    modDirectory: path.join(runtimeRoot, "mod", "@ArmaApi"),
-    sourcesDirectory: path.join(runtimeRoot, "mod", "armaapi-src")
+    modDirectory: path.join(runtimeRoot, "mod", "@SqfReloader")
 };
 
 const launch = prepareRuntime(runtime, armaDirectory, settings, mods);
@@ -115,12 +113,16 @@ const modFolder = bundledModFolder(armaDirectory);
 console.log(`Warnings : ${launch.warnings.length ? launch.warnings.join(" | ") : "none"}`);
 
 check("no deployment warnings", launch.warnings.length === 0, launch.warnings[0]);
-check("DLL next to arma3_x64.exe", fs.existsSync(path.join(armaDirectory, "ArmaApi_x64.dll")));
-check("DLL in <arma>\\ArmaApi", fs.existsSync(path.join(armaDirectory, "ArmaApi", "ArmaApi_x64.dll")));
-check("DLL inside @ArmaApi\\dll", fs.existsSync(path.join(modFolder, "dll", "ArmaApi_x64.dll")));
-check("@ArmaApi linked to the bundled mod", resolvedPath(modFolder) === resolvedPath(runtime.modDirectory));
-check("@ArmaApi is a PBO", fs.existsSync(path.join(modFolder, "addons", "armaapi.pbo")));
-check("file-patching config generated", fs.existsSync(path.join(modFolder, "replacement", "armaapi", "config.cpp")));
+check("@SqfReloader deployed as a real folder (not a junction)", !readLinkTarget(modFolder), modFolder);
+check("@SqfReloader has mod.cpp", fs.existsSync(path.join(modFolder, "mod.cpp")));
+check("@SqfReloader has logo.paa (mod.cpp references it)", fs.existsSync(path.join(modFolder, "logo.paa")));
+check("@SqfReloader has addons\\scripts.pbo", fs.existsSync(path.join(modFolder, "addons", "scripts.pbo")));
+check("DLL in the mod ROOT (Arma does not search dll\\)", fs.existsSync(path.join(modFolder, "SqfReloader_x64.dll")));
+check("no dll\\ subfolder (not resolvable by Arma)", !fs.existsSync(path.join(modFolder, "dll")));
+check("no replacement\\ folder", !fs.existsSync(path.join(modFolder, "replacement")));
+check("no unpacked addon copy", !fs.existsSync(path.join(modFolder, "addons", "scripts")));
+check("no DLL next to arma3_x64.exe", !fs.existsSync(path.join(armaDirectory, "SqfReloader_x64.dll")));
+check("no <arma>\\SqfReloader folder", !fs.existsSync(path.join(armaDirectory, "SqfReloader")));
 
 for (const mod of mods) {
     for (const addon of mod.addons) {
@@ -137,11 +139,11 @@ console.log(`  args: ${cmdArgs.join(" ")}`);
 check("starts with -filePatching", cmdArgs[0] === "-filePatching", cmdArgs[0]);
 check("BattlEye disabled", cmdArgs.includes("-noBattlEye"));
 check("-mod= quotes every entry", cmdArgs.some(value => /^-mod=".+"(;"".+")*$/.test(value)), cmdArgs.find(value => value.startsWith("-mod=")));
-check("no -init= (ArmaApi starts from Cfg3DEN)", !cmdArgs.some(value => value.startsWith("-init=")), cmdArgs.find(value => value.startsWith("-init=")));
+check("no -init= (SqfReloader starts from Cfg3DEN)", !cmdArgs.some(value => value.startsWith("-init=")), cmdArgs.find(value => value.startsWith("-init=")));
 
 if (mods.length > 0) {
     const modValue = cmdArgs.find(value => value.startsWith("-mod="))?.slice("-mod=".length) ?? "";
-    check("-mod= includes @ArmaApi and the workspace mod", modValue.includes(modFolder) && mods.some(mod => modValue.includes(mod.directory)), modValue);
+    check("-mod= includes @SqfReloader and the workspace mod", modValue.includes(modFolder) && mods.some(mod => modValue.includes(mod.directory)), modValue);
 }
 
 const forced = launchArguments(launch, settings, { extraArguments: ["-be"] });

@@ -42,7 +42,7 @@ export async function findArmaDirectory(settings: Settings): Promise<string | un
             return settings.armaDirectory;
         }
 
-        log(`armaApi.armaDirectory does not contain arma3_x64.exe: ${settings.armaDirectory}`);
+        log(`sqfReloader.armaDirectory does not contain arma3_x64.exe: ${settings.armaDirectory}`);
     }
 
     const candidates = [...readRegistryPaths(), ...readSteamLibraryPaths(), ...readCommonPaths()];

@@ -3,32 +3,28 @@ import * as fs from "fs";
 import * as path from "path";
 import { findMods, Mod, normalizePrefix, readAddon, Addon } from "./arma";
 import { createLinks } from "./junctions";
-import { writeReplacement } from "./reloader";
 import { log, logError, readSettings, Settings } from "./settings";
 
 /**
  * Everything the extension needs at runtime ships inside the .vsix (vscode-runtime/):
  *
- *   vscode-runtime/ArmaApi_x64.dll   native extension
- *   vscode-runtime/mod/@ArmaApi/     ArmaApi mod: mod.cpp + addons\armaapi.pbo (AddonBuilder)
- *   vscode-runtime/mod/armaapi-src/  config.cpp + functions\ the PBO was built from
+ *   vscode-runtime/mod/@SqfReloader/   the complete SqfReloader mod, exactly as it must look in the
+ *                                   Arma folder:
+ *                                     mod.cpp
+ *                                     logo.paa
+ *                                     addons\scripts.pbo
+ *                                     SqfReloader_x64.dll
  *
- * Nothing has to be installed by hand: on launch the DLL is copied to a folder inside the
- * Arma directory (which is on the DLL search path of arma3_x64.exe) and @ArmaApi is linked
- * next to the game together with the user's own mod.
+ * `@SqfReloader` is copied to `<Arma 3>\@SqfReloader` (never junctioned - it is not a working
+ * copy) and replaced whenever the extension is updated. The DLL sits in the MOD ROOT:
+ * Arma resolves extensions from the executable folder or the mod root, and reports
+ * "CallExtension 'SqfReloader' could not be found" for anything in a dll\ subfolder.
  *
- * ArmaApi's own SQF functions stay hot reloadable although they ship inside the PBO: the
- * extension writes @ArmaApi\replacement\armaapi\config.cpp (a file-patching config with a
- * `reloader` for every CfgFunctions class) plus a plain copy of the fn_*.sqf files
- * (src/reloader.ts), and the game runs with -filePatching.
+ * Nothing else is generated into the folder - Arma reads all SQF from scripts.pbo.
  */
 export interface Runtime {
-    /** Absolute path of ArmaApi_x64.dll shipped in the VSIX. */
-    dll: string;
-    /** Absolute path of the bundled @ArmaApi mod (mod.cpp + addons\armaapi.pbo). */
+    /** Absolute path of the bundled @SqfReloader mod. */
     modDirectory: string;
-    /** Absolute path of the plain SQF sources the PBO was built from. */
-    sourcesDirectory: string;
 }
 
 export interface PreparedLaunch {
@@ -36,17 +32,12 @@ export interface PreparedLaunch {
     executable: string;
     /** Mod folders passed to -mod=. */
     mods: string[];
-    /** Deployed copy of ArmaApi_x64.dll. */
-    dllPath: string;
+    /** Deployed @SqfReloader folder. */
+    modPath: string;
     /** Warnings that did not stop the launch. */
     warnings: string[];
     /** The mods that were found in the workspace (for hot reload). */
     userMods: Mod[];
-    /**
-     * True when @ArmaApi was deployed as a PBO. Arma then loads ArmaApi's SQF from the PBO,
-     * so the game must run with -filePatching for the replacement config to apply.
-     */
-    pboRuntime: boolean;
 }
 
 export function runtimeDirectory(context: vscode.ExtensionContext): string {
@@ -55,77 +46,87 @@ export function runtimeDirectory(context: vscode.ExtensionContext): string {
 
 export function loadRuntime(context: vscode.ExtensionContext): Runtime | undefined {
     const root = runtimeDirectory(context);
-    const dll = path.join(root, "ArmaApi_x64.dll");
-    const modDirectory = path.join(root, "mod", "@ArmaApi");
-    const sourcesDirectory = path.join(root, "mod", "armaapi-src");
+    const modDirectory = path.join(root, "mod", "@SqfReloader");
 
-    if (!fs.existsSync(dll) || !fs.existsSync(modDirectory) || !fs.existsSync(sourcesDirectory)) {
-        log(`Runtime files are missing in ${root}. Run build-all.ps1 (it bundles the DLL, the PBO and the sources into the extension).`);
+    if (!fs.existsSync(modDirectory) || !fs.existsSync(path.join(modDirectory, "mod.cpp"))) {
+        log(`Runtime files are missing in ${root}. Run build-all.ps1 (it bundles @SqfReloader into the extension).`);
         return undefined;
     }
 
-    return { dll, modDirectory, sourcesDirectory };
+    return { modDirectory };
+}
+
+/** Replaces a bundled file/folder with the freshest copy (keeps generated replacement\). */
+function syncFile(source: string, target: string): void {
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(source, target, { recursive: true });
 }
 
 /**
- * Deploys the bundled DLL next to the game and links the bundled @ArmaApi mod plus the
- * user's mods into the Arma folder. Returns everything needed to launch Arma.
+ * Deploys the bundled @SqfReloader mod into the Arma folder and links the user's mods there.
+ * Returns everything needed to launch Arma.
  */
 export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings: Settings, workspaceMods: Mod[]): PreparedLaunch {
     const warnings: string[] = [];
 
-    // --- 1. DLL ------------------------------------------------------------
-    // Arma searches the folder of arma3_x64.exe; a sub folder is enough and keeps the game
-    // directory tidy. A copy also goes into @ArmaApi\dll\ (the place the standalone installer
-    // uses) once the mod is linked below.
-    const toolDirectory = path.join(armaDirectory, "ArmaApi");
-    fs.mkdirSync(toolDirectory, { recursive: true });
-
-    const dllTarget = path.join(armaDirectory, "ArmaApi_x64.dll");
-    const dllInTool = path.join(toolDirectory, "ArmaApi_x64.dll");
-
-    for (const target of [dllTarget, dllInTool]) {
-        try {
-            fs.copyFileSync(runtime.dll, target);
-        } catch (error) {
-            warnings.push(`Could not copy ArmaApi_x64.dll to ${target}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    }
-
-    // --- 2. ArmaApi mod ---------------------------------------------------
+    // --- 1. @SqfReloader ------------------------------------------------------
+    // A plain copy, not a junction: this is the shipped mod, not a working copy. Updating the
+    // extension therefore also updates the mod, the PBO and the DLL (like reinstalling it).
     const bundledMod = bundledModFolder(armaDirectory);
-    linkDirectory(bundledMod, runtime.modDirectory, warnings);
-
-    // The mod is linked by now, so the copy lands inside @ArmaApi instead of creating a
-    // plain "dll" folder that would then block the junction.
-    const dllInMod = path.join(bundledMod, "dll", "ArmaApi_x64.dll");
 
     try {
-        fs.mkdirSync(path.dirname(dllInMod), { recursive: true });
-        fs.copyFileSync(runtime.dll, dllInMod);
+        if (isLink(bundledMod)) {
+            fs.rmdirSync(bundledMod);
+        }
+
+        fs.mkdirSync(bundledMod, { recursive: true });
+        syncFile(path.join(runtime.modDirectory, "mod.cpp"), path.join(bundledMod, "mod.cpp"));
+
+        // mod.cpp declares logo = "logo.paa", so the logo has to sit next to it in the mod root.
+        const logo = path.join(runtime.modDirectory, "logo.paa");
+        if (fs.existsSync(logo)) {
+            syncFile(logo, path.join(bundledMod, "logo.paa"));
+        }
+
+        const pbo = path.join(runtime.modDirectory, "addons", "scripts.pbo");
+        if (fs.existsSync(pbo)) {
+            syncFile(pbo, path.join(bundledMod, "addons", "scripts.pbo"));
+        } else {
+            warnings.push(`addons\\scripts.pbo is missing in ${runtime.modDirectory}.`);
+        }
+
+        // The DLL has to be in the MOD ROOT: a dll\\ subfolder is not searched by Arma.
+        const dll = path.join(runtime.modDirectory, "SqfReloader_x64.dll");
+        if (fs.existsSync(dll)) {
+            syncFile(dll, path.join(bundledMod, "SqfReloader_x64.dll"));
+        } else {
+            warnings.push(`SqfReloader_x64.dll is missing in ${runtime.modDirectory}.`);
+        }
     } catch (error) {
-        warnings.push(`Could not copy ArmaApi_x64.dll to ${dllInMod}: ${error instanceof Error ? error.message : String(error)}`);
+        warnings.push(`Could not deploy @SqfReloader to ${bundledMod}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    // --- 2b. Keep ArmaApi's own SQF hot reloadable -------------------------
-    // The addon ships as a PBO; the replacement config (file patching) points CfgFunctions at
-    // generated reloader scripts in @ArmaApi\replacement so a save recompiles the class.
-    const pboRuntime = fs.existsSync(path.join(runtime.modDirectory, "addons", "armaapi.pbo"));
+    // Older layouts put the DLL next to arma3_x64.exe, inside a dll\ subfolder or in a
+    // <Arma 3>\SqfReloader folder, and generated a replacement\ config for hot reload. None of
+    // that is used any more, so it is cleaned up to avoid loading a stale copy.
+    const legacy = [
+        path.join(armaDirectory, "SqfReloader_x64.dll"),
+        path.join(armaDirectory, "SqfReloader"),
+        path.join(bundledMod, "dll"),
+        path.join(bundledMod, "replacement"),
+        path.join(bundledMod, "addons", "scripts")
+    ];
 
-    if (pboRuntime) {
+    for (const stale of legacy) {
         try {
-            const prefix = normalizePrefix(fs.readFileSync(path.join(runtime.sourcesDirectory, "$PBOPREFIX$"), "utf8"));
-            writeReplacement({
-                modDirectory: bundledMod,
-                prefix: prefix || "z\\armaapi\\addons\\armaapi",
-                sourcesDirectory: runtime.sourcesDirectory
-            });
-        } catch (error) {
-            warnings.push(`Could not prepare the file-patching config for @ArmaApi: ${error instanceof Error ? error.message : String(error)}`);
+            fs.rmSync(stale, { recursive: true, force: true });
+        } catch {
+            // Locked by a running game: it only matters for the next launch.
         }
     }
 
-    // --- 3. User mods -----------------------------------------------------
+    // --- 2. User mods -----------------------------------------------------
     // The working copy has to be visible to Arma at a stable path. $PBOPREFIX$ folders are
     // linked into z\... (or x\...) so -mod= can also point at the original mod folder.
     const modFolders: string[] = [];
@@ -151,17 +152,25 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     return {
         armaDirectory,
         executable: path.join(armaDirectory, "arma3_x64.exe"),
-        mods: [...new Set([...modFolders.map(folder => folder), bundledMod])],
-        dllPath: dllTarget,
+        mods: [...new Set([...modFolders, bundledMod])],
+        modPath: bundledMod,
         warnings,
-        userMods: workspaceMods,
-        pboRuntime
+        userMods: workspaceMods
     };
 }
 
-/** Folder where @ArmaApi is linked inside the Arma directory. */
+/** True when the path is a junction/symlink rather than a real folder. */
+function isLink(target: string): boolean {
+    try {
+        return fs.lstatSync(target).isSymbolicLink() || !!currentLinkTarget(target);
+    } catch {
+        return false;
+    }
+}
+
+/** Folder where @SqfReloader is deployed inside the Arma directory. */
 export function bundledModFolder(armaDirectory: string): string {
-    return path.join(armaDirectory, "@ArmaApi");
+    return path.join(armaDirectory, "@SqfReloader");
 }
 
 /**
@@ -183,7 +192,7 @@ function linkDirectory(linkPath: string, target: string, warnings: string[]): vo
             return;
         }
     } else if (fs.existsSync(linkPath)) {
-        warnings.push(`${linkPath} exists and is not a link; the bundled @ArmaApi was not linked there.`);
+        warnings.push(`${linkPath} exists and is not a link; the bundled @SqfReloader was not linked there.`);
         return;
     }
 
@@ -221,7 +230,7 @@ function currentLinkTarget(linkPath: string): string | undefined {
     }
 }
 
-/** Stops a previous ArmaApi instance so the port is free for the new launch. */
+/** Stops a previous SqfReloader instance so the port is free for the new launch. */
 export function stopStaleArmaProcesses(armaDirectory: string): void {
     const noTaskLine = "INFO: No tasks";
 
@@ -252,9 +261,9 @@ export function workspaceAddons(): Addon[] {
     return workspaceMods().flatMap(mod => mod.addons);
 }
 
-/** Writes %LOCALAPPDATA%\ArmaApi\config.json so the DLL uses the configured port. */
+/** Writes %LOCALAPPDATA%\SqfReloader\config.json so the DLL uses the configured port. */
 export function writeApiConfig(settings: Settings): string {
-    const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "ArmaApi"), "ArmaApi");
+    const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
     fs.mkdirSync(directory, { recursive: true });
 
     const url = new URL(settings.apiUrl);
@@ -267,16 +276,16 @@ export function writeApiConfig(settings: Settings): string {
         sourceDirectory: ""
     }, null, 2), "utf8");
 
-    log(`ArmaApi config written: ${file} (${url.hostname}:${url.port || 8765})`);
+    log(`SqfReloader config written: ${file} (${url.hostname}:${url.port || 8765})`);
     return file;
 }
 
 /**
  * Startup call for missions that are launched outside the Eden Editor (e.g. -mission=).
- * Normally unnecessary: @ArmaApi starts itself from its own Cfg3DEN event handler.
+ * Normally unnecessary: @SqfReloader starts itself from its own Cfg3DEN event handler.
  */
 export function startupScript(): string {
-    return "call ArmaApi_fnc_runStartup;";
+    return "call SqfReloader_fnc_runStartup;";
 }
 
 /**

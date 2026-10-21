@@ -1,4 +1,4 @@
-﻿import * as vscode from "vscode";
+import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
@@ -28,7 +28,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         log("launch: no Arma directory (findArmaDirectory returned nothing).");
 
         if (!silent) {
-            vscode.window.showErrorMessage("Arma 3 was not found. Pick the folder once: \"armaApi.armaDirectory\".");
+            vscode.window.showErrorMessage("Arma 3 was not found. Pick the folder once: \"sqfReloader.armaDirectory\".");
         }
 
         return false;
@@ -67,7 +67,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         if (mods.length > 0) {
             log(`Mods: ${mods.map(mod => `${mod.name} [${mod.addons.map(addon => addon.prefix).join(", ")}]`).join(" | ")}`);
         } else {
-            log("No mod found in the workspace; launching with @ArmaApi only.");
+            log("No mod found in the workspace; launching with @SqfReloader only.");
         }
 
         startProcess(launch, settings, options);
@@ -76,9 +76,9 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         const ready = await waitForApi(settings, 60000);
 
         if (ready) {
-            log("ArmaApi is online; saving SQF now recompiles it in the running game.");
+            log("SqfReloader is online; saving SQF now recompiles it in the running game.");
         } else {
-            log(`ArmaApi did not answer within 60 s. Check the Arma log (${armaLogHint()}) and the extension output.`);
+            log(`SqfReloader did not answer within 60 s. Check the Arma log (${armaLogHint()}) and the extension output.`);
         }
 
         return true;
@@ -132,7 +132,7 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
 /** Command line handed to arma3_x64.exe (also used by scripts/verify-launch-args.js). */
 export function launchArguments(launch: PreparedLaunch, settings: Settings, options: LaunchOptions): string[] {
     // File patching is required twice: user mods are junctions to the working copy, and
-    // @ArmaApi's replacement config must override the config inside armaapi.pbo.
+    // @SqfReloader's replacement config must override the config inside scripts.pbo.
     const args: string[] = ["-filePatching"];
 
     // -mod entries are separated by ';' (each entry may be quoted).
@@ -140,10 +140,10 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         args.push(`-mod=${launch.mods.map(folder => `"${folder}"`).join(";")}`);
     }
 
-    // No -init=: @ArmaApi starts itself from its own Cfg3DEN >> EventHandlers >> init (Eden
+    // No -init=: @SqfReloader starts itself from its own Cfg3DEN >> EventHandlers >> init (Eden
     // Editor, including Play from the main menu) and from Cfg3DEN onMissionNew/onMissionLoad.
-    // Missions started outside Eden get ArmaApi through "Arma API: Check connection" or the
-    // ArmaApi >> StartupCode hook in description.ext.
+    // Missions started outside Eden get SqfReloader through "SqfReloader: Check connection" or the
+    // SqfReloader >> StartupCode hook in description.ext.
 
     const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
 
@@ -205,13 +205,13 @@ export async function waitForApi(settings: Settings, timeoutMs: number): Promise
             const status = await getStatus(settings);
 
             if (status.status === "ok" && status.gameConnected) {
-                log(`ArmaApi ready: version ${status.version}, ${settings.apiUrl}`);
+                log(`SqfReloader ready: version ${status.version}, ${settings.apiUrl}`);
                 return true;
             }
 
             if (status.status === "ok") {
                 // REST is up, waiting for the SQF callback (mission/editor still loading).
-                log("ArmaApi REST is up, waiting for the game callback...");
+                log("SqfReloader REST is up, waiting for the game callback...");
             }
         } catch (error) {
             lastError = error;

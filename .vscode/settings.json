@@ -1,16 +1,17 @@
 {
     // Recommended workspace settings for developing this repository.
     // When a user opens *their* mod folder, the extension settings below are what matter.
-    "armaApi.enabled": true,
-    "armaApi.apiUrl": "http://127.0.0.1:8765/api",
-    "armaApi.autoJunction": true,
-    "armaApi.junctionMode": "addon",
-    "armaApi.reloadOnSave": "reload",
-    "armaApi.notifyOnError": true,
-    "armaApi.requestTimeout": 3000,
+    "sqfReloader.enabled": true,
+    "sqfReloader.apiUrl": "http://127.0.0.1:8765/api",
+    "sqfReloader.autoJunction": true,
+    "sqfReloader.junctionMode": "addon",
+    "sqfReloader.reloadOnSave": "reload",
+    "sqfReloader.notifyOnError": true,
+    "sqfReloader.requestTimeout": 3000,
 
-    // The ArmaApi mod shipped from this repository (dist/@ArmaApi/source) is the layout that
-    // matches z\armaapi\addons\armaapi; open it to hot-reload ArmaApi's own SQF functions.
+    // The SqfReloader mod sources live in SqfReloaderExtension/@SqfReloader (mod.cpp, logo.paa,
+    // addons/scripts) and are packed into scripts.pbo; open them there to edit SqfReloader's own
+    // SQF functions.
     "files.associations": {
         "*.sqf": "sqf",
         "*.ext": "sqf",
@@ -33,14 +34,14 @@
     "search.exclude": {
         "**/node_modules": true,
         "**/out": true,
-        "**/ArmaApiExtension/bin": true,
-        "**/ArmaApiExtension/obj": true,
-        "**/ArmaApiExtension/dist": true
+        "**/SqfReloaderExtension/bin": true,
+        "**/SqfReloaderExtension/obj": true,
+        "**/SqfReloaderExtension/dist": true
     },
     "files.watcherExclude": {
-        "**/ArmaApiExtension/bin/**": true,
-        "**/ArmaApiExtension/obj/**": true,
-        "**/ArmaApiExtension/dist/**": true,
+        "**/SqfReloaderExtension/bin/**": true,
+        "**/SqfReloaderExtension/obj/**": true,
+        "**/SqfReloaderExtension/dist/**": true,
         "**/node_modules/**": true
     },
     "typescript.tsdk": "node_modules/typescript/lib"

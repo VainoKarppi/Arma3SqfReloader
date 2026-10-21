@@ -1,8 +1,8 @@
 {
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
-  "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the ArmaApi REST API. Creates mod junctions automatically.",
-  "version": "2.0.7",
+  "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
+  "version": "2.0.18",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -15,7 +15,7 @@
     "Other"
   ],  "activationEvents": [
     "onStartupFinished",
-    "onCommand:armaApi.createExample",
+    "onCommand:sqfReloader.createExample",
     "workspaceContains:**/*.sqf",
     "workspaceContains:**/$PBOPREFIX$"
   ],
@@ -23,108 +23,108 @@
   "contributes": {
     "commands": [
       {
-        "command": "armaApi.play",
-        "title": "Arma API: Play (start Arma 3 with this mod)",
+        "command": "sqfReloader.play",
+        "title": "SqfReloader: Play (start Arma 3 with this mod)",
         "icon": "$(play)"
       },
       {
-        "command": "armaApi.stop",
-        "title": "Arma API: Stop Arma 3"
+        "command": "sqfReloader.stop",
+        "title": "SqfReloader: Stop Arma 3"
       },
       {
-        "command": "armaApi.setup",
-        "title": "Arma API: Set up this mod (junction + config)",
+        "command": "sqfReloader.setup",
+        "title": "SqfReloader: Set up this mod (junction + config)",
         "icon": "$(plug)"
       },
       {
-        "command": "armaApi.setupWorkspace",
-        "title": "Arma API: Set up all mods in this workspace"
+        "command": "sqfReloader.setupWorkspace",
+        "title": "SqfReloader: Set up all mods in this workspace"
       },
       {
-        "command": "armaApi.createExample",
-        "title": "Arma API: Create example mod (try the reloader)"
+        "command": "sqfReloader.createExample",
+        "title": "SqfReloader: Create example mod (try the reloader)"
       },
       {
-        "command": "armaApi.connect",
-        "title": "Arma API: Check connection"
+        "command": "sqfReloader.connect",
+        "title": "SqfReloader: Check connection"
       },
       {
-        "command": "armaApi.reloadAll",
-        "title": "Arma API: Reload all functions"
+        "command": "sqfReloader.reloadAll",
+        "title": "SqfReloader: Reload all functions"
       },
       {
-        "command": "armaApi.reloadFile",
-        "title": "Arma API: Reload current function"
+        "command": "sqfReloader.reloadFile",
+        "title": "SqfReloader: Reload current function"
       },
       {
-        "command": "armaApi.removeJunctions",
-        "title": "Arma API: Remove junctions created by this extension"
+        "command": "sqfReloader.removeJunctions",
+        "title": "SqfReloader: Remove junctions created by this extension"
       },
       {
-        "command": "armaApi.openArmaFolder",
-        "title": "Arma API: Open Arma 3 folder"
+        "command": "sqfReloader.openArmaFolder",
+        "title": "SqfReloader: Open Arma 3 folder"
       },
       {
-        "command": "armaApi.showOutput",
-        "title": "Arma API: Show output"
+        "command": "sqfReloader.showOutput",
+        "title": "SqfReloader: Show output"
       },
       {
-        "command": "armaApi.toggleAutoReload",
-        "title": "Arma API: Toggle reload on save"
+        "command": "sqfReloader.toggleAutoReload",
+        "title": "SqfReloader: Toggle reload on save"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "armaApi.reloadFile",
+          "command": "sqfReloader.reloadFile",
           "when": "resourceExtname == .sqf"
         }
       ],
       "editor/context": [
         {
-          "command": "armaApi.reloadFile",
+          "command": "sqfReloader.reloadFile",
           "when": "resourceExtname == .sqf",
-          "group": "armaApi@1"
+          "group": "sqfReloader@1"
         }
       ],
       "explorer/context": [
         {
-          "command": "armaApi.setup",
+          "command": "sqfReloader.setup",
           "when": "explorerResourceIsFolder",
-          "group": "armaApi@1"
+          "group": "sqfReloader@1"
         }
       ]
     },
     "configuration": {
       "title": "Arma 3 SQF Reloader",
       "properties": {
-        "armaApi.armaDirectory": {
+        "sqfReloader.armaDirectory": {
           "type": "string",
           "default": "",
           "scope": "machine",
           "markdownDescription": "Arma 3 installation folder (contains `arma3_x64.exe`). Leave empty to auto-detect from the registry / Steam libraries."
         },
-        "armaApi.enabled": {
+        "sqfReloader.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Send SQF changes to Arma 3 when a file is saved."
         },
-        "armaApi.apiUrl": {
+        "sqfReloader.apiUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8765/api",
-          "description": "Base URL of the ArmaApi REST server (the ArmaApi mod must be running in Arma 3)."
+          "description": "Base URL of the SqfReloader REST server (the SqfReloader mod must be running in Arma 3)."
         },
-        "armaApi.requestTimeout": {
+        "sqfReloader.requestTimeout": {
           "type": "number",
           "default": 3000,
           "description": "Timeout in milliseconds for a request to Arma."
         },
-        "armaApi.autoJunction": {
+        "sqfReloader.autoJunction": {
           "type": "boolean",
           "default": true,
           "description": "Create a junction from the Arma 3 folder to the open mod folder so Arma (and the reloader) can read the scripts from your working copy."
         },
-        "armaApi.junctionMode": {
+        "sqfReloader.junctionMode": {
           "type": "string",
           "enum": [
             "addon",
@@ -137,7 +137,7 @@
           "default": "addon",
           "description": "How mod folders are linked into the Arma 3 directory."
         },
-        "armaApi.reloadOnSave": {
+        "sqfReloader.reloadOnSave": {
           "type": "string",
           "enum": [
             "reload",
@@ -152,20 +152,20 @@
           "default": "reload",
           "description": "How a saved SQF file is pushed to Arma."
         },
-        "armaApi.notifyOnError": {
+        "sqfReloader.notifyOnError": {
           "type": "boolean",
           "default": true,
           "description": "Show a notification when Arma is not reachable or a reload fails."
         },
-        "armaApi.extraLaunchArguments": {
+        "sqfReloader.extraLaunchArguments": {
           "type": "string",
           "default": "-noSplash -skipIntro -noPause",
-          "markdownDescription": "Extra arguments for `Arma API: Play`. `-filePatching`, `-mod=` and `-noBattlEye` are always added (file patching and the mod are required by the reloader, BattlEye cannot load the unsigned extension); set `-be` here to start it anyway."
+          "markdownDescription": "Extra arguments for `SqfReloader: Play`. `-filePatching`, `-mod=` and `-noBattlEye` are always added (file patching and the mod are required by the reloader, BattlEye cannot load the unsigned extension); set `-be` here to start it anyway."
         },
-        "armaApi.createExampleWithMission": {
+        "sqfReloader.createExampleWithMission": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "**Arma API: Create example mod** also writes `missions/example.Altis`, a minimal mission that calls the generated functions."
+          "markdownDescription": "**SqfReloader: Create example mod** also writes `missions/example.Altis`, a minimal mission that calls the generated functions."
         }
       }
     }

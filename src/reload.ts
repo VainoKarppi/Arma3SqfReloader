@@ -24,7 +24,7 @@ function notify(settings: Settings, message: string): void {
  * file from the junction inside the Arma folder, which also picks up helper functions that
  * are not in a PBO. "recompile" posts the editor content as an EdenOnline-style recompile
  * command. Both fall back to /api/eval with a compile statement when the primary route is
- * unavailable (older ArmaApi builds).
+ * unavailable (older SqfReloader builds).
  */
 export async function reloadDocument(document: vscode.TextDocument, settings: Settings): Promise<ReloadOutcome> {
     if (settings.reloadOnSave === "off") {
@@ -38,7 +38,7 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     const addon = findAddonForFile(document.fileName);
 
     if (!addon) {
-        const message = `${path.basename(document.fileName)} is not inside a folder with $PBOPREFIX$, so Arma cannot load it. Use "Arma API: Set up this mod" first.`;
+        const message = `${path.basename(document.fileName)} is not inside a folder with $PBOPREFIX$, so Arma cannot load it. Use "SqfReloader: Set up this mod" first.`;
         log(message);
         notify(settings, message);
         return { ok: false, message };
@@ -86,7 +86,7 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
 
     // Fallback: compile the editor buffer directly in Arma.
     try {
-        const code = `${sqfString(variable)} call ArmaApi_fnc_compileFunction;\n` +
+        const code = `${sqfString(variable)} call SqfReloader_fnc_compileFunction;\n` +
             `${sqfString(variable)} = compile ${sqfString(document.getText())};\n` +
             `missionNamespace setVariable ${sqfString(variable)}`;
         const result = await evalCode(settings, code);
@@ -144,7 +144,7 @@ async function verifyFunctionVisible(settings: Settings, variable: string, armaP
     return { ok: true, message: `Reload queued for ${variable}.` };
 }
 
-/** Reads the list of files ArmaApi can hot reload (its own SQF sources). */
+/** Reads the list of files SqfReloader can hot reload (its own SQF sources). */
 export async function sourceIndex(settings: Settings): Promise<string[]> {
     const result = await listFunctions(settings);
     const functions = Array.isArray(result.functions) ? result.functions as unknown[][] : [];
@@ -171,7 +171,7 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     const armaPath = toArmaPath(addon, document.fileName);
     const code = `${sqfString(variable)} = compile preprocessFileLineNumbers ${sqfString(armaPath)};` +
         `\nmissionNamespace setVariable [${sqfString(variable)}, ${sqfString(variable)}];` +
-        `\ndiag_log format ["[ArmaApi] recompiled %1", ${sqfString(variable)}];`;
+        `\ndiag_log format ["[SqfReloader] recompiled %1", ${sqfString(variable)}];`;
 
     const result = await evalCode(settings, code);
 

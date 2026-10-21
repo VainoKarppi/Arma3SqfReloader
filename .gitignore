@@ -28,19 +28,19 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
-# ArmaApi extension build output
-ArmaApiExtension/bin/
-ArmaApiExtension/obj/
-ArmaApiExtension/dist/
-ArmaApiExtension/tools/**/bin/
-ArmaApiExtension/tools/**/obj/
+# SqfReloader extension build output
+SqfReloaderExtension/bin/
+SqfReloaderExtension/obj/
+SqfReloaderExtension/dist/
+SqfReloaderExtension/tools/**/bin/
+SqfReloaderExtension/tools/**/obj/
 # callExtension harness (downloaded by tools\install-call-extension.ps1)
-ArmaApiExtension/tests/callExtension/callExtension_x64.exe
-ArmaApiExtension/tests/callExtension/*.txt
-ArmaApiExtension/tests/callExtension/*.cmd
-ArmaApiExtension/tests/callExtension/ArmaApi_x64.dll
+SqfReloaderExtension/tests/callExtension/callExtension_x64.exe
+SqfReloaderExtension/tests/callExtension/*.txt
+SqfReloaderExtension/tests/callExtension/*.cmd
+SqfReloaderExtension/tests/callExtension/SqfReloader_x64.dll
 # callExtension harness samples (only the runner is downloaded on demand)
-ArmaApiExtension/tests/callExtension/callExtension.exe
-ArmaApiExtension/tests/callExtension/readme.txt
-ArmaApiExtension/tests/callExtension/test_*
-ArmaApiExtension/tests/callExtension/api_*
+SqfReloaderExtension/tests/callExtension/callExtension.exe
+SqfReloaderExtension/tests/callExtension/readme.txt
+SqfReloaderExtension/tests/callExtension/test_*
+SqfReloaderExtension/tests/callExtension/api_*

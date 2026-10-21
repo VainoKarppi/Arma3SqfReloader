@@ -23,8 +23,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
-    statusBar.command = "armaApi.play";
-    setStatus("$(play) Play Arma 3", false, "Start Arma 3 with this mod and ArmaApi");
+    statusBar.command = "sqfReloader.play";
+    setStatus("$(play) Play Arma 3", false, "Start Arma 3 with this mod and SqfReloader");
     statusBar.show();
 
     // --- Save -> reload ---------------------------------------------------
@@ -43,12 +43,12 @@ export function activate(context: vscode.ExtensionContext): void {
                     setStatus(`$(check) ${shorten(outcome.message)}`, false);
                 }
             } else {
-                setStatus("$(warning) Arma API: reload failed", true);
+                setStatus("$(warning) SqfReloader: reload failed", true);
                 log(`Reload failed: ${outcome.message}${outcome.detail ? ` (${outcome.detail})` : ""}`);
             }
         } catch (error) {
             logError("save handler failed", error);
-            setStatus("$(warning) Arma API: reload failed", true);
+            setStatus("$(warning) SqfReloader: reload failed", true);
         }
     }));
 
@@ -66,7 +66,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(onWorkspaceChange));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
-        if (event.affectsConfiguration("armaApi")) {
+        if (event.affectsConfiguration("sqfReloader")) {
             log("Settings changed.");
             void onWorkspaceChange();
         }
@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // --- Commands ---------------------------------------------------------
     const playCommand = async (): Promise<boolean> => {
         if (!runtime) {
-            vscode.window.showErrorMessage("The ArmaApi files bundled with this extension are missing. Reinstall the extension.");
+            vscode.window.showErrorMessage("The SqfReloader files bundled with this extension are missing. Reinstall the extension.");
             return false;
         }
 
@@ -93,9 +93,9 @@ export function activate(context: vscode.ExtensionContext): void {
         return started;
     };
 
-    register(context, "armaApi.play", playCommand);
+    register(context, "sqfReloader.play", playCommand);
 
-    register(context, "armaApi.stop", async () => {
+    register(context, "sqfReloader.stop", async () => {
         if (!isRunning()) {
             vscode.window.showInformationMessage("Arma 3 is not running.");
             return;
@@ -116,17 +116,17 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    register(context, "armaApi.setup", async () => {
+    register(context, "sqfReloader.setup", async () => {
         await setupFromContext(readSettings());
         await refreshStatus();
     });
 
-    register(context, "armaApi.setupWorkspace", async () => {
+    register(context, "sqfReloader.setupWorkspace", async () => {
         await setupWorkspace(readSettings());
         await refreshStatus();
     });
 
-    register(context, "armaApi.createExample", async () => {
+    register(context, "sqfReloader.createExample", async () => {
         const result = await scaffoldExample();
 
         if (result) {
@@ -136,13 +136,13 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    register(context, "armaApi.connect", async () => {
+    register(context, "sqfReloader.connect", async () => {
         const settings = readSettings();
 
         try {
             const status = await getStatus(settings);
             const connected = status.gameConnected === true;
-            const message = `ArmaApi ${status.version ?? "?"} on ${settings.apiUrl} - game callback ${connected ? "registered" : "NOT registered"}.`;
+            const message = `SqfReloader ${status.version ?? "?"} on ${settings.apiUrl} - game callback ${connected ? "registered" : "NOT registered"}.`;
 
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${message}`);
             log(message);
@@ -160,10 +160,10 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    register(context, "armaApi.reloadAll", async () => {
+    register(context, "sqfReloader.reloadAll", async () => {
         const settings = readSettings();
         const outcome = await reloadAll(settings);
-        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) Arma API: reload failed", !outcome.ok);
+        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", !outcome.ok);
 
         if (outcome.ok) {
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -172,7 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    register(context, "armaApi.reloadFile", async () => {
+    register(context, "sqfReloader.reloadFile", async () => {
         const document = vscode.window.activeTextEditor?.document;
 
         if (!document) {
@@ -182,7 +182,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         try {
             const outcome = await reloadFileNow(document, readSettings());
-            setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) Arma API: reload failed", !outcome.ok);
+            setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", !outcome.ok);
 
             if (!outcome.ok) {
                 vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -193,26 +193,26 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
 
-    register(context, "armaApi.removeJunctions", async () => {
+    register(context, "sqfReloader.removeJunctions", async () => {
         await removeJunctions(readSettings());
     });
 
-    register(context, "armaApi.openArmaFolder", async () => {
+    register(context, "sqfReloader.openArmaFolder", async () => {
         const armaDirectory = await findArmaDirectory(readSettings());
 
         if (!armaDirectory) {
-            vscode.window.showWarningMessage("Arma 3 was not found. Set \"armaApi.armaDirectory\".");
+            vscode.window.showWarningMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\".");
             return;
         }
 
         await vscode.env.openExternal(vscode.Uri.file(armaDirectory));
     });
 
-    register(context, "armaApi.showOutput", async () => {
+    register(context, "sqfReloader.showOutput", async () => {
         getOutput().show(true);
     });
 
-    register(context, "armaApi.toggleAutoReload", async () => {
+    register(context, "sqfReloader.toggleAutoReload", async () => {
         const enabled = !readSettings().enabled;
         await updateSetting("enabled", enabled);
         vscode.window.showInformationMessage(`Arma 3 SQF Reloader: reload on save ${enabled ? "enabled" : "disabled"}.`);
@@ -244,7 +244,7 @@ function register(context: vscode.ExtensionContext, command: string, handler: (.
 }
 
 // Dev hook (not part of the user flow): with ARMA_API_TEST_OUTPUT set to a file path, the
-// extension runs "Arma API: Create example mod" (ARMA_API_TEST_TEMPLATE=1) or "Play" once and
+// extension runs "SqfReloader: Create example mod" (ARMA_API_TEST_TEMPLATE=1) or "Play" once and
 // mirrors its log there, which is how scripts/verify-template.js and the launcher tests drive
 // the extension without automating the UI.
 const testWarnings: string[] = [];
@@ -274,10 +274,10 @@ function installTestHook(context: vscode.ExtensionContext, play: () => Promise<b
         try {
             const settings = readSettings();
             append(`INFO armaDirectory=${settings.armaDirectory}`);
-            append(`INFO runtime=${runtime ? `${runtime.dll} exists=${fs.existsSync(runtime.dll)}` : "missing"}`);
+            append(`INFO runtime=${runtime ? `${runtime.modDirectory} exists=${fs.existsSync(runtime.modDirectory)}` : "missing"}`);
 
             if (process.env.ARMA_API_TEST_TEMPLATE) {
-                await vscode.commands.executeCommand("armaApi.createExample");
+                await vscode.commands.executeCommand("sqfReloader.createExample");
                 append(`TEMPLATE ${JSON.stringify(workspaceMods().map(mod => mod.name))}`);
             } else {
                 const started = await play();
@@ -329,7 +329,7 @@ async function refreshStatus(): Promise<void> {
 
     try {
         const status = await getStatus(settings);
-        setStatus(status.gameConnected ? "$(check) Arma API connected" : "$(sync~spin) Arma API starting", status.gameConnected !== true);
+        setStatus(status.gameConnected ? "$(check) SqfReloader connected" : "$(sync~spin) SqfReloader starting", status.gameConnected !== true);
     } catch {
         setStatus("$(play) Play Arma 3", false);
     }

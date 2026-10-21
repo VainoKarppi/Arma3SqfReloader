@@ -27,7 +27,7 @@ const cases = [
     ["launchmod\\addons\\core", "launchmod", "core"]
 ];
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "armaapi-tags-"));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-tags-"));
 let failed = 0;
 
 try {

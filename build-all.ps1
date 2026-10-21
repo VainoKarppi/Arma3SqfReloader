@@ -1,12 +1,12 @@
-﻿<#
+<#
 .SYNOPSIS
-    Builds everything: the ArmaApi extension, the @ArmaApi mod, the editable junction sources
+    Builds everything: the SqfReloader extension, the @SqfReloader mod, the editable junction sources
     and the VS Code extension (.vsix). Optionally installs both into Arma 3 / VS Code.
 
 .DESCRIPTION
-    1. NativeAOT ArmaApi_x64.dll            (ArmaApiExtension/tools/build.ps1)
-    2. @ArmaApi mod (PBO via AddonBuilder)  (dist/@ArmaApi, dist/ArmaApi-Setup.zip)
-    3. Runtime bundle for the VSIX          (vscode-runtime/ArmaApi_x64.dll + @ArmaApi)
+    1. NativeAOT SqfReloader_x64.dll            (SqfReloaderExtension/tools/build.ps1)
+    2. @SqfReloader mod (PBO via AddonBuilder)  (dist/@SqfReloader, dist/SqfReloader-Setup.zip)
+    3. Runtime bundle for the VSIX          (vscode-runtime/SqfReloader_x64.dll + @SqfReloader)
     4. VS Code extension                    (npm install, tsc, vsce package -> *.vsix)
 
     Every build increases the version of both components by one patch level
@@ -20,7 +20,7 @@
     code --install-extension <vsix> (replaces a previous install).
 
 .PARAMETER InstallArma
-    Runs ArmaApiExtension/tools/install.ps1 (DLL next to arma3_x64.exe + @ArmaApi + config).
+    Runs SqfReloaderExtension/tools/install.ps1 (installs @SqfReloader + the API config).
 
 .PARAMETER ArmaDir
     Arma 3 folder for -InstallArma. Auto-detected when omitted.
@@ -59,8 +59,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = $PSScriptRoot
-$extensionDir = Join-Path $repoRoot "ArmaApiExtension"
-$addonSource = Join-Path $extensionDir "addons\armaapi"
+$extensionDir = Join-Path $repoRoot "SqfReloaderExtension"
+$modSource = Join-Path $extensionDir "@SqfReloader"
+$addonName = "scripts"
+$modName = "SqfReloader"
+$dllName = "SqfReloader_x64.dll"
 $npm = if ($env:OS -eq "Windows_NT") { "npm.cmd" } else { "npm" }
 
 if ($Install) {
@@ -69,7 +72,7 @@ if ($Install) {
 }
 
 if ($InstallArma) {
-    # The extension deploys the bundled DLL and @ArmaApi itself on "Arma API: Play".
+    # The extension deploys the bundled DLL and @SqfReloader itself on "SqfReloader: Play".
     Write-Host "Note: -InstallArma is no longer needed (the extension ships the DLL and the mod); installing anyway." -ForegroundColor Yellow
 }
 
@@ -100,10 +103,10 @@ function Invoke-Native {
 }
 
 # ---------------------------------------------------------------------------
-# 1. ArmaApi extension + mod (PBO via Arma 3 Tools AddonBuilder)
+# 1. SqfReloader extension + mod (PBO via Arma 3 Tools AddonBuilder)
 # ---------------------------------------------------------------------------
 
-Write-Step "Building the ArmaApi extension and mod"
+Write-Step "Building the SqfReloader extension and mod"
 
 $buildArgs = @("-File", (Join-Path $extensionDir "tools\build.ps1"), "-Release")
 if ($Clean) { $buildArgs += "-Clean" }
@@ -111,56 +114,41 @@ if ($NoVersionBump) { $buildArgs += "-NoVersionBump" }
 if ($AddonBuilder) { $buildArgs += @("-AddonBuilder", $AddonBuilder) }
 
 Invoke-Native -FilePath "powershell" -Arguments (@("-NoProfile", "-ExecutionPolicy", "Bypass") + $buildArgs)
-Write-Ok "ArmaApi_x64.dll, @ArmaApi (armaapi.pbo) and ArmaApi-Setup.zip built"
+Write-Ok "SqfReloader_x64.dll and @SqfReloader built"
 
 # Both components share one version number (tools\build.ps1 already bumped them together).
 $version = "?"
 try { $version = (Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json).version } catch { }
 
 # ---------------------------------------------------------------------------
-# 2. Runtime files shipped inside the VSIX
-#    (vscode-runtime/ArmaApi_x64.dll + vscode-runtime/mod/@ArmaApi)
+# 2. Runtime shipped inside the VSIX: the complete @SqfReloader mod
+#    (vscode-runtime/mod/@SqfReloader -> <Arma 3>\@SqfReloader on Play)
 # ---------------------------------------------------------------------------
 
 Write-Step "Bundling the runtime into the VS Code extension"
 
 $runtimeDir = Join-Path $repoRoot "vscode-runtime"
-$runtimeMod = Join-Path $runtimeDir "mod\@ArmaApi"
+$runtimeMod = Join-Path $runtimeDir "mod\@$modName"
 
 if (Test-Path $runtimeDir) { Remove-Item $runtimeDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $runtimeMod | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $runtimeMod -Parent) | Out-Null
 
-$builtDll = Join-Path $extensionDir "dist\@ArmaApi\dll\ArmaApi_x64.dll"
-$builtPbo = Join-Path $extensionDir "dist\@ArmaApi\addons\armaapi.pbo"
-if (!(Test-Path $builtDll)) { throw "DLL not found: $builtDll" }
-if (!(Test-Path $builtPbo)) { throw "PBO not found: $builtPbo" }
+$builtMod = Join-Path $extensionDir "dist\@$modName"
+if (!(Test-Path (Join-Path $builtMod $dllName))) { throw "$dllName not found in $builtMod" }
+if (!(Test-Path (Join-Path $builtMod "addons\$addonName.pbo"))) { throw "PBO not found in $builtMod\addons" }
+if (!(Test-Path (Join-Path $builtMod "logo.paa"))) { throw "logo.paa not found in $builtMod (mod.cpp references it)" }
 
-Copy-Item $builtDll $runtimeDir -Force
-
-# mod.cpp points at \armaapi\logo.paa, which lives inside the PBO.
-Copy-Item (Join-Path $addonSource "mod.cpp") $runtimeMod -Force
-
-# The addon ships as a PBO, exactly like the E:\SteamLibrary\...\@ArmaApi install. Hot reloads
-# still work: the extension links <arma>\z\armaapi\addons\armaapi to the plain sources in
-# vscode-runtime\mod\armaapi-src and enables file patching (replacePbo), and it writes
-#     reloader = "\armaapi-src\reloader.sqf"; recompile = 1;
-# into that patched config before Arma starts (src/reloader.ts).
-$pboDir = Join-Path $runtimeMod "addons"
-New-Item -ItemType Directory -Force -Path $pboDir | Out-Null
-Copy-Item $builtPbo $pboDir -Force
-
-# Sources of the SQF side (also what "afterbuner" style tools read).
-$runtimeSource = Join-Path $runtimeDir "mod\armaapi-src"
-New-Item -ItemType Directory -Force -Path $runtimeSource | Out-Null
-Copy-Item (Join-Path $addonSource "config.cpp") $runtimeSource -Force
-Copy-Item (Join-Path $addonSource '$PBOPREFIX$') $runtimeSource -Force
-Copy-Item (Join-Path $addonSource "functions") $runtimeSource -Recurse -Force
+# Ship the mod exactly as it has to look in the Arma folder - the dist copy already has that
+# layout, so it is copied as a whole:
+#   mod.cpp, logo.paa, addons\scripts.pbo, SqfReloader_x64.dll
+# The DLL must be in the mod ROOT - Arma does not search a dll\ subfolder for extensions.
+Copy-Item $builtMod $runtimeMod -Recurse -Force
 
 if ($Clean) {
     Get-ChildItem $repoRoot -Filter "arma3-sqf-reloader-*.vsix" | Remove-Item -Force
 }
 
-Write-Ok "vscode-runtime: ArmaApi_x64.dll + @ArmaApi\addons\armaapi.pbo + armaapi-src ($((Get-ChildItem $runtimeDir -Recurse -File).Count) files)"
+Write-Ok "vscode-runtime\mod\@$modName : mod.cpp + logo.paa + addons\$addonName.pbo + $dllName ($((Get-ChildItem $runtimeMod -Recurse -File).Count) files)"
 
 # ---------------------------------------------------------------------------
 # 4. VS Code extension
@@ -196,7 +184,7 @@ else {
 # ---------------------------------------------------------------------------
 
 if ($InstallArma) {
-    Write-Step "Installing ArmaApi into Arma 3"
+    Write-Step "Installing SqfReloader into Arma 3"
 
     $installArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $extensionDir "tools\install.ps1"), "-NoBuild")
     if ($ArmaDir) { $installArgs += @("-ArmaDir", $ArmaDir) }
@@ -226,9 +214,9 @@ if ($InstallVsCode) {
 
 Write-Step "Done"
 Write-Host "  Version          : $version" -ForegroundColor Gray
-Write-Host "  ArmaApi DLL      : $(Join-Path $extensionDir 'dist\@ArmaApi\dll\ArmaApi_x64.dll')" -ForegroundColor Gray
-Write-Host "  ArmaApi mod      : $(Join-Path $extensionDir 'dist\@ArmaApi') (addons\armaapi.pbo)" -ForegroundColor Gray
-Write-Host "  PBO sources      : $(Join-Path $runtimeDir 'mod\armaapi-src')" -ForegroundColor Gray
+Write-Host "  @SqfReloader mod : $(Join-Path $extensionDir 'dist\@SqfReloader')" -ForegroundColor Gray
+Write-Host "    mod.cpp, logo.paa, addons\$addonName.pbo, $dllName" -ForegroundColor Gray
+Write-Host "  Bundled in VSIX  : $runtimeMod" -ForegroundColor Gray
 if ($vsix) { Write-Host "  VS Code extension: $($vsix.FullName)" -ForegroundColor Gray }
 Write-Host ""
-Write-Host "  Next: open your mod folder in VS Code and run ""Arma API: Play"" (status bar). Saving a .sqf file recompiles it in the running game." -ForegroundColor Gray
+Write-Host "  Next: open your mod folder in VS Code and run ""SqfReloader: Play"" (status bar). Saving a .sqf file recompiles it in the running game." -ForegroundColor Gray

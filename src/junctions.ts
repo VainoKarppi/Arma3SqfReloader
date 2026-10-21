@@ -23,7 +23,7 @@ interface Registration {
     target: string;
 }
 
-const REGISTRY_FILE = ".armaapi-links.json";
+const REGISTRY_FILE = ".sqfreloader-links.json";
 
 /**
  * Links the mod into the Arma folder so both Arma and the reloader read the files from the

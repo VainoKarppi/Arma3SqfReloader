@@ -1,8 +1,8 @@
 ﻿# The VS Code extension ships only what it needs at runtime:
 #   out/                compiled JavaScript
-#   vscode-runtime/     ArmaApi_x64.dll + the unpacked @ArmaApi mod (deployed to the Arma folder
+#   vscode-runtime/     SqfReloader_x64.dll + the unpacked @SqfReloader mod (deployed to the Arma folder
 #                       on "Arma API: Play", see src/runtime.ts)
-ArmaApiExtension/**
+SqfReloaderExtension/**
 arma3-sqf-reloader-*.vsix
 *.bak
 build-all.ps1
@@ -13,6 +13,6 @@ scripts/**
 tsconfig.json
 .gitignore
 .vscodeignore
-.armaapi-links.json
+.SqfReloader-links.json
 .vscode/**
 **/*.tsbuildinfo

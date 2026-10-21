@@ -1,4 +1,4 @@
-// Verifies the parts of the extension that need a live ArmaApi: addon detection, the Arma
+// Verifies the parts of the extension that need a live SqfReloader: addon detection, the Arma
 // file path, and reloadDocument's HTTP calls (including the "not linked" diagnostics).
 // Run from the repository root:  node scripts/verify-extension.js <modFolder> <armaFolder>
 "use strict";
@@ -23,7 +23,7 @@ Module._resolveFilename = function (request, ...rest) {
 const { findModForFile, findAddonForFile, toArmaPath, toFunctionVariable } = require(path.join(repoRoot, "out", "arma.js"));
 const { reloadDocument } = require(path.join(repoRoot, "out", "reload.js"));
 
-const modFolder = path.resolve(process.argv[2] ?? "ArmaApiExtension/dist/@ArmaApi/source");
+const modFolder = path.resolve(process.argv[2] ?? "SqfReloaderExtension/dist/@SqfReloader");
 const armaFolder = path.resolve(process.argv[3] ?? "C:/Users/vaino/AppData/Local/Temp/Arma3Test");
 const file = path.join(modFolder, "addons", "core", "functions", "fn_hello.sqf");
 

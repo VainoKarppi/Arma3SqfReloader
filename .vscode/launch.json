@@ -15,12 +15,12 @@
             "preLaunchTask": "npm: compile"
         },
         {
-            "name": "Run Extension (ArmaApi sources)",
+            "name": "Run Extension (SqfReloader sources)",
             "type": "extensionHost",
             "request": "launch",
             "args": [
                 "--extensionDevelopmentPath=${workspaceFolder}",
-                "${workspaceFolder}/ArmaApiExtension/dist/@ArmaApi/source"
+                "${workspaceFolder}/SqfReloaderExtension/dist/@SqfReloader"
             ],
             "outFiles": [
                 "${workspaceFolder}/out/**/*.js"

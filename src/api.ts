@@ -62,7 +62,7 @@ export function request(settings: Settings, method: "GET" | "POST", route: strin
             if (error instanceof ApiError) {
                 reject(error);
             } else if ((error as NodeJS.ErrnoException).code === "ECONNREFUSED") {
-                reject(new ApiError(`ArmaApi is not listening on ${settings.apiUrl}. Start Arma 3 with the @ArmaApi mod and run [] call ArmaApi_fnc_apiStart;`));
+                reject(new ApiError(`SqfReloader is not listening on ${settings.apiUrl}. Start Arma 3 with the @SqfReloader mod and run [] call SqfReloader_fnc_apiStart;`));
             } else {
                 reject(new ApiError(error.message, error));
             }
@@ -90,7 +90,7 @@ export async function getStatus(settings: Settings): Promise<Status> {
     const response = await request(settings, "GET", "/status");
 
     if (response.status !== 200) {
-        throw new ApiError(`ArmaApi answered HTTP ${response.status}: ${response.body}`);
+        throw new ApiError(`SqfReloader answered HTTP ${response.status}: ${response.body}`);
     }
 
     return (response.json ?? {}) as Status;

@@ -1,4 +1,4 @@
-// Verifies "Arma API: Create example mod" without VS Code: writes the template into a temporary
+// Verifies "SqfReloader: Create example mod" without VS Code: writes the template into a temporary
 // folder and checks that the extension can discover, link and reload the generated mod.
 // Run from the repository root:  node scripts/verify-template.js
 "use strict";
@@ -23,7 +23,7 @@ Module._resolveFilename = function (request, ...rest) {
 const { writeTemplate, exampleMod, TEMPLATE_MOD_NAME } = require(path.join(repoRoot, "out", "scaffold.js"));
 const { findMods, findModForFile, findAddonForFile, toArmaPath, toFunctionVariable } = require(path.join(repoRoot, "out", "arma.js"));
 
-const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "armaapi-template-"));const failures = [];
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-"));const failures = [];
 
 function check(name, condition, detail) {
     if (condition) {
@@ -51,7 +51,7 @@ try {
     check("one addon with the example prefix", addon?.prefix === "example\\addons\\example", addon?.prefix);
     check("function tag is example", addon?.tag === "example", addon?.tag);
 
-    // --- reloadability: file -> variable -> source path ArmaApi looks for ---
+    // --- reloadability: file -> variable -> source path SqfReloader looks for ---
     const hello = path.join(result.modDirectory, "addons", "example", "functions", "fn_hello.sqf");
     check("fn_hello.sqf exists", fs.existsSync(hello));
 
@@ -62,7 +62,7 @@ try {
     check("function variable is example_fnc_hello", variable === "example_fnc_hello", variable);
 
     const armaPath = addonForFile ? toArmaPath(addonForFile, hello) : "";
-    // ArmaApi_fnc_reloadFunction resolves this to \z\example\addons\example\functions\fn_hello.sqf
+    // SqfReloader_fnc_reloadFunction resolves this to \z\example\addons\example\functions\fn_hello.sqf
     check(
         "Arma fileExists() path matches the reload candidate",
         armaPath === "\\example\\addons\\example\\functions\\fn_hello.sqf",
@@ -75,11 +75,11 @@ try {
     // --- reloadable list + declared tag ------------------------------------
     const config = fs.readFileSync(path.join(result.modDirectory, "addons", "example", "config.cpp"), "utf8");
     check("config.cpp declares the tag", /tag = "example";/.test(config));
-    check("config.cpp lists reloadable functions", /ArmaApi_reloadable\[\] = \{"example_fnc_hello", "example_fnc_add"\};/.test(config));
+    check("config.cpp lists reloadable functions", /SqfReloader_reloadable\[\] = \{"example_fnc_hello", "example_fnc_add"\};/.test(config));
     check("every function class exists in config.cpp", ["hello", "add", "showCounter"].every(name => new RegExp(`class ${name} \\{ recompile = 1; \\};`).test(config)));
 
     const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
-    check("workspace settings written", /"armaApi\.junctionMode": "addon"/.test(settingsJson));
+    check("workspace settings written", /"sqfReloader\.junctionMode": "addon"/.test(settingsJson));
 
     // --- second run must not overwrite work --------------------------------
     const before = fs.readFileSync(hello, "utf8");
@@ -89,7 +89,7 @@ try {
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
 
     // --- mod-only variant ---------------------------------------------------
-    const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "armaapi-template-modonly-"));
+    const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
     const modOnly = writeTemplate(modOnlyRoot, false, false);
     check("mod-only variant writes no mission", !modOnly.missionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")));
     check("mod-only variant writes 7 files", modOnly.files.length === 7, `${modOnly.files.length} files`);
@@ -102,8 +102,8 @@ try {
         .filter(line => !line.trim().startsWith("//"))
         .join("\n");
     const parsed = JSON.parse(jsonc);
-    check("generated settings.json parses", parsed["armaApi.junctionMode"] === "addon");
-    check("generated settings.json has armaDirectory", typeof parsed["armaApi.armaDirectory"] === "string");
+    check("generated settings.json parses", parsed["sqfReloader.junctionMode"] === "addon");
+    check("generated settings.json has armaDirectory", typeof parsed["sqfReloader.armaDirectory"] === "string");
 } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
 }

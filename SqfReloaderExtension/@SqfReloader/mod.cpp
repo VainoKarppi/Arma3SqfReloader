@@ -1,0 +1,15 @@
+name = "SqfReloader";
+author = "Razer";
+actionName = "";
+action = "";
+dir = "@SqfReloader";
+hideName = 0;
+hidePicture = 0;
+logo = "logo.paa";
+logoOver = "";
+picture = "";
+tooltip = "SqfReloader";
+tooltipOwned = "SqfReloader";
+overview = "<br/>SqfReloader hosts a native extension (SqfReloader_x64.dll) inside Arma 3 that exposes a local REST API. Editors and tools can push code, recompile functions and send messages into a running game or the Eden Editor without restarting Arma.<br/><br/>Default endpoint: http://127.0.0.1:8765/api/ - start it in the Eden Editor from Tools > SqfReloader.";
+description = "SqfReloader - REST API bridge for Arma 3";
+overviewPicture = "";

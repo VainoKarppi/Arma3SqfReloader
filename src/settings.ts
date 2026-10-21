@@ -18,7 +18,7 @@ export interface Settings {
     createExampleWithMission: boolean;
 }
 
-const SECTION = "armaApi";
+const SECTION = "sqfReloader";
 
 export function readSettings(): Settings {
     const config = vscode.workspace.getConfiguration(SECTION);

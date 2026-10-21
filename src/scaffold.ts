@@ -81,7 +81,7 @@ export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<Sc
     );
 
     if (choice === "Play Arma 3") {
-        void vscode.commands.executeCommand("armaApi.play");
+        void vscode.commands.executeCommand("sqfReloader.play");
     }
 
     return result;
@@ -109,13 +109,13 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
     };
 
     // The $PBOPREFIX$ sits in the addon folder itself: its second segment is the function tag,
-    // so z\<tag>\addons\<tag>\functions\fn_x.sqf becomes <tag>_fnc_x (what ArmaApi reloads).
+    // so z\<tag>\addons\<tag>\functions\fn_x.sqf becomes <tag>_fnc_x (what SqfReloader reloads).
     const prefix = `${TEMPLATE_TAG}\\addons\\${TEMPLATE_TAG}`;
     write(path.join(addonDirectory, "$PBOPREFIX$"), prefix);
     write(path.join(modDirectory, "mod.cpp"), modCpp());
     write(path.join(addonDirectory, "config.cpp"), configCpp());
 
-    // ArmaApi_fnc_reloadFunction looks for z\<tag>\addons\<tag>\functions\fn_<name>.sqf, so the
+    // SqfReloader_fnc_reloadFunction looks for z\<tag>\addons\<tag>\functions\fn_<name>.sqf, so the
     // function files live flat in functions/ (not in per-class sub folders).
     write(path.join(addonDirectory, "functions", "fn_hello.sqf"), fnHello());
     write(path.join(addonDirectory, "functions", "fn_add.sqf"), fnAdd());
@@ -218,8 +218,8 @@ function configCpp(): string {
         versionStr = "1.0.0";
         versionAr[] = {1, 0, 0};
 
-        // ArmaApi may recompile these in a running game (ArmaApi_fnc_reloadFunction).
-        ArmaApi_reloadable[] = {"${TEMPLATE_TAG}_fnc_hello", "${TEMPLATE_TAG}_fnc_add"};
+        // SqfReloader may recompile these in a running game (SqfReloader_fnc_reloadFunction).
+        SqfReloader_reloadable[] = {"${TEMPLATE_TAG}_fnc_hello", "${TEMPLATE_TAG}_fnc_add"};
     };
 };
 
@@ -284,16 +284,16 @@ function descriptionExt(): string {
     onLoadMission = "Minimal mission that runs the example mod functions.";
 };
 
-// ArmaApi_fnc_runStartup runs this once the mod's Cfg3DEN init started the REST API
+// SqfReloader_fnc_runStartup runs this once the mod's Cfg3DEN init started the REST API
 // (or when the VS Code launcher starts the mission).
-class ArmaApi {
-    StartupCode = "diag_log '[ExampleMod] ArmaApi startup code ran';";
+class SqfReloader {
+    StartupCode = "diag_log '[ExampleMod] SqfReloader startup code ran';";
 };
 `;
 }
 
 function missionInitPlayerLocal(): string {
-    return `// Runs for every player. @ArmaApi starts itself from its Cfg3DEN event handler.
+    return `// Runs for every player. @SqfReloader starts itself from its Cfg3DEN event handler.
 if (!hasInterface) exitWith {};
 
 [] spawn {
@@ -306,10 +306,10 @@ if (!hasInterface) exitWith {};
 function vscodeSettings(): string {
     return `{
     // Set this when Arma 3 is not detected automatically (folder with arma3_x64.exe).
-    "armaApi.armaDirectory": "",
-    "armaApi.junctionMode": "addon",
-    "armaApi.reloadOnSave": "reload",
-    "armaApi.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors"
+    "sqfReloader.armaDirectory": "",
+    "sqfReloader.junctionMode": "addon",
+    "sqfReloader.reloadOnSave": "reload",
+    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors"
 }
 `;
 }

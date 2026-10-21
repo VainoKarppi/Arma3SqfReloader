@@ -30,7 +30,7 @@
         },
         {
             "type": "shell",
-            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ArmaApiExtension\\tools\\test-extension.ps1",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File SqfReloaderExtension\\tools\\test-extension.ps1",
             "problemMatcher": [],
             "label": "Test extension (callExtension harness)"
         }
