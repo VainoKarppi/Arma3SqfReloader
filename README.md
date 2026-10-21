@@ -213,6 +213,9 @@ shipped addon is a `.pbo`.
 ```powershell
 # DLL + mod + VSIX (and install it)
 powershell -ExecutionPolicy Bypass -File build-all.ps1 -Install
+
+# Build an exact version: writes it to every version file, then builds it
+powershell -ExecutionPolicy Bypass -File build-all.ps1 -Version "2.3.0"
 ```
 
 `build-all.ps1` builds the native extension, packs
@@ -226,10 +229,15 @@ The sources in `SqfReloaderExtension\@SqfReloader` are already laid out exactly 
 mod (`mod.cpp`, `logo.paa`, `addons\scripts\`), so `dist\@SqfReloader` is that tree plus the
 packed PBO and the DLL.
 
-Every build increases the version by one patch level and writes the same number to
-`SqfReloaderExtension.csproj` (+ `src\BuildStamp.cs`, which is what the DLL reports over REST),
-`CfgPatches` in `config.cpp` and `package.json`/`package-lock.json`. Use `-NoVersionBump` to
-rebuild the current version.
+**Version handling**
+
+| Invocation | Behavior |
+| --- | --- |
+| `build-all.ps1 -Version "2.3.0"` | Writes 2.3.0 to `SqfReloaderExtension.csproj`, `src\BuildStamp.cs`, `CfgPatches` in `config.cpp` and `package.json`/`package-lock.json`, then builds exactly 2.3.0 (no patch bump). |
+| `build-all.ps1` (no `-Version`) | Rebuilds the version already on disk and **replaces** `arma3-sqf-reloader-<version>.vsix`; nothing is bumped. |
+
+`-Version` must be `major.minor.patch`. The DLL reports `src\BuildStamp.cs`, which is what
+`/api/status` returns, so it always matches the VSIX.
 
 `-NoPbo` ships the unpacked addon folder instead of `scripts.pbo` (debugging only);
 `-AddonBuilder <path>` points at a non-default `AddonBuilder.exe` (or set `%ARMA3_ADDONBUILDER%`).

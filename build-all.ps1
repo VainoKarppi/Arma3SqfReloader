@@ -11,7 +11,15 @@
 
     Every build increases the version of both components by one patch level
     (project + CfgPatches and package.json/package-lock.json), so two VSIX files never share
-    a version number.
+    a version number. Use -Version to build an exact version instead (the .vsix is replaced).
+
+.PARAMETER Version
+    Build this exact version, e.g. -Version "2.3.0". Writes it to SqfReloaderExtension.csproj,
+    src\BuildStamp.cs, CfgPatches in config.cpp and package.json/package-lock.json, then builds
+    without the automatic patch bump. Must be three parts (major.minor.patch).
+
+    Without -Version the current version is rebuilt: every version file keeps its number and
+    the existing .vsix of that version is replaced.
 
 .PARAMETER Install
     Install the .vsix into VS Code and set up Arma 3 (equivalent to -InstallVsCode -InstallArma).
@@ -31,9 +39,6 @@
 .PARAMETER SkipVsce
     Only compile the TypeScript (useful when vsce is not installed).
 
-.PARAMETER NoVersionBump
-    Build with the current version numbers.
-
 .PARAMETER Clean
     Rebuild the DLL from scratch and delete the previous .vsix files.
 
@@ -41,25 +46,30 @@
     powershell -ExecutionPolicy Bypass -File build-all.ps1
 
 .EXAMPLE
+    powershell -ExecutionPolicy Bypass -File build-all.ps1 -Version "2.3.0" -Install
+
+.EXAMPLE
     powershell -ExecutionPolicy Bypass -File build-all.ps1 -Install -ArmaDir "D:\SteamLibrary\steamapps\common\Arma 3"
 #>
 
 [CmdletBinding()]
 param(
+    [string]$Version = "",
     [switch]$Install,
     [switch]$InstallVsCode,
     [switch]$InstallArma,
     [string]$ArmaDir = "",
     [string]$AddonBuilder = "",
     [switch]$SkipVsce,
-    [switch]$NoVersionBump,
     [switch]$Clean
 )
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = $PSScriptRoot
-$extensionDir = Join-Path $repoRoot "SqfReloaderExtension"
+# Captured before Common.ps1 is dot-sourced: it defines its own $repoRoot/$PSScriptRoot for the
+# extension folder, so a distinct name is used for this script's root.
+$solutionRoot = $PSScriptRoot
+$extensionDir = Join-Path $solutionRoot "SqfReloaderExtension"
 $modSource = Join-Path $extensionDir "@SqfReloader"
 $addonName = "scripts"
 $modName = "SqfReloader"
@@ -86,7 +96,7 @@ function Write-Ok([string]$Text) {
 }
 
 function Invoke-Native {
-    param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory = $repoRoot)
+    param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory = $solutionRoot)
 
     Push-Location $WorkingDirectory
     try {
@@ -103,22 +113,48 @@ function Invoke-Native {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Version
+#    -Version X.Y.Z writes that number into every version file and builds it.
+#    Without -Version the current version is rebuilt (the .vsix is replaced).
+#    Either way tools\build.ps1 must not bump the patch level afterwards.
+# ---------------------------------------------------------------------------
+
+. (Join-Path $extensionDir "tools\Common.ps1")
+
+if ($Version) {
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        throw "-Version needs three numbers like 2.3.0 (got '$Version')."
+    }
+
+    Update-ComponentVersions -Version $Version -UpdateDll -UpdateVsCode -UpdateConfig
+}
+else {
+    $currentVersion = Get-VscodeVersion
+    if (!$currentVersion) { $currentVersion = Get-ProjectVersion }
+    Write-Step "Building the current version $currentVersion (the $currentVersion .vsix is replaced)"
+}
+
+# The version is set on disk above (or already there), so it is read once here and used for
+# the runtime bundle, the .vsix file name and the summary.
+$packageJson = Join-Path $solutionRoot "package.json"
+$version = "?"
+
+try { $version = (Get-Content $packageJson -Raw | ConvertFrom-Json).version } catch { }
+
+if ($version -eq "?") { throw "Could not read the version from $packageJson." }
+
+# ---------------------------------------------------------------------------
 # 1. SqfReloader extension + mod (PBO via Arma 3 Tools AddonBuilder)
 # ---------------------------------------------------------------------------
 
 Write-Step "Building the SqfReloader extension and mod"
 
-$buildArgs = @("-File", (Join-Path $extensionDir "tools\build.ps1"), "-Release")
+$buildArgs = @("-File", (Join-Path $extensionDir "tools\build.ps1"), "-Release", "-NoVersionBump")
 if ($Clean) { $buildArgs += "-Clean" }
-if ($NoVersionBump) { $buildArgs += "-NoVersionBump" }
 if ($AddonBuilder) { $buildArgs += @("-AddonBuilder", $AddonBuilder) }
 
 Invoke-Native -FilePath "powershell" -Arguments (@("-NoProfile", "-ExecutionPolicy", "Bypass") + $buildArgs)
 Write-Ok "SqfReloader_x64.dll and @SqfReloader built"
-
-# Both components share one version number (tools\build.ps1 already bumped them together).
-$version = "?"
-try { $version = (Get-Content (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json).version } catch { }
 
 # ---------------------------------------------------------------------------
 # 2. Runtime shipped inside the VSIX: the complete @SqfReloader mod
@@ -127,7 +163,7 @@ try { $version = (Get-Content (Join-Path $repoRoot "package.json") -Raw | Conver
 
 Write-Step "Bundling the runtime into the VS Code extension"
 
-$runtimeDir = Join-Path $repoRoot "vscode-runtime"
+$runtimeDir = Join-Path $solutionRoot "vscode-runtime"
 $runtimeMod = Join-Path $runtimeDir "mod\@$modName"
 
 if (Test-Path $runtimeDir) { Remove-Item $runtimeDir -Recurse -Force }
@@ -145,7 +181,7 @@ if (!(Test-Path (Join-Path $builtMod "logo.paa"))) { throw "logo.paa not found i
 Copy-Item $builtMod $runtimeMod -Recurse -Force
 
 if ($Clean) {
-    Get-ChildItem $repoRoot -Filter "arma3-sqf-reloader-*.vsix" | Remove-Item -Force
+    Get-ChildItem $solutionRoot -Filter "arma3-sqf-reloader-*.vsix" | Remove-Item -Force
 }
 
 Write-Ok "vscode-runtime\mod\@$modName : mod.cpp + logo.paa + addons\$addonName.pbo + $dllName ($((Get-ChildItem $runtimeMod -Recurse -File).Count) files)"
@@ -156,7 +192,7 @@ Write-Ok "vscode-runtime\mod\@$modName : mod.cpp + logo.paa + addons\$addonName.
 
 Write-Step "Building the VS Code extension"
 
-if (!(Test-Path (Join-Path $repoRoot "node_modules"))) {
+if (!(Test-Path (Join-Path $solutionRoot "node_modules"))) {
     Write-Host "    npm install" -ForegroundColor Gray
     Invoke-Native -FilePath $npm -Arguments @("install")
 }
@@ -171,12 +207,23 @@ if ($SkipVsce) {
 }
 else {
     Invoke-Native -FilePath $npm -Arguments @("run", "package", "--", "--allow-missing-repository")
-    $vsix = Get-ChildItem $repoRoot -Filter "arma3-sqf-reloader-*.vsix" |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
 
-    if (!$vsix) { throw "vsce did not produce a .vsix file." }
-    Write-Ok "VSIX: $($vsix.FullName)"
+    # The build knows the version, so the exact file is checked (an older .vsix can never be
+    # picked up by accident, and the current one is simply overwritten by vsce).
+    $expected = Join-Path $solutionRoot "arma3-sqf-reloader-$version.vsix"
+
+    # vsce can return just before the file shows up in a directory listing (antivirus scan,
+    # write-back cache), so give it a moment before calling it a failure.
+    for ($attempt = 0; $attempt -lt 20 -and !(Test-Path $expected); $attempt++) {
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (!(Test-Path $expected)) {
+        throw "vsce did not produce $expected."
+    }
+
+    $vsix = Get-Item $expected
+    Write-Ok "VSIX: $($vsix.FullName) (replaced)"
 }
 
 # ---------------------------------------------------------------------------

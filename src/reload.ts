@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { Addon, findAddonForFile, armaPathCandidates, toArmaPath, toFunctionVariable } from "./arma";
-import { evalCode, listFunctions, recompileCommand, reloadEverything, reloadFunctions, sqfString } from "./api";
+import { Addon, findAddonForFile, toArmaPath, toFunctionVariable } from "./arma";
+import { evalCode, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
+import { workspaceAddons } from "./runtime";
 
 export interface ReloadOutcome {
     ok: boolean;
@@ -20,11 +21,8 @@ function notify(settings: Settings, message: string): void {
 /**
  * Pushes a saved SQF file to Arma.
  *
- * "reload" (default) sends the mission variable to /api/reload; the SQF side recompiles the
- * file from the junction inside the Arma folder, which also picks up helper functions that
- * are not in a PBO. "recompile" posts the editor content as an EdenOnline-style recompile
- * command. Both fall back to /api/eval with a compile statement when the primary route is
- * unavailable (older SqfReloader builds).
+ * Compile directly from the workspace's Arma alias, so the result does not depend on the
+ * function appearing in CfgFunctions or on SqfReloader's config scan.
  */
 export async function reloadDocument(document: vscode.TextDocument, settings: Settings): Promise<ReloadOutcome> {
     if (settings.reloadOnSave === "off") {
@@ -56,46 +54,15 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     const armaPath = toArmaPath(addon, document.fileName);
     log(`Saved ${document.fileName} -> ${variable} (${armaPath})`);
 
-    if (settings.reloadOnSave === "recompile") {
-        const result = await recompileCommand(settings, armaPath, document.getText());
-
-        if (result.success) {
-            return { ok: true, message: `Recompile queued for ${variable}.` };
-        }
-
-        log(`/api/command failed (${result.error}); falling back to /api/eval.`);
-    }
-
     try {
-        const result = await reloadFunctions(settings, [variable]);
-
-        if (result.success) {
-            // Reloading returns instantly; verify the file really exists in Arma's view.
-            const check = await verifyFunctionVisible(settings, variable, addon, document.fileName);
-            return check.ok
-                ? { ok: true, message: `Reloaded ${variable}.` }
-                : { ok: false, message: check.message, detail: check.detail };
-        }
-
-        log(`/api/reload failed: ${result.error}`);
-    } catch (error) {
-        logError("reload request failed", error);
-        notify(settings, error instanceof Error ? error.message : String(error));
-        return { ok: false, message: error instanceof Error ? error.message : String(error) };
-    }
-
-    // Fallback: compile the editor buffer directly in Arma.
-    try {
-        const code = `${sqfString(variable)} call SqfReloader_fnc_compileFunction;\n` +
-            `${sqfString(variable)} = compile ${sqfString(document.getText())};\n` +
-            `missionNamespace setVariable ${sqfString(variable)}`;
+        const code = compileAssignment(variable, armaPath);
         const result = await evalCode(settings, code);
 
         return result.success
-            ? { ok: true, message: `Compiled ${variable} from the editor buffer (fallback).` }
+            ? { ok: true, message: `Recompiled ${variable} from ${armaPath}.` }
             : { ok: false, message: result.error ?? "Compile failed" };
     } catch (error) {
-        logError("eval fallback failed", error);
+        logError("compile request failed", error);
         const message = error instanceof Error ? error.message : String(error);
         notify(settings, message);
         return { ok: false, message };
@@ -125,27 +92,67 @@ export async function reloadAll(settings: Settings, silent = false): Promise<Rel
     }
 }
 
-/**
- * After /api/reload, make sure Arma can read the file the function was compiled from. The
- * addon may be mounted through more than one root (its $PBOPREFIX$ and the z\ link), so every
- * conventional path is probed; "queued" is only reported when Arma does not answer at all.
- */
-async function verifyFunctionVisible(settings: Settings, variable: string, addon: Addon, filePath: string): Promise<ReloadOutcome> {
-    const candidates = armaPathCandidates(addon, filePath);
-    const checks = candidates.map(candidate => `fileExists ${sqfString(candidate)}`).join(" || ");
+function compileAssignment(variable: string, armaPath: string): string {
+    return `missionNamespace setVariable [${sqfString(variable)}, compile preprocessFileLineNumbers ${sqfString(armaPath)}];\n` +
+        `diag_log format ["[SqfReloader] recompiled %1 from %2", ${sqfString(variable)}, ${sqfString(armaPath)}];`;
+}
 
-    try {
-        const result = await evalCode(settings, checks);
+/** Injects every workspace fn_*.sqf into missionNamespace through its z\ mod junction. */
+export async function registerWorkspaceFunctions(settings: Settings): Promise<ReloadOutcome> {
+    const assignments: string[] = [];
 
-        if (result.success) {
-            return { ok: true, message: `Reloaded ${variable}.` };
-        }
-    } catch {
-        // Arma may not answer /api/eval; that is not a reload failure.
+    for (const addon of workspaceAddons()) {
+        const visit = (directory: string): void => {
+            let entries: fs.Dirent[];
+
+            try {
+                entries = fs.readdirSync(directory, { withFileTypes: true });
+            } catch {
+                return;
+            }
+
+            for (const entry of entries) {
+                const filePath = path.join(directory, entry.name);
+
+                if (entry.isDirectory()) {
+                    visit(filePath);
+                    continue;
+                }
+
+                if (!entry.isFile() || !/^fn_[\w-]+\.sqf$/i.test(entry.name)) {
+                    continue;
+                }
+
+                const variable = toFunctionVariable(addon, filePath);
+                if (variable) {
+                    assignments.push(compileAssignment(variable, toArmaPath(addon, filePath)));
+                }
+            }
+        };
+
+        visit(addon.localDirectory);
     }
 
-    log(`Arma cannot see ${variable} at ${candidates.join(", ")}.`);
-    return { ok: true, message: `Reload queued for ${variable}.` };
+    if (assignments.length === 0) {
+        log("No workspace fn_*.sqf functions found to inject.");
+        return { ok: false, message: "No workspace functions found." };
+    }
+
+    assignments.push(`diag_log format ["[SqfReloader] injected %1 workspace functions", ${assignments.length}];`);
+
+    try {
+        const result = await evalCode(settings, assignments.join("\n"));
+        if (!result.success) {
+            return { ok: false, message: result.error ?? "Function injection failed." };
+        }
+
+        log(`Queued injection of ${assignments.length - 1} workspace functions into missionNamespace.`);
+        return { ok: true, message: `Queued ${assignments.length - 1} workspace functions for injection.` };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError("workspace function injection failed", error);
+        return { ok: false, message };
+    }
 }
 
 /** Reads the list of files SqfReloader can hot reload (its own SQF sources). */
@@ -173,9 +180,7 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     }
 
     const armaPath = toArmaPath(addon, document.fileName);
-    const code = `${sqfString(variable)} = compile preprocessFileLineNumbers ${sqfString(armaPath)};` +
-        `\nmissionNamespace setVariable [${sqfString(variable)}, ${sqfString(variable)}];` +
-        `\ndiag_log format ["[SqfReloader] recompiled %1", ${sqfString(variable)}];`;
+    const code = compileAssignment(variable, armaPath);
 
     const result = await evalCode(settings, code);
 

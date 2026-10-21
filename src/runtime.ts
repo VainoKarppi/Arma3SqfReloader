@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon } from "./arma";
-import { createLinks, addonLinkPath, linkMissions, linkModIntoZ } from "./junctions";
+import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
 import { log, logError, readSettings, Settings } from "./settings";
 
 /**
@@ -147,10 +147,11 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
             const { warnings: linkWarnings } = createLinks(armaDirectory, [mod], settings.junctionMode);
             warnings.push(...linkWarnings);
 
-            // <Arma 3>\z\@Mod -> the workspace folder that is open in VS Code, so the mod is
-            // also mounted as z\@ExampleMod\addons\example.
-            const zLink = linkModIntoZ(armaDirectory, mod);
-            warnings.push(...zLink.warnings);
+            // No <Arma 3>\z\@Mod junction: it duplicated the mod at z\@ExampleMod next to the
+            // addon link at z\<tag>\addons\<addon>, so Arma listed the same files twice and the
+            // reloader could pick the copy that was not refreshed. The addon link below z\ is
+            // the single mount point; -mod= mounts the workspace @Mod folder directly.
+            removeModInZLink(armaDirectory, mod);
             modFolders.push(mod.directory);
         }
 

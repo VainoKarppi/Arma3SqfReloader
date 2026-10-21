@@ -21,16 +21,19 @@ if (_message == "") exitWith {
 
 diag_log format ["[SqfReloader] startup: %1", _message];
 
-// Make custom mod functions callable by name in Eden's debug console immediately.
-[] call SqfReloader_fnc_reloadFunctions;
-
 // The extension writes the $PBOPREFIX$ of every workspace addon to its config, so reloads can
 // resolve a tag to the addon folder name (tag "example" lives in "z\example\addons\instance").
 private _config = ["ApiPboPrefixes", []] call SqfReloader_fnc_call;
 private _pairs = [];
+private _prefixes = [];
 
 {
-    private _segments = (_x arrayIntersect _x) select {_x != ""};
+    private _value = _x;
+    while {_value isEqualType []} do {_value = _value param [0, ""]};
+    if !(_value isEqualType "") then {continue};
+    private _prefix = toLower ((_value splitString "/") joinString "\");
+    private _segments = _prefix splitString "\";
+    _segments = _segments select {_x != ""};
     private _root = toLower (_segments param [0, ""]);
     private _tag = toLower ((if (_root in ["z", "x"]) then {_segments param [1, ""]} else {_segments param [0, ""]}));
     private _name = toLower (_segments param [(count _segments) - 1, ""]);
@@ -40,10 +43,17 @@ private _pairs = [];
         _pairs pushBack [_tag, _name];
         _pairs pushBack [_tag, _tag];
         _pairs pushBack [_tag, "main"];
+        _prefixes pushBack [_tag, _prefix];
     };
 } forEach (if (isNil "_config") then {[]} else {_config});
 
 missionNamespace setVariable ["SqfReloader_var_addonNames", _pairs];
+missionNamespace setVariable ["SqfReloader_var_addonPrefixes", _prefixes];
+diag_log format ["[SqfReloader] startup: configured addon prefixes %1", _prefixes];
+
+// Make custom mod functions callable by name in Eden's debug console immediately.
+private _registered = [] call SqfReloader_fnc_reloadFunctions;
+diag_log format ["[SqfReloader] startup: registered %1 custom CfgFunctions", _registered];
 
 // Optional project hook, e.g. in description.ext:
 //   class SqfReloader { StartupCode = "call compile preprocessFileLineNumbers 'dev/setup.sqf';"; };

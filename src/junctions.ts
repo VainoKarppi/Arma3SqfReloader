@@ -82,17 +82,36 @@ export function addonLinkPath(armaDirectory: string, addon: Addon): string {
 }
 
 /**
- * Links the workspace's `@Mod` folder into `<Arma 3>\z\@<Mod>` (a junction to the folder that
- * is open in VS Code), so Arma finds the mod below the z\ mount root as
- * `z\@ExampleMod\addons\example` even without -mod=.
+ * Removes the `<Arma 3>\z\@<Mod>` junction that older versions created.
+ *
+ * The whole mod folder must NOT be mounted below z\: the addon is already linked at
+ * `z\<tag>\addons\<addon>`, so a second copy at `z\@ExampleMod\addons\example` made Arma list
+ * every file twice and left two paths for the reloader to choose from. The workspace @Mod
+ * folder is passed to Arma through -mod= instead.
  */
-export function linkModIntoZ(armaDirectory: string, mod: Mod): LinkResult {
+export function removeModInZLink(armaDirectory: string, mod: Mod): boolean {
     const name = mod.name.startsWith("@") ? mod.name : `@${mod.name}`;
     const linkPath = path.join(armaDirectory, "z", name);
-    const warnings: string[] = [];
-    const link = ensureDirectoryLink(linkPath, mod.directory, warnings);
 
-    return { links: link ? [link] : [], warnings };
+    // Only a junction created by us is removed, never a real folder.
+    if (!readLinkTarget(linkPath)) {
+        return false;
+    }
+
+    const removed = removeLink(linkPath);
+
+    if (removed) {
+        // Drop a stale z\ entry so the z\ mount root does not stay behind empty.
+        try {
+            if (fs.existsSync(path.join(armaDirectory, "z")) && fs.readdirSync(path.join(armaDirectory, "z")).length === 0) {
+                fs.rmdirSync(path.join(armaDirectory, "z"));
+            }
+        } catch {
+            // Not empty (other links live there) - nothing to do.
+        }
+    }
+
+    return removed;
 }
 
 /** Creates the link unless the path is already correct. */

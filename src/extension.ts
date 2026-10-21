@@ -3,8 +3,8 @@ import { getStatus } from "./api";
 import { disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { findArmaDirectory, findModForFile } from "./arma";
-import { isReloadable, reloadAll, reloadDocument, reloadFileNow } from "./reload";
-import { isRunning, launchArma } from "./launcher";
+import { isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow } from "./reload";
+import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
@@ -17,6 +17,10 @@ export function activate(context: vscode.ExtensionContext): void {
     log(`Arma 3 SQF Reloader ${version} activated.`);
 
     runtime = loadRuntime(context);
+    const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
+    context.subscriptions.push(rptDiagnostics, { dispose: stopRptMonitor });
+    setRptDiagnosticCollection(rptDiagnostics);
+    startRptMonitor();
 
     if (!runtime) {
         log("Bundled runtime is missing: reinstall the extension (or run build-all.ps1 when developing it).");
@@ -34,6 +38,9 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!settings.enabled || !isReloadable(document)) {
             return;
         }
+
+        // A save supersedes the previous Arma compile diagnostic; a new RPT block will add it back.
+        rptDiagnostics.delete(document.uri);
 
         try {
             const outcome = await reloadDocument(document, settings);
@@ -85,6 +92,10 @@ export function activate(context: vscode.ExtensionContext): void {
         const started = await launchArma(runtime, settings);
 
         if (started) {
+            const injection = await registerWorkspaceFunctions(settings);
+            if (!injection.ok && injection.message !== "No workspace functions found.") {
+                log(`Workspace function injection failed: ${injection.message}`);
+            }
             await refreshStatus();
         } else {
             setStatus("$(play) Play Arma 3", false);
@@ -143,6 +154,13 @@ export function activate(context: vscode.ExtensionContext): void {
             const status = await getStatus(settings);
             const connected = status.gameConnected === true;
             const message = `SqfReloader ${status.version ?? "?"} on ${settings.apiUrl} - game callback ${connected ? "registered" : "NOT registered"}.`;
+
+            if (connected) {
+                const injection = await registerWorkspaceFunctions(settings);
+                if (!injection.ok) {
+                    log(`Workspace function injection failed: ${injection.message}`);
+                }
+            }
 
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${message}`);
             log(message);

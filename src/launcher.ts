@@ -19,6 +19,13 @@ let armaProcess: ReturnType<typeof spawn> | undefined;
 let rptPoll: ReturnType<typeof setInterval> | undefined;
 let rptFile = "";
 let rptOffset = 0;
+let rptPartial = "";
+let rptErrorBlock: string[] = [];
+let rptDiagnostics: vscode.DiagnosticCollection | undefined;
+
+export function setRptDiagnosticCollection(collection: vscode.DiagnosticCollection): void {
+    rptDiagnostics = collection;
+}
 
 /**
  * One-click launch: prepares the DLL + mods, starts arma3_x64.exe with -mod= and waits for
@@ -142,10 +149,12 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
 }
 
 /** Forward new SQF diagnostics for files mounted under z\\ into the VS Code output channel. */
-function startRptMonitor(): void {
-    if (rptPoll) clearInterval(rptPoll);
+export function startRptMonitor(): void {
+    if (rptPoll) return;
     rptFile = "";
     rptOffset = 0;
+    rptPartial = "";
+    rptErrorBlock = [];
     rptPoll = setInterval(() => {
         try {
             const files = fs.readdirSync(armaLogDirectory())
@@ -167,22 +176,81 @@ function startRptMonitor(): void {
             fs.readSync(fd, buffer, 0, buffer.length, rptOffset);
             fs.closeSync(fd);
             rptOffset = stat.size;
-            const lines = buffer.toString("utf8").split(/\r?\n/);
-            for (let i = 0; i < lines.length; i++) {
-                if (!/\b(error|warning)\b/i.test(lines[i])) continue;
-                const block = lines.slice(i, Math.min(lines.length, i + 12));
-                if (block.some(line => /Invalid path \(only relative paths supported\)/i.test(line))) continue;
-                if (!block.some(line => /\\z\\/i.test(line) || /\bz\\/i.test(line))) continue;
-                for (const line of block) {
-                    if (line.trim()) log(`[Arma RPT] ${line.trim()}`);
-                    if (/^\s*\d{2}:\d{2}:\d{2}\s+(?:Error|Warning)\b/i.test(line) && line !== lines[i]) break;
-                }
-            }
+            const lines = (rptPartial + buffer.toString("utf8")).split(/\r?\n/);
+            rptPartial = lines.pop() ?? "";
+            for (const line of lines) consumeRptLine(line);
         } catch {
             // The log may not exist until Arma starts; retry on the next poll.
         }
     }, 1000);
     rptPoll.unref?.();
+}
+
+export function stopRptMonitor(): void {
+    if (rptPoll) clearInterval(rptPoll);
+    rptPoll = undefined;
+}
+
+function consumeRptLine(line: string): void {
+    if (/Invalid path \(only relative paths supported\)/i.test(line)) return;
+
+    if (/\bError in expression\b/i.test(line)) {
+        rptErrorBlock = [line];
+        return;
+    }
+
+    if (rptErrorBlock.length === 0) return;
+    rptErrorBlock.push(line);
+
+    const sourceLine = /File\s+(.+?),\s*line\s+(\d+)/i.exec(line);
+    if (sourceLine) {
+        reportRptError(rptErrorBlock, sourceLine[1], Number(sourceLine[2]));
+        rptErrorBlock = [];
+    } else if (rptErrorBlock.length >= 24) {
+        rptErrorBlock = [];
+    }
+}
+
+function reportRptError(block: string[], reportedPath: string, lineNumber: number): void {
+    const filePath = resolveWorkspaceSqfPath(reportedPath);
+    if (!filePath) return;
+
+    const errorText = block
+        .map(line => /\bError\s+(?!in expression)(.+)/i.exec(line)?.[1])
+        .find(Boolean) ?? "SQF compile error";
+    const detail = errorText.replace(/\s+/g, " ").trim();
+    log(`[Arma RPT] ${path.basename(filePath)}:${lineNumber}: ${detail}`);
+
+    const diagnostics = rptDiagnostics;
+    if (!diagnostics) return;
+    const uri = vscode.Uri.file(filePath);
+    const document = vscode.workspace.textDocuments.find(open => open.uri.fsPath.toLowerCase() === filePath.toLowerCase());
+    const line = Math.max(0, lineNumber - 1);
+    const character = document ? document.lineAt(Math.min(line, document.lineCount - 1)).range.end.character : 0;
+    const diagnostic = new vscode.Diagnostic(
+        new vscode.Range(line, 0, line, character),
+        `Arma: ${detail}`,
+        vscode.DiagnosticSeverity.Error
+    );
+    diagnostic.source = "Arma RPT";
+    diagnostics.set(uri, [diagnostic]);
+}
+
+function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {
+    const normalized = reportedPath.replace(/^['"]|['"]$/g, "").replace(/\.\.\.$/, "").replace(/\//g, "\\").replace(/^\\+/, "");
+    const lower = normalized.toLowerCase();
+
+    for (const addon of workspaceAddons()) {
+        const marker = `addons\\${addon.name.toLowerCase()}\\`;
+        const markerIndex = lower.lastIndexOf(marker);
+        if (markerIndex < 0) continue;
+        const relative = normalized.slice(markerIndex + marker.length).replace(/\\/g, path.sep);
+        if (!/\.sqf$/i.test(relative)) continue;
+        const candidate = path.resolve(addon.localDirectory, relative);
+        if (fs.existsSync(candidate)) return candidate;
+    }
+
+    return undefined;
 }
 
 /** Command line handed to arma3_x64.exe (also used by scripts/verify-launch-args.js). */

@@ -68,7 +68,7 @@ try {
     // SqfReloader_fnc_reloadFunction resolves this to \z\example\addons\example\functions\fn_hello.sqf
     check(
         "Arma fileExists() path matches the reload candidate",
-        armaPath === "\\z\\example\\addons\\example\\functions\\fn_hello.sqf",
+        armaPath === "z\\example\\addons\\example\\functions\\fn_hello.sqf",
         armaPath
     );
 

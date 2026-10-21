@@ -69,7 +69,7 @@ function fakeDocument(filePath) {
     check("addon found (z\\mymod\\addons\\core)", addon?.prefix === "z\\mymod\\addons\\core", addon?.prefix);
 
     const armaPath = addon ? toArmaPath(addon, file) : "";
-    check("Arma path uses the PBO prefix", armaPath === "\\z\\mymod\\addons\\core\\functions\\fn_hello.sqf", armaPath);
+    check("Arma path uses the PBO prefix", armaPath === "z\\mymod\\addons\\core\\functions\\fn_hello.sqf", armaPath);
 
     const variable = addon ? toFunctionVariable(addon, file) : "";
     check("function variable is mymod_fnc_hello", variable === "mymod_fnc_hello", variable);

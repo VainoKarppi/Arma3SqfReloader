@@ -239,7 +239,7 @@ class CfgFunctions {
         tag = "${TEMPLATE_TAG}";
 
         class Core {
-            file = "functions";
+            file = "\\z\\${TEMPLATE_TAG}\\addons\\${TEMPLATE_TAG}\\functions";
 
             class hello { recompile = 1; };
             class add { recompile = 1; };

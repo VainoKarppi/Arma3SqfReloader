@@ -135,6 +135,11 @@ for (const mod of mods) {
     }
 
     check(`${mod.name} is handed to Arma as a @Mod folder`, mod.hasModFiles || fs.existsSync(path.join(armaDirectory, mod.name.startsWith("@") ? mod.name : `@${mod.name}`, "mod.cpp")), mod.directory);
+
+    // The whole @Mod folder must not be junctioned below z\: the addon is mounted at
+    // z\<tag>\addons\<addon> and a second copy makes Arma load the files twice.
+    const zModLink = path.join(armaDirectory, "z", mod.name.startsWith("@") ? mod.name : `@${mod.name}`);
+    check(`no z\\${mod.name} junction (addon is linked below z\\<tag>)`, !fs.existsSync(zModLink) || resolvedPath(zModLink) !== resolvedPath(mod.directory), zModLink);
 }
 
 const missions = findMissions([workspace]);

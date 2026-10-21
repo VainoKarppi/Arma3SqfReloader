@@ -149,5 +149,6 @@ function toResult(response: ApiResponse): CommandResult {
 
 /** SQF string literal for embedding a path or variable name. */
 export function sqfString(value: string): string {
-    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+    // SQF strings escape quotes by doubling them; backslashes are literal path characters.
+    return `"${value.replace(/"/g, '""')}"`;
 }

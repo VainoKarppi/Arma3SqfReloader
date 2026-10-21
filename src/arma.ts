@@ -473,10 +473,31 @@ export function normalizePrefix(value: string): string {
         .trim();
 }
 
-/** Arma path of a script inside an addon, e.g. \z\tag\addons\core\fn_thing.sqf. */
+/**
+ * Arma path a script is mounted at, e.g. z\tag\addons\example\functions\fn_thing.sqf.
+ *
+ * The addon's own prefix is authoritative: it is what $PBOPREFIX$ declares and what the
+ * junction in the Arma folder is created from. Deriving the path from the @Mod folder name
+ * (z\@ExampleMod\...) produced a path that only existed in CfgFunctions, so the reloader
+ * compiled "<empty>" (the debug console showed {}).
+ *
+ * No leading backslash, like `addon.prefix` and `addonLinkPath()`: the SQF side accepts
+ * both, but one convention keeps the logs and verifiers readable.
+ */
 export function toArmaPath(addon: Addon, filePath: string): string {
     const relative = path.relative(addon.localDirectory, filePath).replace(/[\/\\]+/g, "\\");
-    return `\\${addon.prefix}\\${relative}`;
+
+    if (relative.startsWith("..")) {
+        // The file lies outside the addon folder: fall back to the mod-relative layout.
+        const mod = findModForFile(filePath);
+
+        if (mod) {
+            const fromMod = path.relative(mod.directory, filePath).replace(/[\/\\]+/g, "\\");
+            return `z\\${mod.name}\\${fromMod}`;
+        }
+    }
+
+    return `${addon.prefix}\\${relative}`;
 }
 
 /**
