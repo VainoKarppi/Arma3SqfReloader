@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "2.9.95",
+  "version": "2.9.98",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -163,6 +163,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Arma 3 profile name to use for mission links and launch (for example `Razer`). Leave empty to use the most recently updated profile. If the named profile does not exist, the most recently updated profile is used."
+        },
+        "sqfReloader.clearArmaMissionArtifacts": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Automatically remove Arma-generated `~Mission.World` preview folders from the active profile's `Missions` and `MPMissions` directories."
         },
         "sqfReloader.enabled": {
           "type": "boolean",

@@ -12,6 +12,7 @@ import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } 
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
 import { selectArmaProfile } from "./profile";
+import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./missionArtifacts";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -21,6 +22,7 @@ export function activate(context: vscode.ExtensionContext): void {
     log(`Arma 3 SQF Reloader ${version} activated.`);
 
     runtime = loadRuntime(context);
+    context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
     context.subscriptions.push(rptDiagnostics, { dispose: stopRptMonitor });
     setRptDiagnosticCollection(rptDiagnostics);
@@ -84,6 +86,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // --- Workspace / settings changes -------------------------------------
     const onWorkspaceChange = async () => {
         try {
+            await configureMissionArtifactCleanup(readSettings());
             await ensureJunctions(readSettings());
             await refreshStatus();
             void promptForExampleIfNeeded(context, version);

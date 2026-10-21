@@ -752,12 +752,15 @@ function descriptionExt(multiplayer: boolean): string {
     onLoadMission = "Minimal mission that runs the example mod functions.";
 };
 
+// Permit SqfReloader to replace CfgFunctions entries while this mission is open.
+allowFunctionsRecompile = 1;
+
 class CfgFunctions {
     class ExampleMission {
         tag = "ExampleMission";
         class Tests {
             file = "functions";
-            class liveTest { recompile = 1; };
+            class liveTest {};
         };
     };
 };
@@ -800,6 +803,8 @@ function vscodeSettings(): string {
     "sqfReloader.armaDirectory": "",
     // Set a profile name to choose it; leave empty to use the most recently updated profile.
     "sqfReloader.armaProfile": "",
+    // Remove Arma-generated ~Mission.World preview folders from the active profile.
+    "sqfReloader.clearArmaMissionArtifacts": true,
     "sqfReloader.junctionMode": "addon",
     "sqfReloader.reloadOnSave": "reload",
     "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"

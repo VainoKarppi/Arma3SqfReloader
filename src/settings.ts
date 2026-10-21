@@ -17,6 +17,8 @@ export interface Settings {
     extraLaunchArguments: string;
     /** "Create example mod" also writes a minimal test mission. */
     createExampleWithMission: boolean;
+    /** Remove Arma-generated ~Mission.World preview copies from the active profile. */
+    clearArmaMissionArtifacts: boolean;
 }
 
 const SECTION = "sqfReloader";
@@ -35,7 +37,8 @@ export function readSettings(): Settings {
         reloadOnSave: config.get<ReloadMode>("reloadOnSave", "reload"),
         notifyOnError: config.get<boolean>("notifyOnError", true),
         extraLaunchArguments: config.get<string>("extraLaunchArguments", "-noSplash -skipIntro -noPause"),
-        createExampleWithMission: config.get<boolean>("createExampleWithMission", true)
+        createExampleWithMission: config.get<boolean>("createExampleWithMission", true),
+        clearArmaMissionArtifacts: config.get<boolean>("clearArmaMissionArtifacts", true)
     };
 }
 
