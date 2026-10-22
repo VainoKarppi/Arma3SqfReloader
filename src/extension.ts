@@ -275,8 +275,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
         const outcome = await runSqfFile(document, readSettings(), withParameters);
         output.appendLine(outcome.message);
+        output.show(true);
 
-        if (!outcome.ok && outcome.message !== "Run canceled.") {
+        if (outcome.ok) {
+            void vscode.window.showInformationMessage(outcome.message);
+        } else if (outcome.message !== "Run canceled.") {
             vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
         }
     };

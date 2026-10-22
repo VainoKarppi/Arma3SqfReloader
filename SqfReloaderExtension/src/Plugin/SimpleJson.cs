@@ -34,6 +34,20 @@ internal static class SimpleJson {
     public static bool TryParse(string json, out Dictionary<string, object?>? value) =>
         TryParse(json, out value, out _);
 
+    public static bool TryParseValue(string json, out object? value) {
+        value = null;
+
+        try {
+            int index = 0;
+            value = ParseValue(json, ref index);
+            SkipWhitespace(json, ref index);
+            return index == json.Length;
+        } catch {
+            value = null;
+            return false;
+        }
+    }
+
     public static string Serialize(object? value) {
         var sb = new StringBuilder(256);
         WriteValue(sb, value);

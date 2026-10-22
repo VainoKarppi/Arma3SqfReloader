@@ -33,6 +33,11 @@ internal static class ApiMethods {
     [ArmaMethod]
     public static string ApiStop() => RestApiServer.Stop();
 
+    /// <summary>Publishes a JSON-encoded SQF execution result to the waiting REST client.</summary>
+    [ArmaMethod]
+    public static string ApiPublishResult(string requestId, string resultJson, string error = "") =>
+        RestApiServer.PublishExecutionResult(requestId, resultJson, error);
+
     [ArmaMethod]
     public static long ApiPort() => RestApiServer.Port;
 

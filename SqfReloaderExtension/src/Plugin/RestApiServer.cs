@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -26,6 +27,7 @@ namespace SqfReloader;
 /// </summary>
 internal static class RestApiServer {
     private static readonly object Gate = new();
+    private static readonly ConcurrentDictionary<string, PendingExecution> PendingExecutions = new(StringComparer.Ordinal);
 
     private static HttpListener? _listener;
     private static CancellationTokenSource? _cts;
@@ -205,6 +207,11 @@ internal static class RestApiServer {
                 return;
             }
 
+            if (method == "GET" && path.StartsWith("/api/result/", StringComparison.Ordinal)) {
+                await HandleExecutionResult(context, path["/api/result/".Length..]);
+                return;
+            }
+
             if (method != "POST") {
                 await Respond(context, 404, Error("Not found"));
                 return;
@@ -214,6 +221,11 @@ internal static class RestApiServer {
 
             if (!SimpleJson.TryParse(body, out Dictionary<string, object?>? request, out string parseError) || request == null) {
                 await Respond(context, 400, Error($"Body must be a JSON object ({parseError})"));
+                return;
+            }
+
+            if (path == "/api/execute") {
+                await HandleExecute(context, request);
                 return;
             }
 
@@ -336,6 +348,8 @@ internal static class RestApiServer {
                 "POST /api/command {type: code|recompile, code, method?}",
                 "POST /api/send {function, data}",
                 "POST /api/eval {code}",
+                "POST /api/execute {code, timeoutMs}",
+                "GET /api/result/{requestId}",
                 "POST /api/reload {functions?}",
                 "POST /api/log {level}",
                 "POST /api/source {directory}",
@@ -344,6 +358,90 @@ internal static class RestApiServer {
             }
         };
     }
+
+    private static async Task HandleExecute(HttpListenerContext context, Dictionary<string, object?> request) {
+        if (request.GetValueOrDefault("code") is not string code || string.IsNullOrWhiteSpace(code)) {
+            await Respond(context, 400, Error("'code' is required"));
+            return;
+        }
+
+        int timeoutMs = request.GetValueOrDefault("timeoutMs") switch {
+            long value => (int)Math.Clamp(value, 1000, 300000),
+            double value => (int)Math.Clamp(value, 1000, 300000),
+            _ => 30000
+        };
+        string requestId = Guid.NewGuid().ToString("N");
+        var pending = new PendingExecution(DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs + 5000));
+
+        foreach (var entry in PendingExecutions)
+            if (entry.Value.ExpiresAt <= DateTimeOffset.UtcNow) PendingExecutions.TryRemove(entry.Key, out _);
+
+        PendingExecutions[requestId] = pending;
+        string sqf = $"[{SimpleSerializer.ToArma(requestId)}, {SimpleSerializer.ToArma(code)}] spawn {{\n" +
+            "    params [\"_requestId\", \"_code\"];\n" +
+            "    private _resultJson = \"null\";\n" +
+            "    private _error = \"\";\n" +
+            "    try {\n" +
+            "        private _value = call compile _code;\n" +
+            "        if !(isNil \"_value\") then { _resultJson = toJSON _value; };\n" +
+            "    } catch {\n" +
+            "        _error = str _exception;\n" +
+            "    };\n" +
+            "    \"SqfReloader\" callExtension [\"ApiPublishResult\", [_requestId, str _resultJson, str _error]];\n" +
+            "};";
+
+        MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, sqf }));
+        ArmaLog.Log($"REST execution accepted: request={requestId}, timeout={timeoutMs}ms");
+        await Respond(context, 202, Ok("execution queued", new Dictionary<string, object?> {
+            ["requestId"] = requestId,
+            ["timeoutMs"] = (long)timeoutMs
+        }));
+    }
+
+    private static async Task HandleExecutionResult(HttpListenerContext context, string requestId) {
+        if (string.IsNullOrWhiteSpace(requestId) || !PendingExecutions.TryGetValue(requestId, out PendingExecution? pending)) {
+            await Respond(context, 404, Error("Execution request was not found or has expired."));
+            return;
+        }
+
+        if (pending.ExpiresAt <= DateTimeOffset.UtcNow) {
+            PendingExecutions.TryRemove(requestId, out _);
+            await Respond(context, 408, Error("Arma execution timed out."));
+            return;
+        }
+
+        if (!pending.Completion.Task.IsCompleted) {
+            await Respond(context, 202, new Dictionary<string, object?> { ["success"] = true, ["pending"] = true });
+            return;
+        }
+
+        PendingExecutions.TryRemove(requestId, out _);
+        ExecutionResult result = await pending.Completion.Task;
+        if (!string.IsNullOrEmpty(result.Error)) {
+            await Respond(context, 422, Error(result.Error));
+            return;
+        }
+
+        await Respond(context, 200, Ok("execution completed", new Dictionary<string, object?> { ["result"] = result.Value }));
+    }
+
+    public static string PublishExecutionResult(string requestId, string resultJson, string error) {
+        if (!PendingExecutions.TryGetValue(requestId, out PendingExecution? pending) || pending.ExpiresAt <= DateTimeOffset.UtcNow)
+            return "expired";
+
+        object? value = null;
+        if (!string.IsNullOrEmpty(resultJson) && !SimpleJson.TryParseValue(resultJson, out value))
+            value = resultJson;
+
+        return pending.Completion.TrySetResult(new ExecutionResult(value, error)) ? "accepted" : "already completed";
+    }
+
+    private sealed class PendingExecution(DateTimeOffset expiresAt) {
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+        public TaskCompletionSource<ExecutionResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed record ExecutionResult(object? Value, string Error);
 
     private static Dictionary<string, object?> Ok(string message, Dictionary<string, object?>? extra = null) {
         var result = new Dictionary<string, object?> { ["success"] = true, ["message"] = message };

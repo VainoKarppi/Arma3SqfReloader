@@ -7,9 +7,12 @@ export type JunctionMode = "addon" | "module";
 export interface Settings {
     enabled: boolean;
     apiUrl: string;
+    defaultPort: number;
     armaDirectory: string;
     armaProfile: string;
     requestTimeout: number;
+    /** Maximum time to wait for an SQF file run to return its value, in seconds. */
+    runTimeout: number;
     autoJunction: boolean;
     junctionMode: JunctionMode;
     reloadOnSave: ReloadMode;
@@ -26,13 +29,17 @@ const SECTION = "sqfReloader";
 
 export function readSettings(): Settings {
     const config = vscode.workspace.getConfiguration(SECTION);
+    const defaultPort = normalizePort(config.get<number>("defaultPort", 8764));
+    const configuredApiUrl = config.get<string>("apiUrl", "http://127.0.0.1/api");
 
     return {
         enabled: config.get<boolean>("enabled", true),
-        apiUrl: trimSlash(resolveApiUrl(config.get<string>("apiUrl", "http://127.0.0.1:8764/api"))),
+        apiUrl: trimSlash(resolveApiUrl(withDefaultPort(configuredApiUrl, defaultPort))),
+        defaultPort,
         armaDirectory: config.get<string>("armaDirectory", "").trim(),
         armaProfile: config.get<string>("armaProfile", "").trim(),
         requestTimeout: Math.max(500, config.get<number>("requestTimeout", 3000)),
+        runTimeout: Math.min(300, Math.max(1, config.get<number>("runTimeout", 30))),
         autoJunction: config.get<boolean>("autoJunction", true),
         junctionMode: config.get<JunctionMode>("junctionMode", "addon"),
         reloadOnSave: config.get<ReloadMode>("reloadOnSave", "reload"),
@@ -41,6 +48,21 @@ export function readSettings(): Settings {
         createExampleWithMission: config.get<boolean>("createExampleWithMission", true),
         clearArmaMissionArtifacts: config.get<boolean>("clearArmaMissionArtifacts", true)
     };
+}
+
+function normalizePort(port: number): number {
+    return Number.isFinite(port) ? Math.min(65535, Math.max(1, Math.trunc(port))) : 8764;
+}
+
+/** Use defaultPort only when apiUrl has no explicit port. */
+function withDefaultPort(apiUrl: string, defaultPort: number): string {
+    try {
+        const url = new URL(apiUrl);
+        if (!url.port) url.port = String(defaultPort);
+        return url.toString();
+    } catch {
+        return apiUrl;
+    }
 }
 
 export async function updateSetting<T>(key: string, value: T, target = vscode.ConfigurationTarget.Global): Promise<void> {

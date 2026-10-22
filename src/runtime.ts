@@ -360,7 +360,7 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
 
     const url = new URL(settings.apiUrl);
     const host = url.hostname || DEFAULT_HOST;
-    const preferredPort = url.port ? Number(url.port) : DEFAULT_PORT;
+    const preferredPort = url.port ? Number(url.port) : settings.defaultPort;
     const port = probe ? await findFreePort(preferredPort, host) : (activePort ?? preferredPort);
 
     if (probe && port !== preferredPort) {

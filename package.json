@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.0.0",
+  "version": "3.0.3",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -174,15 +174,29 @@
           "default": true,
           "description": "Send SQF changes to Arma 3 when a file is saved."
         },
+        "sqfReloader.defaultPort": {
+          "type": "integer",
+          "default": 8764,
+          "minimum": 1,
+          "maximum": 65535,
+          "markdownDescription": "Fallback port for SqfReloader's REST server when Arma starts it without an explicit port. An explicit port in `sqfReloader.apiUrl` takes precedence."
+        },
         "sqfReloader.apiUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8764/api",
-          "description": "Base URL of the SqfReloader REST server (the SqfReloader mod must be running in Arma 3)."
+          "default": "http://127.0.0.1/api",
+          "description": "Base URL of the SqfReloader REST server. If no port is specified, sqfReloader.defaultPort is used."
         },
         "sqfReloader.requestTimeout": {
           "type": "number",
           "default": 3000,
           "description": "Timeout in milliseconds for a request to Arma."
+        },
+        "sqfReloader.runTimeout": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 300,
+          "markdownDescription": "Maximum seconds to wait for **Run in Arma** to return an SQF result."
         },
         "sqfReloader.autoJunction": {
           "type": "boolean",

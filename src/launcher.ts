@@ -11,7 +11,8 @@ import { parseApiUrl } from "./ports";
 
 /** Port the configured sqfReloader.apiUrl asks for, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
-    return parseApiUrl(vscode.workspace.getConfiguration("sqfReloader").get<string>("apiUrl", "") || settings.apiUrl).port;
+    const configuredUrl = vscode.workspace.getConfiguration("sqfReloader").get<string>("apiUrl", "");
+    return configuredUrl ? parseApiUrl(configuredUrl).port : settings.defaultPort;
 }
 
 export interface LaunchOptions {
@@ -204,18 +205,6 @@ export function stopRptMonitor(): void {
 }
 
 function consumeRptLine(line: string): void {
-    const runResult = /\[SqfReloader Run:([^\]]+)\]\s*(.*)/.exec(line);
-    if (runResult) {
-        // Arma wraps diag_log string values in quotes in the RPT; strip its closing quote
-        // from the captured payload so it does not appear in either VS Code surface.
-        const resultText = runResult[2].replace(/"\s*$/, "").trimEnd();
-        const output = getOutput();
-        output.appendLine(`[Arma result ${runResult[1]}] ${resultText}`);
-        output.show(true);
-        void vscode.window.showInformationMessage(`Arma SQF result: ${resultText}`);
-        return;
-    }
-
     const openMissionResult = /\[SqfReloader OpenMission:([^\]]+)\]\s*(.*)/.exec(line);
     if (openMissionResult) {
         const resultText = openMissionResult[2].replace(/"\s*$/, "").trimEnd();

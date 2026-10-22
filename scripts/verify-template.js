@@ -90,7 +90,7 @@ try {
     const config = fs.readFileSync(path.join(result.modDirectory, "addons", "example", "config.cpp"), "utf8");
     check("config.cpp declares the tag", /tag = "example";/.test(config));
     check("config.cpp uses the tag-relative function path", /file = "\\example\\functions";/.test(config));
-    check("every function class exists in config.cpp", ["hello", "add", "showCounter"].every(name => new RegExp(`class ${name} \\{ recompile = 1; \\};`).test(config)));
+    check("every function class exists in config.cpp", ["hello", "add", "showCounter"].every(name => new RegExp(`class ${name} \\{\\}`).test(config)));
 
     const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
     check("workspace settings written", /"sqfReloader\.junctionMode": "addon"/.test(settingsJson));

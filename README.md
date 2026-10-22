@@ -91,13 +91,64 @@ shown in the **Arma 3 SQF Reloader** output channel.
 Other commands set up mods, remove extension-created links, open the Arma folder, and create the
 example project.
 
+## Call the API from PowerShell
+
+The local REST API can also be called directly, without VS Code. Start Arma with `@SqfReloader`
+and wait until its API is listening. By default the address is `http://127.0.0.1:8764/api`; use
+the port shown by **SqfReloader: Check connection** or in the Arma `.rpt` if it changed.
+
+Query the running extension and the functions it can reload:
+
+```powershell
+$api = "http://127.0.0.1:8764/api"
+Invoke-RestMethod "$api/status"
+Invoke-RestMethod "$api/functions"
+```
+
+Send SQF for execution in the current game/editor context:
+
+```powershell
+$api = "http://127.0.0.1:8764/api"
+$body = @{ code = 'systemChat "Hello from PowerShell";' } | ConvertTo-Json
+Invoke-RestMethod "$api/eval" -Method Post -ContentType "application/json" -Body $body
+```
+
+`POST /api/eval` only confirms that the request was queued. To wait for and receive the actual
+SQF return value through the API, use `POST /api/execute` and poll its result endpoint. The
+PowerShell example does this and enforces a timeout:
+
+```powershell
+.\examples\Invoke-ArmaSqf.ps1 -Code '1 + 1' -TimeoutSeconds 30
+```
+
+The script returns `2`. Set `sqfReloader.runTimeout` to change the default timeout used by the
+right-click **Run in Arma** commands. The scripts in [`examples`](examples) also show status
+and function queries, reloading functions, and sending a registered event.
+
+The execute API flow is `POST /api/execute` with `{"code":"1 + 1","timeoutMs":30000}`. It
+returns a `requestId`; poll `GET /api/result/{requestId}` until the response no longer has
+`pending: true`. The completed
+response contains the SQF value in `result`. A timeout ends the wait and discards a late result;
+it does not forcibly stop SQF already running in Arma.
+
+The API also supports `POST /api/reload` with `{"functions":["TAG_fnc_name"]}` to reload named
+functions, or `{}` to request a full reload. `POST /api/send` accepts
+`{"function":"EventName","data":[...]}` and invokes an event handler registered in SQF with
+`["EventName"] call SqfReloader_fnc_send;`.
+
+Requests are queued for the game thread, so a successful HTTP response means Arma accepted the
+request. `/api/execute` additionally waits for the SQF result or an execution error, up to the
+requested timeout. Other queue endpoints return once the request is accepted.
+
 ## Settings
 
 | Setting | Purpose |
 | --- | --- |
 | `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection. |
 | `sqfReloader.enabled` | Enable or disable reload on save. |
-| `sqfReloader.apiUrl` | SqfReloader API address. Default: `http://127.0.0.1:8764/api`. |
+| `sqfReloader.defaultPort` | Fallback REST server port when Arma starts SqfReloader without an explicit port. Default: `8764`. |
+| `sqfReloader.apiUrl` | SqfReloader API address. If its URL omits a port, `defaultPort` is used. An explicit URL port takes precedence. |
+| `sqfReloader.runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
 | `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
 | `sqfReloader.junctionMode` | Link per addon (`addon`) or per mod (`module`). |
 

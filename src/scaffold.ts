@@ -248,9 +248,9 @@ class CfgFunctions {
         class Core {
             file = "\\${TEMPLATE_TAG}\\functions";
 
-            class hello { recompile = 1; };
-            class add { recompile = 1; };
-            class showCounter { recompile = 1; };
+            class hello {};
+            class add {};
+            class showCounter {};
         };
     };
 };
@@ -803,6 +803,10 @@ function vscodeSettings(): string {
     "sqfReloader.armaDirectory": "",
     // Set a profile name to choose it; leave empty to use the most recently updated profile.
     "sqfReloader.armaProfile": "",
+    // Fallback REST port used when Arma starts SqfReloader without an explicit port.
+    "sqfReloader.defaultPort": 8764,
+    // Maximum seconds to wait for Run in Arma to return an SQF value.
+    "sqfReloader.runTimeout": 30,
     // Remove Arma-generated ~Mission.World preview folders from the active profile.
     "sqfReloader.clearArmaMissionArtifacts": true,
     "sqfReloader.junctionMode": "addon",

@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionTag, toArmaPath, toFunctionVariable } from "./arma";
-import { evalCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
+import { evalCode, executeCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
 import { workspaceAddons } from "./runtime";
 
@@ -405,7 +405,7 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     return { ok: true, message: `Recompiled ${variable} from ${armaPath}.` };
 }
 
-/** Executes an SQF file in Arma and writes its returned value to Arma's RPT for VS Code to read. */
+/** Executes an SQF file in Arma and waits for its return value through the local API. */
 export async function runSqfFile(document: vscode.TextDocument, settings: Settings, withParameters = false): Promise<ReloadOutcome> {
     if (document.uri.scheme !== "file" || !/\.sqf$/i.test(document.fileName)) {
         return { ok: false, message: "Run in Arma works with saved .sqf files." };
@@ -462,27 +462,18 @@ export async function runSqfFile(document: vscode.TextDocument, settings: Settin
     }
 
     scheduleSnapshotCleanup(snapshot.directory);
-    const runId = `${Date.now()}-${++snapshotSequence}`;
-    const code = `[] spawn {\n` +
-        `    private _sqfRunOutput = \"\";\n` +
-        `    try {\n` +
-        `        private _sqfRunFunction = compile preprocessFileLineNumbers ${sqfString(snapshot.armaPath)};\n` +
-        `        private _sqfRunValue = (${parameters}) call _sqfRunFunction;\n` +
-        `        _sqfRunOutput = str _sqfRunValue;\n` +
-        `    } catch {\n` +
-        `        _sqfRunOutput = format [\"ERROR: %1\", _exception];\n` +
-        `    };\n` +
-        `    diag_log format [\"[SqfReloader Run:${runId}] %1\", _sqfRunOutput];\n` +
-        `};`;
+    const timeoutMs = settings.runTimeout * 1000;
+    const sqfCode = `private _sqfRunFunction = compile preprocessFileLineNumbers ${sqfString(snapshot.armaPath)}; (${parameters}) call _sqfRunFunction`;
 
     try {
-        const result = await evalCode(settings, code);
+        const result = await executeCode(settings, sqfCode, timeoutMs);
         if (!result.success) return { ok: false, message: result.error ?? "Arma rejected the run request." };
-        log(`Run request ${runId} queued for ${document.fileName}; snapshot ${snapshot.armaPath}`);
-        return { ok: true, message: `Run request ${runId} queued. The result will appear in the Arma 3 SQF Reloader output.` };
+        log(`Run completed for ${document.fileName}; snapshot ${snapshot.armaPath}`);
+        const resultText = typeof result.result === "string" ? result.result : JSON.stringify(result.result ?? null);
+        return { ok: true, message: `Arma result: ${resultText}` };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logError(`run request ${runId} failed`, error);
+        logError(`run request for ${document.fileName} failed`, error);
         return { ok: false, message };
     }
 }
