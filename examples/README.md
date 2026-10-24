@@ -8,6 +8,7 @@ different port.
 .\Get-ArmaStatus.ps1
 .\Get-ArmaFunctions.ps1
 .\Invoke-ArmaSqf.ps1 -Code '1 + 1' -TimeoutSeconds 30
+.\Send-ArmaSqf.ps1 -Code 'systemChat "Hello from PowerShell";'
 .\Reload-ArmaFunctions.ps1 -FunctionName example_fnc_add
 .\Reload-ArmaFunctions.ps1 # reload all functions
 ```
@@ -28,6 +29,7 @@ Then send the event and its data:
 .\Send-ArmaEvent.ps1 -Function PowerShellMessage -Data @("hello", 42)
 ```
 
-`Invoke-ArmaSqf.ps1` uses `/api/execute`, waits for Arma to return the actual SQF value through
-the API, and stops after `-TimeoutSeconds`. `Send-ArmaEvent.ps1` is an event notification and
-only confirms that the event was queued; it does not wait for the handler's return value.
+`Invoke-ArmaSqf.ps1` uses `/api/eval`, waits for Arma to return the SQF value through the API,
+and stops after `-TimeoutSeconds`. `Send-ArmaSqf.ps1` uses `/api/execute` for fire-and-forget
+code: it returns when Arma accepts the request and does not wait for the SQF result.
+`Send-ArmaEvent.ps1` likewise confirms only that the event was queued.
