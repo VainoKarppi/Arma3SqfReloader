@@ -243,6 +243,8 @@ export interface MissionFolder {
     directory: string;
     /** True for mpmissions: linked into <Arma 3>\MPMissions only. */
     multiplayer: boolean;
+    /** maxPlayers value from description.ext, when present. */
+    maxPlayers?: number;
 }
 
 /**
@@ -269,7 +271,12 @@ export function findMissions(roots: string[]): MissionFolder[] {
             const isMultiplayer = multiplayer || name === "mpmissions";
 
             if (isMission(child)) {
-                result.set(path.resolve(child).toLowerCase(), { directory: child, multiplayer: isMultiplayer });
+                const maxPlayers = readMissionMaxPlayers(child);
+                result.set(path.resolve(child).toLowerCase(), {
+                    directory: child,
+                    multiplayer: isMultiplayer || (maxPlayers !== undefined && maxPlayers > 1),
+                    ...(maxPlayers !== undefined ? { maxPlayers } : {})
+                });
             } else if (depth > 0 && !isAddonFolder(child) && name !== "addons") {
                 scan(child, depth - 1, isMultiplayer);
             }
@@ -283,7 +290,13 @@ export function findMissions(roots: string[]): MissionFolder[] {
 
         // The workspace root is a mission itself, or its missions/ folder is one level down.
         if (isMission(root)) {
-            result.set(path.resolve(root).toLowerCase(), { directory: root, multiplayer: false });
+            const maxPlayers = readMissionMaxPlayers(root);
+            result.set(path.resolve(root).toLowerCase(), {
+                directory: root,
+                multiplayer: path.basename(path.dirname(root)).toLowerCase() === "mpmissions"
+                    || (maxPlayers !== undefined && maxPlayers > 1),
+                ...(maxPlayers !== undefined ? { maxPlayers } : {})
+            });
             continue;
         }
 
@@ -291,6 +304,25 @@ export function findMissions(roots: string[]): MissionFolder[] {
     }
 
     return [...result.values()];
+}
+
+/** Reads maxPlayers from a mission's Header (or the top-level description for older layouts). */
+export function readMissionMaxPlayers(directory: string): number | undefined {
+    const description = path.join(directory, "description.ext");
+    if (!fs.existsSync(description)) return undefined;
+
+    try {
+        const content = fs.readFileSync(description, "utf8")
+            .replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\r\n]/g, " "))
+            .replace(/^\s*\/\/.*$/gm, match => match.replace(/[^\r\n]/g, " "));
+        const header = /\bclass\s+Header\s*\{([\s\S]*?)\}/i.exec(content)?.[1];
+        const value = header
+            ? /\bmaxPlayers\s*=\s*(\d+)\s*;/i.exec(header)?.[1]
+            : /\bmaxPlayers\s*=\s*(\d+)\s*;/i.exec(content)?.[1];
+        return value === undefined ? undefined : Number(value);
+    } catch {
+        return undefined;
+    }
 }
 
 /** Looks for the mod that contains the given file by walking up from it. */

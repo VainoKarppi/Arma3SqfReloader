@@ -55,7 +55,7 @@ export function request(settings: Settings, method: "GET" | "POST", route: strin
         });
 
         req.on("timeout", () => {
-            req.destroy(new ApiError(`Timed out after ${settings.requestTimeout} ms (${url.href}). Is Arma running?`));
+            req.destroy(new ApiError(`Timed out after ${timeoutMs} ms (${url.href}). Is Arma running?`));
         });
 
         req.on("error", error => {
@@ -114,38 +114,16 @@ export async function reloadEverything(settings: Settings): Promise<CommandResul
     return toResult(response);
 }
 
-export async function evalCode(settings: Settings, code: string): Promise<CommandResult> {
-    const response = await request(settings, "POST", "/eval", { code });
+export async function evalCode(settings: Settings, code: string, timeoutMs = settings.runTimeout * 1000): Promise<CommandResult> {
+    // Give the server slightly longer than its SQF execution timeout to serialize the response.
+    const response = await request(settings, "POST", "/eval", { code, timeoutMs }, timeoutMs + 5000);
     return toResult(response);
 }
 
-/** Executes SQF and waits for Arma to publish its return value to the API. */
-export async function executeCode(settings: Settings, code: string, timeoutMs: number): Promise<CommandResult> {
-    const accepted = await request(settings, "POST", "/execute", { code, timeoutMs });
-    const acceptedResult = toResult(accepted);
-    if (!acceptedResult.success) return acceptedResult;
-
-    const requestId = (accepted.json as { requestId?: unknown } | undefined)?.requestId;
-    if (typeof requestId !== "string" || requestId.length === 0) {
-        return { success: false, error: "Arma accepted the execution request without returning a request ID." };
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const remainingMs = Math.max(1, deadline - Date.now());
-        let response: ApiResponse;
-        try {
-            response = await request(settings, "GET", `/result/${encodeURIComponent(requestId)}`, undefined, Math.min(settings.requestTimeout, remainingMs));
-        } catch (error) {
-            if (Date.now() >= deadline) break;
-            throw error;
-        }
-        if (response.status === 202) continue;
-        return toResult(response);
-    }
-
-    return { success: false, error: `Arma did not return an SQF result within ${Math.ceil(timeoutMs / 1000)} seconds.` };
+/** Queues SQF for execution and returns as soon as Arma accepts it. */
+export async function executeCode(settings: Settings, code: string): Promise<CommandResult> {
+    const response = await request(settings, "POST", "/execute", { code });
+    return toResult(response);
 }
 
 export async function recompileCommand(settings: Settings, armaPath: string, code: string): Promise<CommandResult> {

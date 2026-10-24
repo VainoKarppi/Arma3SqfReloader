@@ -2,10 +2,10 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
-import { findArmaDirectory, findMissions, pickArmaDirectory, toArmaPath } from "./arma";
+import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirectory, toArmaPath } from "./arma";
 import { getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
-import { createLinks } from "./junctions";
+import { createLinks, linkMissions } from "./junctions";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
 
@@ -22,6 +22,15 @@ export interface LaunchOptions {
     mission?: string;
     /** Absolute mission.sqm path; Arma opens this scenario directly in Eden at startup. */
     scenarioFile?: string;
+    /** Mission to ensure is linked into the selected profile's Missions/MPMissions folder. */
+    missionFolder?: MissionFolder;
+    /** Host the selected mission in a listen-server session. */
+    hostMission?: boolean;
+    /** Start arma3server_x64.exe with the selected server config and mission. */
+    dedicatedServer?: boolean;
+    serverConfig?: string;
+    /** Extra mod roots to include in the Arma launch (for generated server examples). */
+    additionalModDirectories?: string[];
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
@@ -57,7 +66,10 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         await updateSetting("armaDirectory", armaDirectory);
     }
 
-    const executable = path.join(armaDirectory, "arma3_x64.exe");
+    const executable = path.join(
+        armaDirectory,
+        options.dedicatedServer ? "arma3server_x64.exe" : "arma3_x64.exe"
+    );
 
     if (!fs.existsSync(executable)) {
         log(`launch: ${executable} does not exist.`);
@@ -65,7 +77,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         return false;
     }
 
-    if (isRunning()) {
+    if (!options.dedicatedServer && isRunning()) {
         log("An Arma 3 instance is already running, so a new launch was skipped.");
         return false;
     }
@@ -73,13 +85,40 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     try {
         // Probe before starting the game: once Arma runs, its own listener owns the port, so a
         // busy 8764 (EdenOnline, an older SqfReloader instance) has to be detected up front.
-        const port = await writeApiConfig(settings, true);
+        const port = options.dedicatedServer ? undefined : await writeApiConfig(settings, true);
 
         const mods = workspaceMods();
-        const launch = prepareRuntime(runtime, armaDirectory, settings, mods);
+        const serverMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
+        const launch = prepareRuntime(runtime, armaDirectory, settings, mods, serverMods);
 
-        const linkWarnings = verifyWorkspaceAddons(armaDirectory, workspaceAddons());
+        if (options.missionFolder) {
+            const profileMissionPath = path.join(
+                launch.profile.directory,
+                options.missionFolder.multiplayer ? "MPMissions" : "Missions",
+                path.basename(options.missionFolder.directory)
+            );
+            if (path.resolve(profileMissionPath).toLowerCase() !== path.resolve(options.missionFolder.directory).toLowerCase()) {
+                const missionLinks = linkMissions(armaDirectory, launch.profile.directory, [options.missionFolder]);
+                launch.warnings.push(...missionLinks.warnings);
+                if (missionLinks.links.length === 0 && missionLinks.warnings.length > 0) {
+                    throw new Error(missionLinks.warnings[0]);
+                }
+                if (missionLinks.links.length > 0) {
+                    log(`Mission linked to Arma profile: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
+                }
+            }
+        }
+
+        const linkWarnings = options.dedicatedServer
+            ? verifyWorkspaceAddons(armaDirectory, serverMods.flatMap(mod => mod.addons))
+            : verifyWorkspaceAddons(armaDirectory, workspaceAddons());
         launch.warnings.push(...linkWarnings);
+        if (options.dedicatedServer && options.missionFolder) {
+            const serverMissionPath = path.join(armaDirectory, "MPMissions", `${path.basename(options.missionFolder.directory)}.pbo`);
+            if (!fs.existsSync(serverMissionPath)) {
+                throw new Error(`Dedicated server mission package was not prepared at ${serverMissionPath}.`);
+            }
+        }
 
         for (const warning of launch.warnings) {
             log(`Warning: ${warning}`);
@@ -93,8 +132,14 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
 
         log(`-mod= entries: ${launch.mods.join(" ; ")}`);
 
-        if (port !== requestedApiPort(settings)) {
+        if (port !== undefined && port !== requestedApiPort(settings)) {
             vscode.window.setStatusBarMessage(`SqfReloader API moved to port ${port} (${requestedApiPort(settings)} is in use).`, 8000);
+        }
+
+        if (options.hostMission && options.missionFolder) {
+            if (options.missionFolder.maxPlayers === undefined || options.missionFolder.maxPlayers <= 1) {
+                throw new Error("Only missions with maxPlayers greater than 1 can be hosted. Add maxPlayers > 1 to description.ext.");
+            }
         }
 
         startProcess(launch, settings, options);
@@ -303,6 +348,19 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     // @SqfReloader's replacement config must override the config inside scripts.pbo.
     const args: string[] = ["-filePatching"];
 
+    if (options.dedicatedServer) {
+        args.push("-autoInit");
+    }
+
+    if (options.hostMission) {
+        args.push("-host");
+    }
+
+    if (options.dedicatedServer && options.serverConfig) {
+        const config = options.serverConfig.replace(/"/g, "\\\"");
+        args.push(`-config="${config}"`);
+    }
+
     const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
     const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
 
@@ -440,5 +498,3 @@ export function workspaceArmaPath(filePath: string): string | undefined {
 
     return undefined;
 }
-
-

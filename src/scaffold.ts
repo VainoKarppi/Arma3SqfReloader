@@ -28,11 +28,12 @@ export interface ScaffoldResult {
     missionDirectory?: string;
     /** Multiplayer mission (mpmissions\example.Altis). */
     mpMissionDirectory?: string;
+    /** Server mod/config/mission example directory. */
+    serverExampleDirectory?: string;
 }
 
 /**
- * Creates a ready-to-run example mod in an (empty) workspace, so the reloader can be tried out
- * without writing any boilerplate.
+ * Creates the example mod, missions, and dedicated-server files in the open workspace.
  */
 export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<ScaffoldResult | undefined> {
     const settings = readSettings();
@@ -78,22 +79,6 @@ export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<Sc
         log("No Arma 3 folder configured yet; it is detected or asked for on the first Play.");
     }
 
-    const readyNotification = vscode.window.showInformationMessage(
-        `Example mod ready. Click Play to start Arma 3 with it.`,
-        "Play Arma 3"
-    );
-    const notificationTimeout = setTimeout(() => {
-        // VS Code's message API has no per-notification timeout. Closing the notification
-        // resolves the message promise with undefined if the user did not choose an action.
-        void vscode.commands.executeCommand("workbench.action.closeNotification");
-    }, 7_000);
-    const choice = await readyNotification;
-    clearTimeout(notificationTimeout);
-
-    if (choice === "Play Arma 3") {
-        void vscode.commands.executeCommand("sqfReloader.play");
-    }
-
     return result;
 }
 
@@ -103,7 +88,7 @@ export async function scaffoldExample(options: ScaffoldOptions = {}): Promise<Sc
  */
 export function writeTemplate(root: string, withMission: boolean, force: boolean): ScaffoldResult {
     const modDirectory = path.join(root, TEMPLATE_MOD_NAME);
-    const addonDirectory = path.join(modDirectory, "addons", TEMPLATE_TAG);
+    const addonDirectory = path.join(modDirectory, "addons", "scripts");
     const files: string[] = [];
     const skipped: string[] = [];
 
@@ -123,8 +108,7 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
     write(path.join(modDirectory, "mod.cpp"), modCpp());
     write(path.join(addonDirectory, "config.cpp"), configCpp());
 
-    // SqfReloader_fnc_reloadFunction looks for z\<tag>\addons\<tag>\functions\fn_<name>.sqf, so the
-    // function files live flat in functions/ (not in per-class sub folders).
+    // The directory name under addons is scripts; the CfgFunctions tag remains "example".
     write(path.join(addonDirectory, "functions", "fn_hello.sqf"), fnHello());
     write(path.join(addonDirectory, "functions", "fn_add.sqf"), fnAdd());
     write(path.join(addonDirectory, "functions", "fn_showCounter.sqf"), fnShowCounter());
@@ -132,13 +116,213 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
 
     let missionDirectory: string | undefined;
     let mpMissionDirectory: string | undefined;
+    const serverExampleDirectory = writeServerExample(root, write);
 
     if (withMission) {
         missionDirectory = writeMission(path.join(root, "missions", `${TEMPLATE_TAG}.Altis`), write, false);
         mpMissionDirectory = writeMission(path.join(root, "mpmissions", `${TEMPLATE_TAG}.Altis`), write, true);
     }
 
-    return { modDirectory, files, skipped, missionDirectory, mpMissionDirectory };
+    return { modDirectory, files, skipped, missionDirectory, mpMissionDirectory, serverExampleDirectory };
+}
+
+function writeServerExample(root: string, write: (file: string, content: string) => void): string {
+    const directory = path.join(root, "server-example");
+    const addonDirectory = path.join(directory, "@ExampleServerMod", "addons", "server");
+
+    write(path.join(directory, "server.cfg"), serverConfig());
+    write(path.join(directory, "README.md"), serverReadme());
+    write(path.join(addonDirectory, "config.cpp"), serverModConfig());
+    write(path.join(addonDirectory, "functions", "fn_serverMessage.sqf"), serverMessageFunction());
+    write(path.join(addonDirectory, "functions", "fn_receiveReloadedFunction.sqf"), receiveReloadedFunction());
+    write(path.join(directory, "ExampleMission.Altis", "description.ext"), serverMissionDescription());
+    write(path.join(directory, "ExampleMission.Altis", "initServer.sqf"), serverMissionInit());
+    write(path.join(directory, "ExampleMission.Altis", "CfgRemoteExec.hpp"), serverRemoteExecConfig());
+    write(path.join(directory, "ExampleMission.Altis", "mission.sqm"), serverMissionSqm());
+
+    return directory;
+}
+
+function serverConfig(): string {
+    return `hostname = "SqfReloader Development Server";
+password = "";
+passwordAdmin = "change-this-password";
+maxPlayers = 16;
+verifySignatures = 0;
+BattlEye = 0;
+persistent = 1;
+
+class Missions {
+    class ExampleMissionAltis {
+        template = "ExampleMission.Altis";
+        difficulty = "Regular";
+    };
+};
+`;
+}
+
+function serverReadme(): string {
+    return `# Dedicated server example
+
+This folder contains a local Arma 3 dedicated-server example, a live-reloadable server addon,
+and a multiplayer mission. Change \`passwordAdmin\` in \`server.cfg\` before exposing a server.
+
+Use **SqfReloader: Play** for client/listen-server live reload from this workspace. To start a
+dedicated server, use the extension's dedicated-server command with this mission and config.
+Live SQF reload through the local REST API is for a local Arma process; it does not attach a
+remote dedicated server.
+
+The server function changes and multiplayer mission changes are broadcast using remoteExec.
+The mission's \`CfgRemoteExec.hpp\` explicitly permits
+\`SqfReloader_fnc_receiveReloadedFunction\` for clients.
+`;
+}
+
+function serverModConfig(): string {
+    return `class CfgPatches {
+    class ExampleServer {
+        name = "Example Server Functions";
+        author = "SqfReloader";
+        requiredVersion = 2.10;
+        requiredAddons[] = {};
+        units[] = {};
+        weapons[] = {};
+    };
+};
+
+class CfgFunctions {
+    class Example {
+        tag = "Example";
+        class Scripts {
+            file = "\\Example\\addons\\server\\functions";
+            class serverMessage {};
+            class receiveReloadedFunction {};
+        };
+    };
+};
+`;
+}
+
+function serverMessageFunction(): string {
+    return `params [["_message", "Hello from the dedicated server", [""]]];
+if (!isServer) exitWith {};
+
+[_message] remoteExec ["systemChat", 0];
+`;
+}
+
+function receiveReloadedFunction(): string {
+    return `params [
+    ["_name", "", [""]],
+    ["_function", {}, [{}]]
+];
+
+if (_name isEqualTo "" || {!(_function isEqualType {})}) exitWith {};
+missionNamespace setVariable [_name, _function];
+diag_log format ["[ExampleServerMod] received reloaded function %1 from server", _name];
+`;
+}
+
+function serverMissionDescription(): string {
+    return `allowFunctionsRecompile = 1;
+#include "CfgRemoteExec.hpp"
+
+class Header {
+    gameType = "Coop";
+    minPlayers = 1;
+    maxPlayers = 16;
+};
+
+class CfgFunctions {
+    class ExampleMission {
+        tag = "ExampleMission";
+        class Init {
+            file = "functions";
+            class serverMissionInit {};
+        };
+    };
+};
+
+class CfgRemoteExec {
+    class Functions {
+        mode = 1;
+        jip = 0;
+        class Example_fnc_serverMessage {
+            allowedTargets = 2;
+        };
+    };
+};
+`;
+}
+
+function serverRemoteExecConfig(): string {
+    return `class CfgRemoteExec {
+    class Functions {
+        mode = 1;
+        jip = 0;
+        class SqfReloader_fnc_receiveReloadedFunction {
+            allowedTargets = 1;
+        };
+    };
+};
+`;
+}
+
+function serverMissionSqm(): string {
+    return `version=54;
+class EditorData
+{
+    moveGridStep=1;
+    angleGridStep=1;
+    scaleGridStep=1;
+    autoGrouping=0;
+    toggles=1;
+    class ItemIDProvider { nextID=1; };
+    class MarkerIDProvider { nextID=0; };
+    class LayerIndexProvider { nextID=1; };
+    class Camera
+    {
+        pos[]={0,1000,0};
+        dir[]={0,-1,0};
+        up[]={0,0,1};
+        aside[]={1,0,0};
+    };
+};
+class ScenarioData
+{
+    author="SqfReloader";
+    overview="Development mission for the server-mod example.";
+};
+class Mission
+{
+    class Intel
+    {
+        briefingName="SqfReloader Server Mod Example";
+        startWeather=0.2;
+        startWind=0.1;
+        startWaves=0.1;
+        forecastWeather=0.2;
+        forecastWind=0.1;
+        forecastWaves=0.1;
+        year=2035;
+        month=6;
+        day=24;
+        hour=12;
+        minute=0;
+    };
+    class Entities
+    {
+        items=0;
+    };
+};
+`;
+}
+
+function serverMissionInit(): string {
+    return `if (isServer) then {
+    ["Dedicated server mission is running"] call Example_fnc_serverMessage;
+};
+`;
 }
 
 /**
@@ -162,7 +346,7 @@ export function exampleMod(root: string): Mod | undefined {
 async function askForMission(): Promise<boolean> {
     const choice = await vscode.window.showQuickPick(
         [
-            { label: "Mod + test mission", description: "Also writes missions\\example.Altis (SP) and mpmissions\\example.Altis (MP), which call the functions on spawn.", value: true },
+            { label: "Mod + test mission", description: "Also writes missions\\example.Altis and mpmissions\\example.Altis, which call the functions on spawn.", value: true },
             { label: "Mod only", description: "Use the example functions in your own mission.", value: false }
         ],
         { title: "Arma 3 SQF Reloader: example mod", ignoreFocusOut: true }
@@ -174,7 +358,7 @@ async function askForMission(): Promise<boolean> {
 /** Opens the two files a developer edits first. */
 async function revealExample(result: ScaffoldResult): Promise<void> {
     const hello = result.files.find(file => file.endsWith("fn_hello.sqf"));
-    const config = result.files.find(file => file.endsWith("config.cpp"));
+    const config = result.files.find(file => file.endsWith("config.cpp") && file.includes(`${TEMPLATE_MOD_NAME}${path.sep}addons${path.sep}`));
 
     for (const file of [config, hello]) {
         if (!file) {
@@ -186,6 +370,17 @@ async function revealExample(result: ScaffoldResult): Promise<void> {
             await vscode.window.showTextDocument(document, { preview: false });
         } catch (error) {
             log(`Could not open ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
+        if (result.serverExampleDirectory) {
+            try {
+                const document = await vscode.workspace.openTextDocument(
+                    vscode.Uri.file(path.join(result.serverExampleDirectory, "README.md"))
+                );
+                await vscode.window.showTextDocument(document, { preview: false });
+            } catch (error) {
+                log(`Could not open server example README: ${error instanceof Error ? error.message : String(error)}`);
+            }
         }
     }
 }
@@ -251,6 +446,8 @@ class CfgFunctions {
             class hello {};
             class add {};
             class showCounter {};
+            class receiveReloadedFunction {};
+            class receiveReloadedFunction {};
         };
     };
 };
@@ -763,12 +960,6 @@ class CfgFunctions {
             class liveTest {};
         };
     };
-};
-
-// SqfReloader_fnc_runStartup runs this once the mod's Cfg3DEN init started the REST API
-// (or when the VS Code launcher starts the mission).
-class SqfReloader {
-    StartupCode = "diag_log '[ExampleMod] SqfReloader startup code ran';";
 };
 `;
 }

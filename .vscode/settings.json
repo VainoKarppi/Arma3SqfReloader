@@ -44,5 +44,11 @@
         "**/SqfReloaderExtension/dist/**": true,
         "**/node_modules/**": true
     },
-    "typescript.tsdk": "node_modules/typescript/lib"
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "chat.tools.terminal.autoApprove": {
+        "/^npx tsc --noEmit -p tsconfig\\.json$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

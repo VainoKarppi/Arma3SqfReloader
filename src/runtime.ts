@@ -79,7 +79,7 @@ function syncFile(source: string, target: string): void {
  * Deploys the bundled @SqfReloader mod into the Arma folder and links the user's mods there.
  * Returns everything needed to launch Arma.
  */
-export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings: Settings, mods: Mod[]): PreparedLaunch {
+export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings: Settings, mods: Mod[], additionalMods: Mod[] = []): PreparedLaunch {
     const warnings: string[] = [];
 
     // --- 1. @SqfReloader ------------------------------------------------------
@@ -143,7 +143,8 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     // SqfReloader's z\... runtime tree; developer PBO-prefix files are left untouched.
     const modFolders: string[] = [];
 
-    for (const mod of mods) {
+    const allMods = [...mods, ...additionalMods];
+    for (const mod of allMods) {
         const open = openModFolder(armaDirectory, mod);
         if (!open) {
             continue;
@@ -184,7 +185,7 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
         mods: [...new Set([...modFolders, bundledMod])],
         modPath: bundledMod,
         warnings,
-        userMods: mods,
+        userMods: allMods,
         profile
     };
 }

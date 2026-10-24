@@ -107,14 +107,4 @@ if (is3DEN) then {
     };
 };
 
-// Optional project hook, e.g. in description.ext:
-//   class SqfReloader { StartupCode = "call compile preprocessFileLineNumbers 'dev/setup.sqf';"; };
-private _code = getText (missionConfigFile >> "SqfReloader" >> "StartupCode");
-
-if (_code != "" && {!(missionNamespace getVariable ["SqfReloader_var_startupCodeRun", false])}) then {
-    missionNamespace setVariable ["SqfReloader_var_startupCodeRun", true];
-    diag_log "[SqfReloader] startup: running project StartupCode";
-    call compile _code;
-};
-
 true

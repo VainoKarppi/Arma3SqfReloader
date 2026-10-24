@@ -53,7 +53,20 @@ those separately.
 4. Edit and save `fn_hello.sqf`.
 5. In Arma’s debug console, run `[] call example_fnc_hello;` to check the updated function.
 
-The example includes `@ExampleMod`, an addon with three functions, and an optional test mission.
+The example includes `@ExampleMod`, an addon under `addons/scripts` with three example functions
+and the reload receiver, plus optional test missions. It also creates `server-example/` with a
+dedicated server configuration, server-side mod, and multiplayer mission.
+
+The generated example mod is located at `@ExampleMod/addons/scripts`. The server mod and related
+configuration and mission files are generated inside `server-example/`.
+
+For multiplayer development, open a multiplayer mission's `mission.sqm`, right-click it, and
+choose **SqfReloader: Start mission as non-dedicated server** to launch it with Arma's `-host`
+option. In a multiplayer session, saved workspace function changes are compiled on the server
+and broadcast to connected clients using `remoteExec`. The active mission must permit
+`SqfReloader_fnc_receiveReloadedFunction` in its `CfgRemoteExec` configuration for client
+broadcasts. `server-example/` contains the dedicated server example created by the scaffold; the
+dedicated server process is separate from SqfReloader's local API.
 
 ## Use your own mod
 
@@ -113,9 +126,16 @@ $body = @{ code = 'systemChat "Hello from PowerShell";' } | ConvertTo-Json
 Invoke-RestMethod "$api/eval" -Method Post -ContentType "application/json" -Body $body
 ```
 
-`POST /api/eval` only confirms that the request was queued. To wait for and receive the actual
-SQF return value through the API, use `POST /api/execute` and poll its result endpoint. The
-PowerShell example does this and enforces a timeout:
+`POST /api/execute` is fire-and-forget: it returns as soon as Arma accepts the SQF. Use
+`POST /api/eval` when you need the SQF return value. It waits up to `timeoutMs` (default 30
+seconds, capped at 300 seconds) and returns the value in the same HTTP response:
+
+```powershell
+$body = @{ code = '1 + 1'; timeoutMs = 30000 } | ConvertTo-Json
+Invoke-RestMethod "$api/eval" -Method Post -ContentType "application/json" -Body $body
+```
+
+The PowerShell helper does the same and enforces its timeout:
 
 ```powershell
 .\examples\Invoke-ArmaSqf.ps1 -Code '1 + 1' -TimeoutSeconds 30
@@ -125,20 +145,22 @@ The script returns `2`. Set `sqfReloader.runTimeout` to change the default timeo
 right-click **Run in Arma** commands. The scripts in [`examples`](examples) also show status
 and function queries, reloading functions, and sending a registered event.
 
-The execute API flow is `POST /api/execute` with `{"code":"1 + 1","timeoutMs":30000}`. It
-returns a `requestId`; poll `GET /api/result/{requestId}` until the response no longer has
-`pending: true`. The completed
-response contains the SQF value in `result`. A timeout ends the wait and discards a late result;
-it does not forcibly stop SQF already running in Arma.
+`/api/eval` returns `result` directly. On timeout it responds with HTTP 408; SQF already running
+in Arma is not forcibly stopped. For fire-and-forget scripts, call `/api/execute` instead:
+
+```powershell
+$body = @{ code = 'systemChat "Queued from PowerShell";' } | ConvertTo-Json
+Invoke-RestMethod "$api/execute" -Method Post -ContentType "application/json" -Body $body
+```
 
 The API also supports `POST /api/reload` with `{"functions":["TAG_fnc_name"]}` to reload named
 functions, or `{}` to request a full reload. `POST /api/send` accepts
 `{"function":"EventName","data":[...]}` and invokes an event handler registered in SQF with
 `["EventName"] call SqfReloader_fnc_send;`.
 
-Requests are queued for the game thread, so a successful HTTP response means Arma accepted the
-request. `/api/execute` additionally waits for the SQF result or an execution error, up to the
-requested timeout. Other queue endpoints return once the request is accepted.
+Requests are queued for the game thread. `/api/execute` and the other queue endpoints return
+when Arma accepts the request; `/api/eval` waits for the execution result or an error, up to its
+server-side timeout.
 
 ## Settings
 

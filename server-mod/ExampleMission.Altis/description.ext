@@ -1,0 +1,8 @@
+allowFunctionsRecompile = 1;
+#include "CfgRemoteExec.hpp"
+
+class Header {
+    gameType = "Coop";
+    minPlayers = 1;
+    maxPlayers = 16;
+};

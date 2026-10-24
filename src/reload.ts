@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionTag, toArmaPath, toFunctionVariable } from "./arma";
-import { evalCode, executeCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
+import { evalCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError } from "./settings";
 import { workspaceAddons } from "./runtime";
 
@@ -10,6 +10,16 @@ export interface ReloadOutcome {
     ok: boolean;
     message: string;
     detail?: string;
+}
+
+function compileAndBroadcastAssignment(variable: string, armaPath: string): string {
+    return `${compileAssignment(variable, armaPath)}\n` +
+        `if (isServer) then { [${sqfString(variable)}, missionNamespace getVariable ${sqfString(variable)}] remoteExecCall ["SqfReloader_fnc_receiveReloadedFunction", 0, false]; };`;
+}
+
+function missionCompileAssignment(variable: string, armaPath: string, multiplayer: boolean): string {
+    const assignment = compileAssignment(variable, armaPath);
+    return multiplayer ? compileAndBroadcastAssignment(variable, armaPath) : assignment;
 }
 
 let snapshotSequence = 0;
@@ -24,6 +34,8 @@ interface MissionFunction {
     directory: string;
     variable: string;
 }
+
+let hasWarnedMultiplayerRemoteExec = false;
 
 function notify(settings: Settings, message: string): void {
     if (settings.notifyOnError) {
@@ -49,8 +61,10 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     const missionFunction = findMissionFunction(document.fileName);
 
     if (missionFunction) {
-        const mission = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath))
-            .find(candidate => path.resolve(candidate.directory).toLowerCase() === missionFunction.directory.toLowerCase());
+        const mission = findMissions([
+            ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath),
+            missionFunction.directory
+        ]).find(candidate => path.resolve(candidate.directory).toLowerCase() === missionFunction.directory.toLowerCase());
         if (!mission) {
             return { ok: false, message: "Could not find the mission for this function." };
         }
@@ -61,7 +75,11 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
         try {
             const snapshot = await writeMissionCompileSnapshot(mission.directory, document.fileName, document.getText(), settings);
             scheduleSnapshotCleanup(snapshot.directory);
-            const result = await evalCode(settings, compileAssignment(missionFunction.variable, snapshot.armaPath));
+            const result = await evalCode(settings, missionCompileAssignment(missionFunction.variable, snapshot.armaPath, mission.multiplayer));
+            if (mission.multiplayer && result.success && !hasWarnedMultiplayerRemoteExec) {
+                hasWarnedMultiplayerRemoteExec = true;
+                log("Multiplayer function broadcast uses SqfReloader_fnc_receiveReloadedFunction; allow it in the mission's CfgRemoteExec.");
+            }
             return result.success
                 ? { ok: true, message: `Recompiled ${missionFunction.variable} from saved mission snapshot (${originalArmaPath}).` }
                 : { ok: false, message: result.error ?? "Mission function compile failed" };
@@ -97,8 +115,13 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     try {
         const snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
         scheduleSnapshotCleanup(snapshot.directory);
-        const code = compileAssignment(variable, snapshot.armaPath);
+        const code = compileAndBroadcastAssignment(variable, snapshot.armaPath);
         const result = await evalCode(settings, code);
+
+        if (result.success && !hasWarnedMultiplayerRemoteExec) {
+            hasWarnedMultiplayerRemoteExec = true;
+            log("Mod function broadcast uses SqfReloader_fnc_receiveReloadedFunction; allow it in the mission's CfgRemoteExec.");
+        }
 
         return result.success
             ? { ok: true, message: `Recompiled ${variable} from saved snapshot of ${armaPath}.` }
@@ -373,7 +396,12 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     if (missionFunction) {
         const snapshot = await writeMissionCompileSnapshot(missionFunction.directory, document.fileName, document.getText(), settings);
         scheduleSnapshotCleanup(snapshot.directory);
-        const result = await evalCode(settings, compileAssignment(missionFunction.variable, snapshot.armaPath));
+        const mission = findMissions([
+            ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath),
+            missionFunction.directory
+        ])
+            .find(candidate => path.resolve(candidate.directory).toLowerCase() === path.resolve(missionFunction.directory).toLowerCase());
+        const result = await evalCode(settings, missionCompileAssignment(missionFunction.variable, snapshot.armaPath, mission?.multiplayer === true));
         return result.success
             ? { ok: true, message: `Recompiled ${missionFunction.variable} from the mission snapshot.` }
             : { ok: false, message: result.error ?? "Mission function compile failed" };
@@ -394,12 +422,17 @@ export async function reloadFileNow(document: vscode.TextDocument, settings: Set
     const armaPath = toArmaPath(addon, document.fileName);
     const snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
     scheduleSnapshotCleanup(snapshot.directory);
-    const code = compileAssignment(variable, snapshot.armaPath);
+    const code = compileAndBroadcastAssignment(variable, snapshot.armaPath);
 
     const result = await evalCode(settings, code);
 
     if (!result.success) {
         return { ok: false, message: result.error ?? "Reload failed" };
+    }
+
+    if (!hasWarnedMultiplayerRemoteExec) {
+        hasWarnedMultiplayerRemoteExec = true;
+        log("Mod function broadcast uses SqfReloader_fnc_receiveReloadedFunction; allow it in the mission's CfgRemoteExec.");
     }
 
     return { ok: true, message: `Recompiled ${variable} from ${armaPath}.` };
@@ -466,7 +499,7 @@ export async function runSqfFile(document: vscode.TextDocument, settings: Settin
     const sqfCode = `private _sqfRunFunction = compile preprocessFileLineNumbers ${sqfString(snapshot.armaPath)}; (${parameters}) call _sqfRunFunction`;
 
     try {
-        const result = await executeCode(settings, sqfCode, timeoutMs);
+        const result = await evalCode(settings, sqfCode, timeoutMs);
         if (!result.success) return { ok: false, message: result.error ?? "Arma rejected the run request." };
         log(`Run completed for ${document.fileName}; snapshot ${snapshot.armaPath}`);
         const resultText = typeof result.result === "string" ? result.result : JSON.stringify(result.result ?? null);

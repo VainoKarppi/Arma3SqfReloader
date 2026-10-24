@@ -19,7 +19,8 @@ namespace SqfReloader;
 /// Routes (prefix <c>/api</c>):
 ///   POST /api/command      EdenOnline compatible: {"type":"code"|"recompile","code":"...","method":"..."}
 ///   POST /api/send         {"function":"MyFn","data":[...display formats...]}
-///   POST /api/eval         {"code":"player setDamage 1"}  (alias of /command with type=code)
+///   POST /api/eval         {"code":"1 + 1","timeoutMs":30000} (waits for an SQF result)
+///   POST /api/execute      {"code":"systemChat 'hello'"} (fire and forget)
 ///   POST /api/reload       {"functions":["TAG_fnc_a"]} or {} for every function marked recompile=1
 ///   POST /api/log          {"level":"debug"|"info"|"warning"|"error"}
 ///   GET  /api/status
@@ -207,11 +208,6 @@ internal static class RestApiServer {
                 return;
             }
 
-            if (method == "GET" && path.StartsWith("/api/result/", StringComparison.Ordinal)) {
-                await HandleExecutionResult(context, path["/api/result/".Length..]);
-                return;
-            }
-
             if (method != "POST") {
                 await Respond(context, 404, Error("Not found"));
                 return;
@@ -224,14 +220,19 @@ internal static class RestApiServer {
                 return;
             }
 
+            if (path == "/api/eval") {
+                await HandleEval(context, request);
+                return;
+            }
+
             if (path == "/api/execute") {
-                await HandleExecute(context, request);
+                var (status, response) = HandleExecute(request);
+                await Respond(context, status, response);
                 return;
             }
 
             switch (path) {
                 case "/api/command":
-                case "/api/eval":
                 case "/api/send":
                 case "/api/reload":
                 case "/api/log":
@@ -261,15 +262,6 @@ internal static class RestApiServer {
                 MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { command.Type, command.Method ?? string.Empty, command.Code }));
                 ArmaLog.Log($"REST command accepted: type={command.Type} method={command.Method}");
                 return (200, Ok("command queued", new Dictionary<string, object?> { ["type"] = command.Type, ["method"] = command.Method }));
-            }
-
-            case "/api/eval": {
-                if (!request.TryGetValue("code", out object? code) || code is not string codeString || string.IsNullOrWhiteSpace(codeString))
-                    return (400, Error("'code' is required"));
-
-                MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, codeString }));
-                ArmaLog.Log("REST eval accepted");
-                return (200, Ok("command queued", new Dictionary<string, object?> { ["type"] = "code" }));
             }
 
             case "/api/send": {
@@ -347,9 +339,8 @@ internal static class RestApiServer {
             ["endpoints"] = new object?[] {
                 "POST /api/command {type: code|recompile, code, method?}",
                 "POST /api/send {function, data}",
-                "POST /api/eval {code}",
-                "POST /api/execute {code, timeoutMs}",
-                "GET /api/result/{requestId}",
+                "POST /api/eval {code, timeoutMs} (returns the SQF result)",
+                "POST /api/execute {code} (fire and forget)",
                 "POST /api/reload {functions?}",
                 "POST /api/log {level}",
                 "POST /api/source {directory}",
@@ -359,7 +350,17 @@ internal static class RestApiServer {
         };
     }
 
-    private static async Task HandleExecute(HttpListenerContext context, Dictionary<string, object?> request) {
+    private static (int Status, Dictionary<string, object?> Body) HandleExecute(Dictionary<string, object?> request) {
+        if (request.GetValueOrDefault("code") is not string code || string.IsNullOrWhiteSpace(code)) {
+            return (400, Error("'code' is required"));
+        }
+
+        MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, code }));
+        ArmaLog.Log("REST fire-and-forget execution accepted");
+        return (202, Ok("execution queued"));
+    }
+
+    private static async Task HandleEval(HttpListenerContext context, Dictionary<string, object?> request) {
         if (request.GetValueOrDefault("code") is not string code || string.IsNullOrWhiteSpace(code)) {
             await Respond(context, 400, Error("'code' is required"));
             return;
@@ -371,10 +372,7 @@ internal static class RestApiServer {
             _ => 30000
         };
         string requestId = Guid.NewGuid().ToString("N");
-        var pending = new PendingExecution(DateTimeOffset.UtcNow.AddMilliseconds(timeoutMs + 5000));
-
-        foreach (var entry in PendingExecutions)
-            if (entry.Value.ExpiresAt <= DateTimeOffset.UtcNow) PendingExecutions.TryRemove(entry.Key, out _);
+        var pending = new PendingExecution();
 
         PendingExecutions[requestId] = pending;
         string sqf = $"[{SimpleSerializer.ToArma(requestId)}, {SimpleSerializer.ToArma(code)}] spawn {{\n" +
@@ -392,30 +390,13 @@ internal static class RestApiServer {
 
         MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, sqf }));
         ArmaLog.Log($"REST execution accepted: request={requestId}, timeout={timeoutMs}ms");
-        await Respond(context, 202, Ok("execution queued", new Dictionary<string, object?> {
-            ["requestId"] = requestId,
-            ["timeoutMs"] = (long)timeoutMs
-        }));
-    }
-
-    private static async Task HandleExecutionResult(HttpListenerContext context, string requestId) {
-        if (string.IsNullOrWhiteSpace(requestId) || !PendingExecutions.TryGetValue(requestId, out PendingExecution? pending)) {
-            await Respond(context, 404, Error("Execution request was not found or has expired."));
-            return;
-        }
-
-        if (pending.ExpiresAt <= DateTimeOffset.UtcNow) {
-            PendingExecutions.TryRemove(requestId, out _);
-            await Respond(context, 408, Error("Arma execution timed out."));
-            return;
-        }
-
-        if (!pending.Completion.Task.IsCompleted) {
-            await Respond(context, 202, new Dictionary<string, object?> { ["success"] = true, ["pending"] = true });
-            return;
-        }
-
+        Task completed = await Task.WhenAny(pending.Completion.Task, Task.Delay(timeoutMs));
         PendingExecutions.TryRemove(requestId, out _);
+        if (completed != pending.Completion.Task) {
+            await Respond(context, 408, Error($"SQF execution timed out after {timeoutMs} ms."));
+            return;
+        }
+
         ExecutionResult result = await pending.Completion.Task;
         if (!string.IsNullOrEmpty(result.Error)) {
             await Respond(context, 422, Error(result.Error));
@@ -426,7 +407,7 @@ internal static class RestApiServer {
     }
 
     public static string PublishExecutionResult(string requestId, string resultJson, string error) {
-        if (!PendingExecutions.TryGetValue(requestId, out PendingExecution? pending) || pending.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (!PendingExecutions.TryGetValue(requestId, out PendingExecution? pending))
             return "expired";
 
         object? value = null;
@@ -436,8 +417,7 @@ internal static class RestApiServer {
         return pending.Completion.TrySetResult(new ExecutionResult(value, error)) ? "accepted" : "already completed";
     }
 
-    private sealed class PendingExecution(DateTimeOffset expiresAt) {
-        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+    private sealed class PendingExecution {
         public TaskCompletionSource<ExecutionResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 

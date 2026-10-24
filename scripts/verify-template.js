@@ -23,7 +23,8 @@ Module._resolveFilename = function (request, ...rest) {
 const { writeTemplate, exampleMod, TEMPLATE_MOD_NAME } = require(path.join(repoRoot, "out", "scaffold.js"));
 const { findMods, findModForFile, findAddonForFile, toArmaPath, toFunctionVariable } = require(path.join(repoRoot, "out", "arma.js"));
 
-const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-"));const failures = [];
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-"));
+const failures = [];
 
 function check(name, condition, detail) {
     if (condition) {
@@ -38,12 +39,19 @@ try {
     // --- first run: empty folder, mod + mission ------------------------------
     const result = writeTemplate(sandbox, true, false);
     check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
-    check("files written", result.files.length === 14, `${result.files.length} files`);
+    check("files written", result.files.length === 23, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
-    check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "example", "$PBOPREFIX$")));
+    check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "scripts", "$PBOPREFIX$")));
     check("missions have a mission.sqm", fs.existsSync(path.join(result.missionDirectory, "mission.sqm")) && fs.existsSync(path.join(result.mpMissionDirectory, "mission.sqm")));
+    check("server example is created", !!result.serverExampleDirectory && fs.existsSync(path.join(result.serverExampleDirectory, "server.cfg")));
+    check("server example includes mod and mission files", fs.existsSync(path.join(result.serverExampleDirectory, "@ExampleServerMod", "addons", "server", "config.cpp"))
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "mission.sqm"))
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "CfgRemoteExec.hpp"))
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "initServer.sqf")));
+    const serverExampleMod = findMods(result.serverExampleDirectory).find(mod => mod.name === "@ExampleServerMod");
+    check("server mod is independently discoverable", !!serverExampleMod && serverExampleMod.addons.length === 1);
 
     // The SP and MP scenarios are two distinct Eden files: both place a BLUFOR and an OPFOR
     // fire team, but only the MP one marks the OPFOR leader playable for the lobby.
@@ -58,39 +66,39 @@ try {
 
     // --- the extension has to see it as a mod -------------------------------
     const mods = findMods(sandbox);
-    check("findMods() returns the example mod", mods.length === 1 && mods[0].name === TEMPLATE_MOD_NAME, mods.map(m => m.name).join(","));
+    check("findMods() returns both example mods", mods.length === 2 && mods.some(mod => mod.name === TEMPLATE_MOD_NAME) && mods.some(mod => mod.name === "@ExampleServerMod"), mods.map(m => m.name).join(","));
     check("exampleMod() helper finds it", exampleMod(sandbox)?.name === TEMPLATE_MOD_NAME);
 
-    const addon = mods[0]?.addons[0];
-    check("one addon with the z\\example\\addons\\example prefix", addon?.prefix === "z\\example\\addons\\example", addon?.prefix);
+    const addon = mods.find(mod => mod.name === TEMPLATE_MOD_NAME)?.addons[0];
+    check("one scripts addon with the z\\example\\addons\\scripts prefix", addon?.prefix === "z\\example\\addons\\scripts", addon?.prefix);
     check("function tag is example", addon?.tag === "example", addon?.tag);
 
     // --- reloadability: file -> variable -> source path SqfReloader looks for ---
-    const hello = path.join(result.modDirectory, "addons", "example", "functions", "fn_hello.sqf");
+    const hello = path.join(result.modDirectory, "addons", "scripts", "functions", "fn_hello.sqf");
     check("fn_hello.sqf exists", fs.existsSync(hello));
 
     const addonForFile = findAddonForFile(hello);
-    check("fn_hello.sqf belongs to the addon", addonForFile?.prefix === "z\\example\\addons\\example", addonForFile?.prefix);
+    check("fn_hello.sqf belongs to the scripts addon", addonForFile?.prefix === "z\\example\\addons\\scripts", addonForFile?.prefix);
 
     const variable = addonForFile ? toFunctionVariable(addonForFile, hello) : "";
     check("function variable is example_fnc_hello", variable === "example_fnc_hello", variable);
 
     const armaPath = addonForFile ? toArmaPath(addonForFile, hello) : "";
-    // SqfReloader_fnc_reloadFunction resolves this to \z\example\addons\example\functions\fn_hello.sqf
+    // SqfReloader_fnc_reloadFunction resolves this to \z\example\addons\scripts\functions\fn_hello.sqf
     check(
         "Arma fileExists() path matches the reload candidate",
-        armaPath === "z\\example\\addons\\example\\functions\\fn_hello.sqf",
+        armaPath === "z\\example\\addons\\scripts\\functions\\fn_hello.sqf",
         armaPath
     );
 
-    const flatFunctions = fs.readdirSync(path.join(result.modDirectory, "addons", "example", "functions")).sort();
+    const flatFunctions = fs.readdirSync(path.join(result.modDirectory, "addons", "scripts", "functions")).sort();
     check("functions live flat in functions/", flatFunctions.join(",") === "fn_add.sqf,fn_hello.sqf,fn_showCounter.sqf", flatFunctions.join(","));
 
     // --- CfgFunctions config + declared tag --------------------------------
-    const config = fs.readFileSync(path.join(result.modDirectory, "addons", "example", "config.cpp"), "utf8");
+    const config = fs.readFileSync(path.join(result.modDirectory, "addons", "scripts", "config.cpp"), "utf8");
     check("config.cpp declares the tag", /tag = "example";/.test(config));
     check("config.cpp uses the tag-relative function path", /file = "\\example\\functions";/.test(config));
-    check("every function class exists in config.cpp", ["hello", "add", "showCounter"].every(name => new RegExp(`class ${name} \\{\\}`).test(config)));
+    check("every function class exists in config.cpp", ["hello", "add", "showCounter", "receiveReloadedFunction"].every(name => new RegExp(`class ${name} \\{\\}`).test(config)));
 
     const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
     check("workspace settings written", /"sqfReloader\.junctionMode": "addon"/.test(settingsJson));
@@ -99,14 +107,14 @@ try {
     const before = fs.readFileSync(hello, "utf8");
     fs.writeFileSync(hello, `${before}\n// edited by the user\n`, "utf8");
     const second = writeTemplate(sandbox, true, false);
-    check("second run skips existing files", second.skipped.length === 14, `${second.skipped.length} skipped`);
+    check("second run skips existing files", second.skipped.length === 23, `${second.skipped.length} skipped`);
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
 
     // --- mod-only variant ---------------------------------------------------
     const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
     const modOnly = writeTemplate(modOnlyRoot, false, false);
     check("mod-only variant writes no mission", !modOnly.missionDirectory && !modOnly.mpMissionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")) && !fs.existsSync(path.join(modOnlyRoot, "mpmissions")));
-    check("mod-only variant writes 6 files (no $PBOPREFIX$)", modOnly.files.length === 6, `${modOnly.files.length} files`);
+    check("mod-only variant still writes server example (no $PBOPREFIX$)", modOnly.files.length === 15, `${modOnly.files.length} files`);
     fs.rmSync(modOnlyRoot, { recursive: true, force: true });
 
     // --- extension .vscode/settings.json must be valid JSON ---------------
