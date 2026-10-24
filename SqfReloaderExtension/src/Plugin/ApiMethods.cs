@@ -53,6 +53,9 @@ internal static class ApiMethods {
     public static object?[] ApiWorkspaceFunctions() => RestApiServer.ConfiguredWorkspaceFunctions.Cast<object?>().ToArray();
 
     [ArmaMethod]
+    public static string ApiSetLogLevel(string level = "info") => RestApiServer.SetLogLevel(level);
+
+    [ArmaMethod]
     public static string ApiLogLevel(string level = "info") {
         ArmaLog.CurrentLogLevel = level.ToLowerInvariant() switch {
             "debug" => ArmaLog.LogLevel.Debug,

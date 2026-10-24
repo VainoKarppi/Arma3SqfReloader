@@ -52,6 +52,8 @@ internal static class RestApiServer {
             if (IsRunning) return $"Already running on {Url}";
 
             ApiConfig config = ApiConfig.Load();
+            ArmaLog.CurrentLogLevel = ParseLogLevel(config.LogLevel);
+            ArmaLog.Debug($"Configured log level: {ArmaLog.CurrentLogLevel}");
             ConfiguredPboPrefixes = config.PboPrefixes;
             ConfiguredWorkspaceFunctions = config.WorkspaceFunctions;
 
@@ -151,6 +153,7 @@ internal static class RestApiServer {
                 Port = port,
                 AutoStart = current.AutoStart,
                 SourceDirectory = current.SourceDirectory,
+                LogLevel = current.LogLevel,
                 PboPrefixes = current.PboPrefixes,
                 WorkspaceFunctions = current.WorkspaceFunctions
             }.Save();
@@ -158,6 +161,24 @@ internal static class RestApiServer {
         } catch (Exception ex) {
             ArmaLog.Warning($"Could not persist the REST API port {port}: {ex.Message}");
         }
+    }
+
+    private static ArmaLog.LogLevel ParseLogLevel(string level) => level.ToLowerInvariant() switch {
+        "debug" or "verbose" => ArmaLog.LogLevel.Debug,
+        "warning" or "warn" => ArmaLog.LogLevel.Warning,
+        "error" => ArmaLog.LogLevel.Error,
+        _ => ArmaLog.LogLevel.Info
+    };
+
+    public static string SetLogLevel(string level) {
+        ArmaLog.CurrentLogLevel = ParseLogLevel(level);
+        ApiConfig.UpdateLogLevel(ArmaLog.CurrentLogLevel switch {
+            ArmaLog.LogLevel.Debug => "debug",
+            ArmaLog.LogLevel.Warning => "warning",
+            ArmaLog.LogLevel.Error => "error",
+            _ => "info"
+        });
+        return ArmaLog.CurrentLogLevel.ToString();
     }
 
     public static string Stop() {
@@ -292,12 +313,8 @@ internal static class RestApiServer {
 
             case "/api/log": {
                 string level = request.GetValueOrDefault("level") as string ?? "info";
-                ArmaLog.CurrentLogLevel = level.ToLowerInvariant() switch {
-                    "debug" => ArmaLog.LogLevel.Debug,
-                    "warning" or "warn" => ArmaLog.LogLevel.Warning,
-                    "error" => ArmaLog.LogLevel.Error,
-                    _ => ArmaLog.LogLevel.Info
-                };
+                SetLogLevel(level);
+                ArmaLog.Log($"Log level set to {ArmaLog.CurrentLogLevel}");
                 return (200, Ok($"log level set to {ArmaLog.CurrentLogLevel}"));
             }
 

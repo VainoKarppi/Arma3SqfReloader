@@ -1,12 +1,12 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { evalCode, getStatus, sqfString } from "./api";
-import { disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
+import { evalCode, getStatus, request, sqfString } from "./api";
+import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { findArmaDirectory, findMissions, findModForFile, isArmaDirectory, MissionFolder, readMissionMaxPlayers } from "./arma";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
-import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
+import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
@@ -16,6 +16,8 @@ import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./m
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
+let workspaceInjectionLoop: Promise<void> | undefined;
+let workspaceInjectionGeneration = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
     const version = context.extension.packageJSON.version;
@@ -100,8 +102,17 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(onWorkspaceChange));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("sqfReloader")) {
-            log("Settings changed.");
+            if (configuredLogLevel() === "verbose") log("Settings changed.");
             void onWorkspaceChange();
+            if (event.affectsConfiguration("sqfReloader.logLevel")) {
+                workspaceInjectionGeneration++;
+                workspaceInjectionLoop = undefined;
+            }
+            if (event.affectsConfiguration("sqfReloader.logLevel") && isRunning()) {
+                void applyRuntimeLogLevel(readSettings()).catch(error => {
+                    logError("could not apply SqfReloader log level", error);
+                });
+            }
         }
     }));
 
@@ -240,16 +251,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
     register(context, "sqfReloader.connect", async () => {
         const settings = readSettings();
+        const level = settings.logLevel === "verbose" ? "verbose" : "info";
 
         try {
             const status = await getStatus(settings);
             const connected = status.gameConnected === true;
             const message = `SqfReloader ${status.version ?? "?"} on ${settings.apiUrl} - game callback ${connected ? "registered" : "NOT registered"}.`;
 
-            if (connected) {
-                const injection = await registerWorkspaceFunctions(settings);
-                if (!injection.ok) {
-                    log(`Workspace function injection failed: ${injection.message}`);
+            if (connected && isRunning() && settings.logLevel === "verbose") {
+                try {
+                    await applyRuntimeLogLevel({ ...settings, logLevel: level });
+                } catch (error) {
+                    logError("could not apply SqfReloader log level", error);
                 }
             }
 
@@ -274,6 +287,22 @@ export function activate(context: vscode.ExtensionContext): void {
         const outcome = await reloadAll(settings);
         setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", !outcome.ok);
 
+        if (outcome.ok) {
+            vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
+        } else {
+            vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
+        }
+    });
+
+    register(context, "sqfReloader.reloadRestartMission", async () => {
+        const mission = findCurrentMission();
+        if (!mission) {
+            vscode.window.showWarningMessage("Open a mission folder containing mission.sqm before restarting mission functions.");
+            return;
+        }
+        const settings = readSettings();
+        const outcome = await reloadAndRestartMission(settings, mission);
+        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: mission restart failed", !outcome.ok);
         if (outcome.ok) {
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
         } else {
@@ -590,28 +619,60 @@ async function promptForExampleIfNeeded(context: vscode.ExtensionContext, versio
     }
 }
 
+async function applyRuntimeLogLevel(settings: Settings): Promise<void> {
+    const level = settings.logLevel === "verbose" ? "debug" : settings.logLevel;
+    const response = await request(settings, "POST", "/log", { level });
+    if (response.status !== 200) {
+        throw new Error(`SqfReloader could not set log level (${response.status}): ${response.body}`);
+    }
+}
+
 async function injectWorkspaceFunctionsWhenReady(settings: Settings): Promise<void> {
+    if (workspaceInjectionLoop) {
+        return workspaceInjectionLoop;
+    }
+
+    const generation = ++workspaceInjectionGeneration;
+    const injectionLoop = runWorkspaceInjectionLoop(settings, generation);
+    workspaceInjectionLoop = injectionLoop;
+    try {
+        await injectionLoop;
+    } finally {
+        if (workspaceInjectionGeneration === generation && workspaceInjectionLoop === injectionLoop) {
+            workspaceInjectionLoop = undefined;
+        }
+    }
+}
+
+async function runWorkspaceInjectionLoop(settings: Settings, generation: number): Promise<void> {
     let reportedWaiting = false;
 
-    while (isRunning()) {
+    while (generation === workspaceInjectionGeneration && isRunning()) {
         try {
             const status = await getStatus(settings);
 
             if (status.gameConnected === true) {
-                const injection = await registerWorkspaceFunctions(settings);
+                const currentSettings = readSettings();
+                if (currentSettings.logLevel === "verbose") {
+                    await applyRuntimeLogLevel(currentSettings);
+                }
+                const injection = await registerWorkspaceFunctions(currentSettings);
 
                 if (injection.ok || injection.message === "No workspace functions found.") {
                     return;
                 }
 
-                log(`Workspace function injection failed: ${injection.message}`);
+                logError("workspace function injection failed", injection.message);
+                return;
             } else if (!reportedWaiting) {
                 log("Initial workspace function injection is waiting for Arma's mission callback.");
                 reportedWaiting = true;
             }
-        } catch {
+        } catch (error) {
             if (!reportedWaiting) {
-                log("Initial workspace function injection is waiting for the SqfReloader API.");
+                if (configuredLogLevel() === "verbose") {
+                    logError("initial workspace injection is waiting for the SqfReloader API", error);
+                }
                 reportedWaiting = true;
             }
         }
@@ -622,6 +683,8 @@ async function injectWorkspaceFunctionsWhenReady(settings: Settings): Promise<vo
 
 export function deactivate(): void {
     log("Arma 3 SQF Reloader deactivated.");
+    workspaceInjectionGeneration++;
+    workspaceInjectionLoop = undefined;
     statusBar?.dispose();
     disposeOutput();
 }
@@ -701,6 +764,25 @@ function setStatus(text: string, warning: boolean, tooltip?: string): void {
     statusBar.text = text;
     statusBar.backgroundColor = warning ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
     statusBar.tooltip = tooltip ?? `${text}\nClick to start Arma 3 with this mod.`;
+}
+
+function findCurrentMission(): { directory: string } | undefined {
+    const document = vscode.window.activeTextEditor?.document;
+    if (!document?.uri.fsPath) return undefined;
+
+    let directory = fs.existsSync(document.uri.fsPath) && fs.statSync(document.uri.fsPath).isDirectory()
+        ? document.uri.fsPath : path.dirname(document.uri.fsPath);
+    const roots = [
+        ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath),
+        directory
+    ];
+    while (true) {
+        const match = findMissions(roots).find(mission => path.resolve(mission.directory).toLowerCase() === path.resolve(directory).toLowerCase());
+        if (match) return match;
+        const parent = path.dirname(directory);
+        if (parent === directory) return undefined;
+        directory = parent;
+    }
 }
 
 function hasArmaWorkspace(): boolean {

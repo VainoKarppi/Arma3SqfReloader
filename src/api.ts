@@ -83,6 +83,7 @@ export interface Status {
     port?: number;
     host?: string;
     gameConnected?: boolean;
+    logLevel?: string;
     logDirectory?: string;
 }
 
@@ -123,6 +124,12 @@ export async function evalCode(settings: Settings, code: string, timeoutMs = set
 /** Queues SQF for execution and returns as soon as Arma accepts it. */
 export async function executeCode(settings: Settings, code: string): Promise<CommandResult> {
     const response = await request(settings, "POST", "/execute", { code });
+    return toResult(response);
+}
+
+/** Runs SQF on the current game thread and waits for its result. */
+export async function evaluateCode(settings: Settings, code: string, timeoutMs = settings.runTimeout * 1000): Promise<CommandResult> {
+    const response = await request(settings, "POST", "/eval", { code, timeoutMs }, timeoutMs + 5000);
     return toResult(response);
 }
 

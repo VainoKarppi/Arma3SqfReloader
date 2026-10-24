@@ -316,10 +316,82 @@ export async function reloadAll(settings: Settings, silent = false): Promise<Rel
     }
 }
 
+/**
+ * Restarts SQF scripts originating from the mission folder, then recompiles mission
+ * CfgFunctions and reruns the mission startup entry points on their owning machines.
+ */
+export async function reloadAndRestartMission(settings: Settings, mission: Pick<MissionFunction, "directory">): Promise<ReloadOutcome> {
+    if (!fs.existsSync(path.join(mission.directory, "mission.sqm"))) {
+        return { ok: false, message: "The selected mission has no mission.sqm." };
+    }
+    const missionFile = (name: string): string => sqfString(name);
+    const missionDirectory = mission.directory.replace(/[\\/]+$/, "").replace(/\\/g, "\\\\") + "\\\\";
+    const initSqf = fs.existsSync(path.join(mission.directory, "init.sqf"));
+    const initServer = fs.existsSync(path.join(mission.directory, "initServer.sqf"));
+    const initPlayerLocal = fs.existsSync(path.join(mission.directory, "initPlayerLocal.sqf"));
+    const initPlayerServer = fs.existsSync(path.join(mission.directory, "initPlayerServer.sqf"));
+    const serverInitFunction = sqfString("SqfReloader_fnc_runMissionPlayerServerInit");
+    const playerServerInitFile = missionFile("initPlayerServer.sqf");
+    const script = `private _missionPath = toLower ${sqfString(missionDirectory)};
+private _pathPrefix = _missionPath + "/";
+private _windowsPathPrefix = _missionPath + "\\";
+private _terminated = 0;
+private _scriptPathCount = 0;
+private _activeScripts = diag_activeSQFScripts;
+{
+    private _source = toLower (_x param [1, ""]);
+    private _thread = _x param [4, scriptNull];
+    private _inMission = (_source find _pathPrefix == 0) || {_source find _windowsPathPrefix == 0};
+    if (_inMission) then {
+        _scriptPathCount = _scriptPathCount + 1;
+    };
+    if (_inMission && {_thread isEqualType scriptNull}) then {
+        terminate _thread;
+        _terminated = _terminated + 1;
+    };
+} forEach _activeScripts;
+private _reloaded = [] call SqfReloader_fnc_reloadFunctions;
+private _initCount = 0;
+${initSqf ? `call compile preprocessFileLineNumbers ${missionFile("init.sqf")}; _initCount = _initCount + 1;` : ""}
+if (isServer) then { ${initServer ? `call compile preprocessFileLineNumbers ${missionFile("initServer.sqf")}; _initCount = _initCount + 1;` : ""} };
+if (hasInterface) then { ${initPlayerLocal ? `call compile preprocessFileLineNumbers ${missionFile("initPlayerLocal.sqf")}; _initCount = _initCount + 1;` : ""} };
+if (isServer && {isMultiplayer} && {${initPlayerServer}}) then {
+    {
+        private _player = _x;
+        [_player, false, ${playerServerInitFile}] remoteExecCall [${serverInitFunction}, 2];
+        _initCount = _initCount + 1;
+    } forEach allPlayers;
+};
+[ _terminated, _reloaded, _scriptPathCount, _initCount ]`;
+
+    try {
+        const result = await evalCode(settings, script, settings.runTimeout * 1000);
+        if (!result.success) {
+            return { ok: false, message: result.error ?? "Mission function restart failed." };
+        }
+
+        const values = result.result as unknown[];
+        const terminated = typeof values?.[0] === "number" ? values[0] : 0;
+        const reloaded = typeof values?.[1] === "number" ? values[1] : 0;
+        const scriptPaths = typeof values?.[2] === "number" ? values[2] : 0;
+        const initialized = typeof values?.[3] === "number" ? values[3] : 0;
+        if (scriptPaths > terminated) {
+            return { ok: false, message: `Found ${scriptPaths} mission SQF script(s) but could terminate only ${terminated}.` };
+        }
+        return {
+            ok: true,
+            message: `Terminated ${terminated} mission script(s), reloaded ${reloaded} mission function(s), and ran ${initialized} applicable initialization script(s).`
+        };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError("mission function restart failed", error);
+        return { ok: false, message };
+    }
+}
+
 function compileAssignment(variable: string, armaPath: string): string {
     return `private _sqfReloadFunction = compile preprocessFileLineNumbers ${sqfString(armaPath)};\n` +
-        `missionNamespace setVariable [${sqfString(variable)}, _sqfReloadFunction];\n` +
-        `diag_log format ["[SqfReloader] registered %1 from %2 (isNil=%3)", ${sqfString(variable)}, ${sqfString(armaPath)}, isNil {missionNamespace getVariable ${sqfString(variable)}}];`;
+        `missionNamespace setVariable [${sqfString(variable)}, _sqfReloadFunction];`;
 }
 
 /** Injects every workspace fn_*.sqf into missionNamespace through its z\ mod junction. */
@@ -359,11 +431,8 @@ export async function registerWorkspaceFunctions(settings: Settings): Promise<Re
     }
 
     if (assignments.length === 0) {
-        log("No workspace fn_*.sqf functions found to inject.");
         return { ok: false, message: "No workspace functions found." };
     }
-
-    assignments.push(`diag_log format ["[SqfReloader] workspace injection finished: %1 functions", ${assignments.length}];`);
 
     try {
         const result = await evalCode(settings, assignments.join("\n"));
@@ -371,8 +440,8 @@ export async function registerWorkspaceFunctions(settings: Settings): Promise<Re
             return { ok: false, message: result.error ?? "Function injection failed." };
         }
 
-        log(`Queued injection of ${assignments.length - 1} workspace functions into missionNamespace.`);
-        return { ok: true, message: `Queued ${assignments.length - 1} workspace functions for injection.` };
+        log(`Queued injection of ${assignments.length} workspace functions into missionNamespace.`);
+        return { ok: true, message: `Queued ${assignments.length} workspace functions for injection.` };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logError("workspace function injection failed", error);

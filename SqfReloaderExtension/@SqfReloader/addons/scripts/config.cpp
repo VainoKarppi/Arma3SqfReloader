@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "3.1.5";
-        versionStr = "3.1.5";
-        versionAr[] = {3, 1, 5};
+        version = "3.2.4";
+        versionStr = "3.2.4";
+        versionAr[] = {3, 2, 4};
     };
 };
 
@@ -40,6 +40,7 @@ class CfgFunctions {
             class reloadFunctions {};
             class reloadFunction {};
             class compileFunction {};
+            class runMissionPlayerServerInit {};
         };
 
         class Util {

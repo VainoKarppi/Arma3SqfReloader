@@ -3,6 +3,7 @@ import { currentApiPort } from "./runtime";
 
 export type ReloadMode = "reload" | "recompile" | "off";
 export type JunctionMode = "addon" | "module";
+export type LogLevel = "error" | "warning" | "info" | "verbose";
 
 export interface Settings {
     enabled: boolean;
@@ -23,6 +24,8 @@ export interface Settings {
     createExampleWithMission: boolean;
     /** Remove Arma-generated ~Mission.World preview copies from the active profile. */
     clearArmaMissionArtifacts: boolean;
+    /** Diagnostic verbosity in the VS Code output and Arma RPT. */
+    logLevel: LogLevel;
 }
 
 const SECTION = "sqfReloader";
@@ -46,8 +49,22 @@ export function readSettings(): Settings {
         notifyOnError: config.get<boolean>("notifyOnError", true),
         extraLaunchArguments: config.get<string>("extraLaunchArguments", "-noSplash -skipIntro -noPause"),
         createExampleWithMission: config.get<boolean>("createExampleWithMission", true),
-        clearArmaMissionArtifacts: config.get<boolean>("clearArmaMissionArtifacts", true)
+        clearArmaMissionArtifacts: config.get<boolean>("clearArmaMissionArtifacts", true),
+        logLevel: normalizeLogLevel(config.get<string>("logLevel", "info"))
     };
+}
+
+function normalizeLogLevel(level: string): LogLevel {
+    switch (level.trim().toLowerCase()) {
+        case "error":
+            return "error";
+        case "warning":
+            return "warning";
+        case "verbose":
+            return "verbose";
+        default:
+            return "info";
+    }
 }
 
 function normalizePort(port: number): number {
@@ -67,6 +84,10 @@ function withDefaultPort(apiUrl: string, defaultPort: number): string {
 
 export async function updateSetting<T>(key: string, value: T, target = vscode.ConfigurationTarget.Global): Promise<void> {
     await vscode.workspace.getConfiguration(SECTION).update(key, value, target);
+}
+
+export function configuredLogLevel(): LogLevel {
+    return readSettings().logLevel;
 }
 
 function trimSlash(value: string): string {
@@ -111,14 +132,20 @@ export function getOutput(): vscode.OutputChannel {
 }
 
 export function log(message: string): void {
+    if (configuredLogLevel() !== "verbose") {
+        return;
+    }
+
     getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
     mirrorToTestOutput(`LOG ${message}`);
 }
 
 export function logError(message: string, error: unknown): void {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`);
-    mirrorToTestOutput(`LOG ERROR: ${message} - ${detail}`);
+    if (configuredLogLevel() !== "error") {
+        getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`);
+        mirrorToTestOutput(`LOG ERROR: ${message} - ${detail}`);
+    }
 }
 
 /** Dev aid: scripts/verify-launch.js points ARMA_API_TEST_OUTPUT at a file and reads the log from there. */

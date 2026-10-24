@@ -140,6 +140,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             if (options.missionFolder.maxPlayers === undefined || options.missionFolder.maxPlayers <= 1) {
                 throw new Error("Only missions with maxPlayers greater than 1 can be hosted. Add maxPlayers > 1 to description.ext.");
             }
+            options.scenarioFile = path.join(options.missionFolder.directory, "mission.sqm");
         }
 
         startProcess(launch, settings, options);
@@ -165,7 +166,16 @@ export function armaLogDirectory(): string {    const localAppData = process.env
 function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions): void {
     const args = launchArguments(launch, settings, options);
 
-    log(`Starting: "${launch.executable}" ${args.join(" ")}`);
+    const output = getOutput();
+    const rawCommand = `"${launch.executable}" ${args.join(" ")}`;
+    output.appendLine("--- Raw Arma launch command ---");
+    output.appendLine(rawCommand);
+    output.appendLine(`Raw argument vector: ${JSON.stringify(args)}`);
+    output.appendLine(`Executable: ${launch.executable}`);
+    output.appendLine(`Arguments (${args.length}):`);
+    args.forEach((argument, index) => output.appendLine(`  [${index}] ${JSON.stringify(argument)}`));
+    output.show(true);
+    log(`Starting: ${rawCommand}`);
 
     // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
     // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
@@ -388,6 +398,10 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         const scenarioFile = options.scenarioFile.replace(/"/g, "\\\"");
         args.push(/\s/.test(scenarioFile) ? `"${scenarioFile}"` : scenarioFile);
         args.push("-loadMissionToMemory");
+    }
+
+    if (options.hostMission && options.missionFolder) {
+        args.push(`-mission=${path.basename(options.missionFolder.directory)}.pbo`);
     }
 
     // Arma expects the whole -mod value quoted as one argument, with semicolons separating

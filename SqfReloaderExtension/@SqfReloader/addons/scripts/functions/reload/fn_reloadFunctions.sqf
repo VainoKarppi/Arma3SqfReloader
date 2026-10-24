@@ -5,6 +5,7 @@
 params [["_requested", [], [[]]]];
 
 if !(call SqfReloader_fnc_init) exitWith {0};
+private _logLevel = missionNamespace getVariable ["SqfReloader_var_logLevel", "info"];
 
 private _wanted = _requested;
 if (_wanted isEqualType "") then { _wanted = [_wanted] };
@@ -13,7 +14,9 @@ private _count = 0;
 private _seen = [];
 private _functions = configFile >> "CfgFunctions";
 private _tagClasses = "true" configClasses _functions;
-diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixes %2", count _tagClasses, missionNamespace getVariable ["SqfReloader_var_addonPrefixes", []]];
+if (_logLevel == "verbose") then {
+    diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixes %2", count _tagClasses, missionNamespace getVariable ["SqfReloader_var_addonPrefixes", []]];
+};
 
 {
     private _tagClass = _x;
@@ -23,7 +26,7 @@ diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixe
     private _tagPrefix = (missionNamespace getVariable ["SqfReloader_var_addonPrefixes", []]) select {
         (_x param [0, ""]) isEqualTo (toLower _tag)
     };
-    if (count _tagPrefix > 0) then {
+    if (_logLevel == "verbose" && {count _tagPrefix > 0}) then {
         diag_log format ["[SqfReloader] reload scan: tag %1 (%2), %3 categories", configName _tagClass, _tag, count ("true" configClasses _tagClass)];
     };
 
@@ -71,17 +74,17 @@ diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixe
             if !((toLower _mountRoot select [0, 2]) in ["z\", "x\"]) then {continue};
             private _source = format ["%1\fn_%2.sqf", _mountRoot, _name];
 
-            if (count _tagPrefix > 0) then {
+            if (_logLevel == "verbose" && {count _tagPrefix > 0}) then {
                 diag_log format ["[SqfReloader] reload scan: %1 -> %2 (exists=%3)", _variable, _source, fileExists _source];
             };
 
             if (fileExists _source) then {
                 missionNamespace setVariable [_variable, compile preprocessFileLineNumbers _source];
                 _count = _count + 1;
-                if (count _tagPrefix > 0) then {
+                if (_logLevel == "verbose" && {count _tagPrefix > 0}) then {
                     diag_log format ["[SqfReloader] registered %1 (isNil=%2)", _variable, isNil _variable];
                 };
-                if (count _filter > 0) then {
+                if (_logLevel == "verbose" && {count _filter > 0}) then {
                     diag_log format ["[SqfReloader] reloaded %1", _variable];
                 };
             };
@@ -89,7 +92,7 @@ diag_log format ["[SqfReloader] reload scan: %1 CfgFunctions tags; addon prefixe
     } forEach ("true" configClasses _tagClass);
 } forEach _tagClasses;
 
-if (count _filter == 0 && {_count > 0}) then {
+if (_logLevel == "verbose" && {count _filter == 0} && {_count > 0}) then {
     diag_log format ["[SqfReloader] registered/reloaded %1 CfgFunctions function(s)", _count];
 };
 

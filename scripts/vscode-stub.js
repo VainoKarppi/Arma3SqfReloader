@@ -20,7 +20,10 @@ module.exports = {
         })
     },
     workspace: {
-        getConfiguration: () => ({ get: (_key, fallback) => fallback }),
+        getConfiguration: () => ({
+            get: (_key, fallback) => fallback,
+            update: () => Promise.resolve(undefined)
+        }),
         workspaceFolders: [],
         onDidSaveTextDocument: () => ({ dispose: () => undefined }),
         onDidChangeWorkspaceFolders: () => ({ dispose: () => undefined }),

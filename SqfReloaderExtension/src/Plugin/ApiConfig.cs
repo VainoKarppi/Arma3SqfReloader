@@ -19,6 +19,7 @@ internal sealed class ApiConfig {
 
     /// <summary>Folder with the plain fn_*.sqf sources (written by the installer).</summary>
     public string SourceDirectory { get; init; } = string.Empty;
+    public string LogLevel { get; init; } = "info";
 
     /// <summary>
     /// $PBOPREFIX$ of every addon in the VS Code workspace (written by the extension). SQF uses it
@@ -50,6 +51,7 @@ internal sealed class ApiConfig {
                 Port = map.TryGetValue("port", out object? port) && port is long portNumber ? (int)portNumber : DefaultPort,
                 AutoStart = !(map.TryGetValue("autoStart", out object? autoStart) && autoStart is false),
                 SourceDirectory = map.TryGetValue("sourceDirectory", out object? source) && source is string sourceText ? sourceText : string.Empty,
+                LogLevel = map.TryGetValue("logLevel", out object? logLevel) && logLevel is string logLevelText ? logLevelText : "info",
                 PboPrefixes = ReadPrefixes(map.TryGetValue("pboPrefixes", out object? prefixes) ? prefixes : null),
                 WorkspaceFunctions = ReadWorkspaceFunctions(map.TryGetValue("workspaceFunctions", out object? functions) ? functions : null)
             };
@@ -57,6 +59,45 @@ internal sealed class ApiConfig {
             ArmaLog.Warning($"Could not read {FilePath}: {ex.Message}");
             return defaults;
         }
+    }
+
+    public static void UpdateLogLevel(string level) {
+        ApiConfig current;
+        try {
+            if (!File.Exists(FilePath)) {
+                current = new ApiConfig();
+            } else if (SimpleJson.TryParse(File.ReadAllText(FilePath), out var map) && map != null) {
+                current = new ApiConfig {
+                    Host = map.TryGetValue("host", out object? host) && host is string { Length: > 0 } hostText ? hostText : DefaultHost,
+                    Port = map.TryGetValue("port", out object? port) && port is long portNumber ? (int)portNumber : DefaultPort,
+                    AutoStart = !(map.TryGetValue("autoStart", out object? autoStart) && autoStart is false),
+                    SourceDirectory = map.TryGetValue("sourceDirectory", out object? source) && source is string sourceText ? sourceText : string.Empty,
+                    PboPrefixes = ReadPrefixes(map.TryGetValue("pboPrefixes", out object? prefixes) ? prefixes : null),
+                    WorkspaceFunctions = ReadWorkspaceFunctions(map.TryGetValue("workspaceFunctions", out object? functions) ? functions : null)
+                };
+            } else {
+                current = new ApiConfig();
+            }
+        } catch (Exception ex) {
+            ArmaLog.Warning($"Could not preserve {FilePath} while updating log level: {ex.Message}");
+            return;
+        }
+
+        var normalizedLevel = level.ToLowerInvariant() switch {
+            "debug" or "verbose" => "debug",
+            "warning" or "warn" => "warning",
+            "error" => "error",
+            _ => "info"
+        };
+        new ApiConfig {
+            Host = current.Host,
+            Port = current.Port,
+            AutoStart = current.AutoStart,
+            SourceDirectory = current.SourceDirectory,
+            LogLevel = normalizedLevel,
+            PboPrefixes = current.PboPrefixes,
+            WorkspaceFunctions = current.WorkspaceFunctions
+        }.Save();
     }
 
     public void Save() {
@@ -68,6 +109,7 @@ internal sealed class ApiConfig {
                 ["port"] = (long)Port,
                 ["autoStart"] = AutoStart,
                 ["sourceDirectory"] = SourceDirectory,
+                ["logLevel"] = LogLevel,
                 ["pboPrefixes"] = PboPrefixes.Cast<object?>().ToList(),
                 ["workspaceFunctions"] = WorkspaceFunctions.Cast<object?>().ToList()
             }));

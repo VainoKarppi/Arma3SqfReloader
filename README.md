@@ -59,6 +59,12 @@ dedicated server configuration, server-side mod, and multiplayer mission.
 
 The generated example mod is located at `@ExampleMod/addons/scripts`. The server mod and related
 configuration and mission files are generated inside `server-example/`.
+The generated test missions in `mpmissions/example.Altis` and `missions/example.Altis` include
+their own `init.sqf`, `initServer.sqf`, `initPlayerLocal.sqf`, `initPlayerServer.sqf`, respawn,
+and CfgFunctions preInit/postInit examples. The MP mission additionally includes a remote-exec
+callback example and working `OnPlayerKilled.sqf` / `OnPlayerRespawn.sqf` scripts configured
+through an example respawn template. Its respawn delay and settings are declared in
+`description.ext`.
 
 For multiplayer development, open a multiplayer mission's `mission.sqm`, right-click it, and
 choose **SqfReloader: Start mission as non-dedicated server** to launch it with Arma's `-host`
@@ -67,6 +73,15 @@ and broadcast to connected clients using `remoteExec`. The active mission must p
 `SqfReloader_fnc_receiveReloadedFunction` in its `CfgRemoteExec` configuration for client
 broadcasts. `server-example/` contains the dedicated server example created by the scaffold; the
 dedicated server process is separate from SqfReloader's local API.
+
+Use **SqfReloader: Reload and restart mission functions** from the Command Palette while a
+file inside the mission is active and that mission is running in Arma. It terminates running SQF
+scripts sourced from that mission folder, reloads its CfgFunctions, and reruns `init.sqf`,
+`initServer.sqf`, and `initPlayerLocal.sqf` in the applicable context. In multiplayer, the server
+also invokes `initPlayerServer.sqf` for each connected player; the mission must allow
+`SqfReloader_fnc_runMissionPlayerServerInit` in `CfgRemoteExec`. `preInit` and `postInit` functions
+are recompiled but their bodies are not replayed. `initRespawn.sqf` is not run outside a respawn.
+Mod-originated scripts are not terminated or restarted.
 
 ## Use your own mod
 
@@ -171,6 +186,7 @@ server-side timeout.
 | `sqfReloader.defaultPort` | Fallback REST server port when Arma starts SqfReloader without an explicit port. Default: `8764`. |
 | `sqfReloader.apiUrl` | SqfReloader API address. If its URL omits a port, `defaultPort` is used. An explicit URL port takes precedence. |
 | `sqfReloader.runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
+| `sqfReloader.logLevel` | Output verbosity: `error`, `warning`, `info` (default), or `verbose`. Verbose includes Arma function registration diagnostics; change it live in `settings.json`. |
 | `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
 | `sqfReloader.junctionMode` | Link per addon (`addon`) or per mod (`module`). |
 

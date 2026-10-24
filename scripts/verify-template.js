@@ -39,7 +39,7 @@ try {
     // --- first run: empty folder, mod + mission ------------------------------
     const result = writeTemplate(sandbox, true, false);
     check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
-    check("files written", result.files.length === 23, `${result.files.length} files`);
+    check("files written", result.files.length === 48, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
@@ -49,7 +49,15 @@ try {
     check("server example includes mod and mission files", fs.existsSync(path.join(result.serverExampleDirectory, "@ExampleServerMod", "addons", "server", "config.cpp"))
         && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "mission.sqm"))
         && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "CfgRemoteExec.hpp"))
-        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "initServer.sqf")));
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "init.sqf"))
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "initServer.sqf"))
+        && fs.existsSync(path.join(result.serverExampleDirectory, "ExampleMission.Altis", "initPlayerLocal.sqf")));
+    const serverMission = path.join(result.serverExampleDirectory, "ExampleMission.Altis");
+    const serverDescription = fs.readFileSync(path.join(serverMission, "description.ext"), "utf8");
+    check("server mission defines CfgRemoteExec only once",
+        serverDescription.includes('#include "CfgRemoteExec.hpp"')
+        && (fs.readFileSync(path.join(serverMission, "CfgRemoteExec.hpp"), "utf8").match(/class\s+CfgRemoteExec\s*\{/g) ?? []).length === 1);
+    check("server mission has init scripts", ["init.sqf", "initServer.sqf", "initPlayerLocal.sqf"].every(file => fs.existsSync(path.join(serverMission, file))));
     const serverExampleMod = findMods(result.serverExampleDirectory).find(mod => mod.name === "@ExampleServerMod");
     check("server mod is independently discoverable", !!serverExampleMod && serverExampleMod.addons.length === 1);
 
@@ -63,6 +71,28 @@ try {
     check("MP scenario marks the OPFOR leader playable", /isPlayable=1;/.test(mpSqm) && /property="speaker";/.test(mpSqm));
     check("mission CfgFunctions declares the live test", /class CfgFunctions[\s\S]*class liveTest/.test(fs.readFileSync(path.join(result.missionDirectory, "description.ext"), "utf8")));
     check("live test function exists in both missions", fs.existsSync(path.join(result.missionDirectory, "functions", "fn_liveTest.sqf")) && fs.existsSync(path.join(result.mpMissionDirectory, "functions", "fn_liveTest.sqf")));
+    const spDescription = fs.readFileSync(path.join(result.missionDirectory, "description.ext"), "utf8");
+    const mpDescription = fs.readFileSync(path.join(result.mpMissionDirectory, "description.ext"), "utf8");
+    check("MP example mission has init scripts and remote init callback",
+        ["init.sqf", "initServer.sqf", "initPlayerLocal.sqf", "initPlayerServer.sqf", "initRespawn.sqf", "OnPlayerKilled.sqf", "OnPlayerRespawn.sqf", "functions/fn_preInit.sqf", "functions/fn_postInit.sqf", "functions/fn_broadcastInitMessage.sqf", "functions/fn_receiveReloadedFunction.sqf"]
+            .every(file => fs.existsSync(path.join(result.mpMissionDirectory, file)))
+        && /CfgRemoteExec/.test(mpDescription)
+        && (mpDescription.match(/#include\s+"CfgRemoteExec\.hpp"/g) ?? []).length === 1
+        && (fs.readFileSync(path.join(result.mpMissionDirectory, "CfgRemoteExec.hpp"), "utf8").match(/class\s+CfgRemoteExec\s*\{/g) ?? []).length === 1
+        && /respawn\s*=\s*3/.test(mpDescription)
+        && /respawnOnStart\s*=\s*0/.test(mpDescription)
+        && /respawnTemplates\[\]\s*=\s*\{[^}]*ExampleRespawn/.test(mpDescription)
+        && /onPlayerKilled\s*=\s*"OnPlayerKilled\.sqf"/.test(mpDescription)
+        && /onPlayerRespawn\s*=\s*"OnPlayerRespawn\.sqf"/.test(mpDescription)
+        && /ExampleMission_fnc_broadcastInitMessage/.test(fs.readFileSync(path.join(result.mpMissionDirectory, "CfgRemoteExec.hpp"), "utf8")));
+    check("MP scenario includes a BLUFOR respawn marker", /name\s*=\s*"respawn_west";/.test(mpSqm));
+    check("SP example mission has separate initialization scripts",
+        ["init.sqf", "initServer.sqf", "initPlayerLocal.sqf", "initPlayerServer.sqf", "initRespawn.sqf", "functions/fn_preInit.sqf", "functions/fn_postInit.sqf"]
+            .every(file => fs.existsSync(path.join(result.missionDirectory, file)))
+        && !/CfgRemoteExec/.test(spDescription));
+    check("SP init scripts have single-player-specific behavior",
+        fs.readFileSync(path.join(result.missionDirectory, "initPlayerLocal.sqf"), "utf8").includes("ExampleMission_fnc_liveTest")
+        && !fs.readFileSync(path.join(result.missionDirectory, "initPlayerLocal.sqf"), "utf8").includes("remoteExec"));
 
     // --- the extension has to see it as a mod -------------------------------
     const mods = findMods(sandbox);
@@ -102,19 +132,20 @@ try {
 
     const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
     check("workspace settings written", /"sqfReloader\.junctionMode": "addon"/.test(settingsJson));
+    check("workspace settings include normal log verbosity", /"sqfReloader\.logLevel": "info"/.test(settingsJson));
 
     // --- second run must not overwrite work --------------------------------
     const before = fs.readFileSync(hello, "utf8");
     fs.writeFileSync(hello, `${before}\n// edited by the user\n`, "utf8");
     const second = writeTemplate(sandbox, true, false);
-    check("second run skips existing files", second.skipped.length === 23, `${second.skipped.length} skipped`);
+    check("second run skips existing files", second.skipped.length === 48, `${second.skipped.length} skipped`);
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
 
     // --- mod-only variant ---------------------------------------------------
     const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
     const modOnly = writeTemplate(modOnlyRoot, false, false);
     check("mod-only variant writes no mission", !modOnly.missionDirectory && !modOnly.mpMissionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")) && !fs.existsSync(path.join(modOnlyRoot, "mpmissions")));
-    check("mod-only variant still writes server example (no $PBOPREFIX$)", modOnly.files.length === 15, `${modOnly.files.length} files`);
+    check("mod-only variant still writes server example (no $PBOPREFIX$)", modOnly.files.length === 21, `${modOnly.files.length} files`);
     fs.rmSync(modOnlyRoot, { recursive: true, force: true });
 
     // --- extension .vscode/settings.json must be valid JSON ---------------
@@ -125,6 +156,7 @@ try {
         .join("\n");
     const parsed = JSON.parse(jsonc);
     check("generated settings.json parses", parsed["sqfReloader.junctionMode"] === "addon");
+    check("generated settings.json log verbosity defaults to info", parsed["sqfReloader.logLevel"] === "info");
     check("generated settings.json has armaDirectory", typeof parsed["sqfReloader.armaDirectory"] === "string");
 } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });

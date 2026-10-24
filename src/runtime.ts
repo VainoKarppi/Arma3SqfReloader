@@ -373,7 +373,6 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
     const addons = workspaceAddons();
     const pboPrefixes = addons.map(addon => addon.prefix.replace(/\\/g, "/"));
     const workspaceFunctions: [string, string][] = [];
-
     for (const addon of addons) {
         const visit = (sourceDirectory: string): void => {
             let entries: fs.Dirent[];
@@ -399,13 +398,15 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
         visit(addon.localDirectory);
     }
 
+    const apiLogLevel = settings.logLevel === "verbose" ? "debug" : "info";
     fs.writeFileSync(file, JSON.stringify({
         host,
         port,
         autoStart: true,
         sourceDirectory: "",
         pboPrefixes,
-        workspaceFunctions
+        workspaceFunctions,
+        logLevel: apiLogLevel
     }, null, 2), "utf8");
 
     log(`SqfReloader config written: ${file} (${host}:${port}); addons: ${pboPrefixes.join(", ") || "none"}; functions: ${workspaceFunctions.length}`);
@@ -418,7 +419,7 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
  * functions again after the editor-to-mission transition.
  */
 export function startupScript(): string {
-    return "[] call SqfReloader_fnc_runStartup; [] call SqfReloader_fnc_reloadFunctions;";
+    return "[] call SqfReloader_fnc_runStartup;";
 }
 
 /**

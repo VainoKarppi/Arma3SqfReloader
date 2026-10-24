@@ -136,7 +136,13 @@ function writeServerExample(root: string, write: (file: string, content: string)
     write(path.join(addonDirectory, "functions", "fn_serverMessage.sqf"), serverMessageFunction());
     write(path.join(addonDirectory, "functions", "fn_receiveReloadedFunction.sqf"), receiveReloadedFunction());
     write(path.join(directory, "ExampleMission.Altis", "description.ext"), serverMissionDescription());
+    write(path.join(directory, "ExampleMission.Altis", "init.sqf"), serverMissionInitScript());
     write(path.join(directory, "ExampleMission.Altis", "initServer.sqf"), serverMissionInit());
+    write(path.join(directory, "ExampleMission.Altis", "initPlayerLocal.sqf"), serverMissionPlayerInit());
+    write(path.join(directory, "ExampleMission.Altis", "functions", "fn_preInit.sqf"), serverPreInitFunction());
+    write(path.join(directory, "ExampleMission.Altis", "functions", "fn_postInit.sqf"), serverPostInitFunction());
+    write(path.join(directory, "ExampleMission.Altis", "functions", "fn_serverMissionInit.sqf"), serverMissionInitFunction());
+    write(path.join(directory, "ExampleMission.Altis", "functions", "fn_broadcastInitMessage.sqf"), generatedMissionBroadcastInitMessage());
     write(path.join(directory, "ExampleMission.Altis", "CfgRemoteExec.hpp"), serverRemoteExecConfig());
     write(path.join(directory, "ExampleMission.Altis", "mission.sqm"), serverMissionSqm());
 
@@ -174,7 +180,9 @@ remote dedicated server.
 
 The server function changes and multiplayer mission changes are broadcast using remoteExec.
 The mission's \`CfgRemoteExec.hpp\` explicitly permits
-\`SqfReloader_fnc_receiveReloadedFunction\` for clients.
+\`SqfReloader_fnc_receiveReloadedFunction\` for clients. The mission includes
+\`init.sqf\`, \`initServer.sqf\`, \`initPlayerLocal.sqf\`, and CfgFunctions preInit/postInit
+functions so you can observe which initialization context runs each script.
 `;
 }
 
@@ -197,9 +205,11 @@ class CfgFunctions {
             file = "\\Example\\addons\\server\\functions";
             class serverMessage {};
             class receiveReloadedFunction {};
+            class broadcastInitMessage {};
         };
     };
 };
+#include "CfgRemoteExec.hpp"
 `;
 }
 
@@ -225,7 +235,6 @@ diag_log format ["[ExampleServerMod] received reloaded function %1 from server",
 
 function serverMissionDescription(): string {
     return `allowFunctionsRecompile = 1;
-#include "CfgRemoteExec.hpp"
 
 class Header {
     gameType = "Coop";
@@ -238,20 +247,13 @@ class CfgFunctions {
         tag = "ExampleMission";
         class Init {
             file = "functions";
+            class preInit { preInit = 1; };
+            class postInit { postInit = 1; };
             class serverMissionInit {};
         };
     };
 };
-
-class CfgRemoteExec {
-    class Functions {
-        mode = 1;
-        jip = 0;
-        class Example_fnc_serverMessage {
-            allowedTargets = 2;
-        };
-    };
-};
+#include "CfgRemoteExec.hpp"
 `;
 }
 
@@ -260,7 +262,13 @@ function serverRemoteExecConfig(): string {
     class Functions {
         mode = 1;
         jip = 0;
+        class Example_fnc_serverMessage {
+            allowedTargets = 2;
+        };
         class SqfReloader_fnc_receiveReloadedFunction {
+            allowedTargets = 2;
+        };
+        class ExampleMission_fnc_broadcastInitMessage {
             allowedTargets = 1;
         };
     };
@@ -319,9 +327,49 @@ class Mission
 }
 
 function serverMissionInit(): string {
-    return `if (isServer) then {
-    ["Dedicated server mission is running"] call Example_fnc_serverMessage;
+    return `diag_log "[ExampleMission] initServer.sqf ran";
+["initServer.sqf ran"] remoteExec ["systemChat", 0];
+`;
+}
+
+function serverMissionInitScript(): string {
+    return `diag_log "[ExampleMission] init.sqf ran";
+["init.sqf ran"] remoteExec ["systemChat", 0];
+`;
+}
+
+function serverMissionPlayerInit(): string {
+    return `if (!hasInterface) exitWith {};
+
+systemChat format ["initPlayerLocal.sqf: hello %1", profileName];
+`;
+}
+
+function serverPreInitFunction(): string {
+    return `if (!isServer) exitWith {};
+diag_log "[ExampleMission] CfgFunctions preInit ran";
+missionNamespace setVariable ["ExampleMission_preInitRan", true];
+`;
+}
+
+function serverPostInitFunction(): string {
+    return `if (!isServer) exitWith {};
+diag_log "[ExampleMission] CfgFunctions postInit ran";
+missionNamespace setVariable ["ExampleMission_postInitRan", true];
+
+[] spawn {
+	while {true} do {
+		diag_log "preInitLoopTest";
+		sleep 5;
+	};
 };
+`;
+}
+
+function serverMissionInitFunction(): string {
+    return `if (!isServer) exitWith {};
+diag_log "[ExampleMission] ExampleMission_fnc_serverMissionInit ran";
+["CfgFunctions server init ran"] remoteExec ["systemChat", 0];
 `;
 }
 
@@ -332,10 +380,31 @@ function serverMissionInit(): string {
 function writeMission(directory: string, write: (file: string, content: string) => void, multiplayer: boolean): string {
     write(path.join(directory, "mission.sqm"), missionSqm(multiplayer));
     write(path.join(directory, "description.ext"), descriptionExt(multiplayer));
-    write(path.join(directory, "initPlayerLocal.sqf"), missionInitPlayerLocal());
     write(path.join(directory, "functions", "fn_liveTest.sqf"), missionLiveTest());
+    writeMissionInitializationScripts(directory, write, multiplayer);
 
     return directory;
+}
+
+function writeMissionInitializationScripts(
+    directory: string,
+    write: (file: string, content: string) => void,
+    multiplayer: boolean
+): void {
+    write(path.join(directory, "init.sqf"), generatedMissionInit(multiplayer));
+    write(path.join(directory, "initServer.sqf"), generatedMissionServerInit(multiplayer));
+    write(path.join(directory, "initPlayerLocal.sqf"), generatedMissionPlayerInit(multiplayer));
+    write(path.join(directory, "initPlayerServer.sqf"), generatedMissionPlayerServerInit());
+    write(path.join(directory, "initRespawn.sqf"), generatedMissionRespawnInit());
+    write(path.join(directory, "OnPlayerKilled.sqf"), generatedOnPlayerKilled());
+    write(path.join(directory, "OnPlayerRespawn.sqf"), generatedOnPlayerRespawn());
+    write(path.join(directory, "functions", "fn_preInit.sqf"), generatedMissionPreInit(multiplayer));
+    write(path.join(directory, "functions", "fn_postInit.sqf"), generatedMissionPostInit(multiplayer));
+    if (multiplayer) write(path.join(directory, "functions", "fn_broadcastInitMessage.sqf"), generatedMissionBroadcastInitMessage());
+    if (multiplayer) {
+        write(path.join(directory, "functions", "fn_receiveReloadedFunction.sqf"), receiveReloadedFunction());
+        write(path.join(directory, "CfgRemoteExec.hpp"), missionRemoteExecConfig());
+    }
 }
 
 /** The generated example mod, when it exists in the workspace. */
@@ -447,7 +516,6 @@ class CfgFunctions {
             class add {};
             class showCounter {};
             class receiveReloadedFunction {};
-            class receiveReloadedFunction {};
         };
     };
 };
@@ -493,11 +561,12 @@ _sum
  *
  * Both variants place a BLUFOR fire team and an OPFOR fire team on Altis so the test mission
  * has something to shoot at. The multiplayer variant marks the OPFOR team leader playable
- * (`isPlayable=1`) with a speaker/pitch custom attribute, which is what makes the mission show
- * up as a hostable/joinable MP scenario.
+ * (`isPlayable=1`) with a speaker/pitch custom attribute and adds a BLUFOR respawn marker.
  */
 function missionSqm(multiplayer: boolean): string {
     const missionEntities = multiplayer ? missionEntitiesMultiplayer() : missionEntitiesSingleplayer();
+    const entities = multiplayer ? `${missionEntities}
+${missionRespawnMarker()}` : missionEntities;
 
     return `version=54;
 class EditorData
@@ -566,11 +635,24 @@ class Mission
 	};
 	class Entities
 	{
-		items=2;
-${missionEntities}
+		items=${multiplayer ? 3 : 2};
+${entities}
 	};
 };
 `;
+}
+
+function missionRespawnMarker(): string {
+    return `		class Item2
+		{
+			dataType="Marker";
+			position[]={9959.3701,12,12038.22};
+			name="respawn_west";
+			text="BLUFOR Respawn";
+			type="mil_start";
+			colorName="ColorWEST";
+			id=10;
+		};`;
 }
 
 /** Single-player variant: BLUFOR fire team with the player as team leader, plus an OPFOR team. */
@@ -939,18 +1021,27 @@ function missionEntitiesMultiplayer(): string {
 		};`;
 }
 function descriptionExt(multiplayer: boolean): string {
+    const playerCount = multiplayer ? 8 : 1;
     return `class Header {
     gameType = "Coop";
     minPlayers = 1;
-    maxPlayers = ${multiplayer ? 8 : 1};
+    maxPlayers = ${playerCount};
     playerCount = 1;
     author = "Arma 3 SQF Reloader";
     onLoadName = "Example counter";
     onLoadMission = "Minimal mission that runs the example mod functions.";
 };
 
+${multiplayer ? "respawn = 3;" : "respawn = 0;"}
+respawnDelay = 5;
+respawnOnStart = 0;
+respawnTemplates[] = {"MenuPosition"${multiplayer ? ', "ExampleRespawn"' : ""}};
+${multiplayer ? 'class CfgRespawnTemplates {\n    class ExampleRespawn {\n        onPlayerKilled = "OnPlayerKilled.sqf";\n        onPlayerRespawn = "OnPlayerRespawn.sqf";\n    };\n}' : ""}
+
 // Permit SqfReloader to replace CfgFunctions entries while this mission is open.
 allowFunctionsRecompile = 1;
+
+${multiplayer ? '#include "CfgRemoteExec.hpp"' : ""}
 
 class CfgFunctions {
     class ExampleMission {
@@ -958,23 +1049,35 @@ class CfgFunctions {
         class Tests {
             file = "functions";
             class liveTest {};
+            class preInit { preInit = 1; };
+            class postInit { postInit = 1; };
+            ${multiplayer ? "class broadcastInitMessage {};" : ""}
+            ${multiplayer ? "class receiveReloadedFunction {};" : ""}
         };
     };
+    ${multiplayer ? `    class ExampleMissionServer {
+        tag = "ExampleMission";
+        class Server {
+            file = "functions";
+            class receiveReloadedFunction {};
+        };
+    };` : ""}
 };
 `;
 }
 
-function missionInitPlayerLocal(): string {
-    return `// Runs in the playable mission after Eden has switched missionNamespace.
-// Register the workspace functions again for this mission instance.
-${startupScript()}
-
-if (!hasInterface) exitWith {};
-
-[] spawn {
-    sleep 2;
-    [] call ${TEMPLATE_TAG}_fnc_showCounter;
-    [] call ExampleMission_fnc_liveTest;
+function missionRemoteExecConfig(): string {
+    return `class CfgRemoteExec {
+    class Functions {
+        mode = 1;
+        jip = 0;
+        class SqfReloader_fnc_receiveReloadedFunction {
+            allowedTargets = 0;
+        };
+        class ExampleMission_fnc_broadcastInitMessage {
+            allowedTargets = 1;
+        };
+    };
 };
 `;
 }
@@ -985,6 +1088,87 @@ function missionLiveTest(): string {
 private _message = "Mission function v1 - edit and save fn_liveTest.sqf";
 systemChat _message;
 _message
+`;
+}
+
+function generatedMissionInit(multiplayer: boolean): string {
+    const context = multiplayer ? "MP mission" : "single-player mission";
+    return `diag_log "[ExampleMission] init.sqf ran (${context})";
+systemChat "ExampleMission init.sqf ran";
+`;
+}
+
+function generatedMissionServerInit(multiplayer: boolean): string {
+    return `if (!isServer) exitWith {};
+diag_log "[ExampleMission] initServer.sqf ran (${multiplayer ? "MP" : "single-player"})";
+missionNamespace setVariable ["ExampleMission_serverInitRan", true];
+`;
+}
+
+function generatedMissionPlayerInit(multiplayer: boolean): string {
+    const startup = multiplayer ? `${startupScript()}\n` : "";
+    return `if (!hasInterface) exitWith {};
+${startup}
+diag_log format ["[ExampleMission] initPlayerLocal.sqf ran for %1", profileName];
+systemChat format ["ExampleMission initPlayerLocal.sqf ran for %1", profileName];
+${multiplayer ? '["initPlayerLocal.sqf player ready"] remoteExec ["ExampleMission_fnc_broadcastInitMessage", 2];' : "[] spawn { uiSleep 1; [] call ExampleMission_fnc_liveTest; };"}
+`;
+}
+
+function generatedMissionBroadcastInitMessage(): string {
+    return `params [["_message", "", [""]]];
+if (!isServer) exitWith {};
+diag_log format ["[ExampleMission] client init: %1", _message];
+systemChat format ["Server received: %1", _message];
+`;
+}
+
+function generatedMissionPreInit(multiplayer: boolean): string {
+    return `if (${multiplayer ? "!isServer" : "hasInterface"}) exitWith {};
+diag_log "[ExampleMission] CfgFunctions preInit ran (${multiplayer ? "MP server" : "SP"})";
+missionNamespace setVariable ["ExampleMission_preInitRan", true];
+`;
+}
+
+function generatedMissionPostInit(multiplayer: boolean): string {
+    return `if (${multiplayer ? "!isServer" : "!hasInterface"}) exitWith {};
+diag_log "[ExampleMission] CfgFunctions postInit ran (${multiplayer ? "MP server" : "SP client"})";
+missionNamespace setVariable ["ExampleMission_postInitRan", true];
+
+[] spawn {
+	while {true} do {
+		diag_log "preInitLoopTest";
+		sleep 5;
+	};
+};
+`;
+}
+
+function generatedMissionPlayerServerInit(): string {
+    return `if (!isServer) exitWith {};
+params ["_player", "_didJIP"];
+diag_log format ["[ExampleMission] initPlayerServer.sqf ran for %1 (JIP=%2)", name _player, _didJIP];
+`;
+}
+
+function generatedMissionRespawnInit(): string {
+    return `params ["_unit", "_corpse"];
+diag_log format ["[ExampleMission] initRespawn ran for %1", name _unit];
+systemChat "ExampleMission respawn initialization ran";
+`;
+}
+
+function generatedOnPlayerKilled(): string {
+    return `params ["_unit", "_killer", "_instigator", "_useEffects"];
+diag_log format ["[ExampleMission] OnPlayerKilled: %1 killed by %2", name _unit, if (isNull _killer) then {"unknown"} else {name _killer}];
+systemChat "OnPlayerKilled.sqf ran";
+`;
+}
+
+function generatedOnPlayerRespawn(): string {
+    return `params ["_newUnit", "_oldUnit", "_respawn", "_respawnDelay"];
+diag_log format ["[ExampleMission] OnPlayerRespawn: %1 respawned", name _newUnit];
+systemChat format ["OnPlayerRespawn.sqf ran for %1", name _newUnit];
 `;
 }
 
@@ -1001,6 +1185,7 @@ function vscodeSettings(): string {
     // Remove Arma-generated ~Mission.World preview folders from the active profile.
     "sqfReloader.clearArmaMissionArtifacts": true,
     "sqfReloader.junctionMode": "addon",
+    "sqfReloader.logLevel": "info",
     "sqfReloader.reloadOnSave": "reload",
     "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"
 }
