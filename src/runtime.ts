@@ -42,6 +42,8 @@ export interface PreparedLaunch {
     executable: string;
     /** Mod folders passed to -mod=. */
     mods: string[];
+    /** Server-only mod folders passed to -serverMod= on dedicated-server launches. */
+    serverMods: string[];
     /** Deployed @SqfReloader folder. */
     modPath: string;
     /** Warnings that did not stop the launch. */
@@ -143,7 +145,8 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     // SqfReloader's z\... runtime tree; developer PBO-prefix files are left untouched.
     const modFolders: string[] = [];
 
-    const allMods = [...mods, ...additionalMods];
+    const allMods = [...new Map([...mods, ...additionalMods].map(mod => [path.resolve(mod.directory).toLowerCase(), mod])).values()];
+    const serverModDirectories: string[] = [];
     for (const mod of allMods) {
         const open = openModFolder(armaDirectory, mod);
         if (!open) {
@@ -159,12 +162,20 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
             // reloader could pick the copy that was not refreshed. The addon link below z\ is
             // the single mount point; -mod= mounts the workspace @Mod folder directly.
             removeModInZLink(armaDirectory, mod);
-            modFolders.push(mod.directory);
+            if (additionalMods.some(additional => path.resolve(additional.directory).toLowerCase() === path.resolve(mod.directory).toLowerCase())) {
+                serverModDirectories.push(mod.directory);
+            } else {
+                modFolders.push(mod.directory);
+            }
         }
 
         // The -mod= entry is the workspace @Mod folder itself (or the generated one when the
         // folder has no mod.cpp), so Arma reads addons from the junctioned working copy.
-        modFolders.push(open);
+        if (additionalMods.some(additional => path.resolve(additional.directory).toLowerCase() === path.resolve(mod.directory).toLowerCase())) {
+            serverModDirectories.push(open);
+        } else {
+            modFolders.push(open);
+        }
     }
 
     // --- 3. Missions -------------------------------------------------------
@@ -183,6 +194,7 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
         armaDirectory,
         executable: path.join(armaDirectory, "arma3_x64.exe"),
         mods: [...new Set([...modFolders, bundledMod])],
+        serverMods: [...new Set(serverModDirectories)],
         modPath: bundledMod,
         warnings,
         userMods: allMods,

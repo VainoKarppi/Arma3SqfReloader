@@ -74,6 +74,26 @@ and broadcast to connected clients using `remoteExec`. The active mission must p
 broadcasts. `server-example/` contains the dedicated server example created by the scaffold; the
 dedicated server process is separate from SqfReloader's local API.
 
+### Mod launch roles and dedicated server configs
+
+Right-click a mod folder in the Explorer and choose **Arma 3: Set folder as Client Mod**,
+**Server Mod**, or **Shared Mod**. The selection is saved in the workspace's `.vscode/settings.json`
+under `sqfReloader.modTypes`, keyed by the folder's path relative to the workspace root. A server
+mod is left out of normal Arma launches and is passed as `-serverMod` when starting a dedicated
+server. Client, shared, and unclassified folders use `-mod`; unclassified mods retain the
+extension's previous behavior. **Clear Mod Type** removes an explicit assignment.
+
+The role is a launch choice, not an automatic analysis of `config.cpp`. Mod folders should
+normally contain a root `addons` directory. Missing `mod.cpp` is not an error; if no PBO is found
+under `addons`, the folder may still be an unpacked development mod and the extension asks before
+assigning it.
+
+Right-click any `.cfg` file and choose **SqfReloader: Start dedicated server**. A real
+`hostname = ...` assignment (not a comment or a substring) identifies likely server configs.
+Configs without one can still be started after confirming the manual override. Before launching,
+the extension displays the exact command and asks for confirmation. This starts
+`arma3server_x64.exe`; a hosted player session remains a separate `-host` mission action.
+
 Use **SqfReloader: Reload and restart mission functions** from the Command Palette while a
 file inside the mission is active and that mission is running in Arma. It terminates running SQF
 scripts sourced from that mission folder, reloads its CfgFunctions, and reruns `init.sqf`,

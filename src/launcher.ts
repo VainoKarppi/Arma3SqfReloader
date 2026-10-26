@@ -8,6 +8,7 @@ import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspa
 import { createLinks, linkMissions } from "./junctions";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
+import { modTypeForDirectory } from "./modTypes";
 
 /** Port the configured sqfReloader.apiUrl asks for, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
@@ -31,6 +32,8 @@ export interface LaunchOptions {
     serverConfig?: string;
     /** Extra mod roots to include in the Arma launch (for generated server examples). */
     additionalModDirectories?: string[];
+    /** Show the exact dedicated-server command and ask before starting. */
+    confirmLaunch?: boolean;
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
@@ -73,7 +76,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
 
     if (!fs.existsSync(executable)) {
         log(`launch: ${executable} does not exist.`);
-        vscode.window.showErrorMessage(`arma3_x64.exe not found in ${armaDirectory}.`);
+        vscode.window.showErrorMessage(`${path.basename(executable)} not found in ${armaDirectory}.`);
         return false;
     }
 
@@ -87,9 +90,13 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         // busy 8764 (EdenOnline, an older SqfReloader instance) has to be detected up front.
         const port = options.dedicatedServer ? undefined : await writeApiConfig(settings, true);
 
-        const mods = workspaceMods();
-        const serverMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
-        const launch = prepareRuntime(runtime, armaDirectory, settings, mods, serverMods);
+        const workspaceModsFound = workspaceMods();
+        const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
+        const clientAndSharedMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
+        const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
+        const serverMods = [...classifiedServerMods, ...additionalServerMods];
+        const launch = prepareRuntime(runtime, armaDirectory, settings, clientAndSharedMods, serverMods);
+        launch.executable = executable;
 
         if (options.missionFolder) {
             const profileMissionPath = path.join(
@@ -109,9 +116,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             }
         }
 
-        const linkWarnings = options.dedicatedServer
-            ? verifyWorkspaceAddons(armaDirectory, serverMods.flatMap(mod => mod.addons))
-            : verifyWorkspaceAddons(armaDirectory, workspaceAddons());
+        const linkWarnings = verifyWorkspaceAddons(armaDirectory, workspaceAddons());
         launch.warnings.push(...linkWarnings);
         if (options.dedicatedServer && options.missionFolder) {
             const serverMissionPath = path.join(armaDirectory, "MPMissions", `${path.basename(options.missionFolder.directory)}.pbo`);
@@ -124,13 +129,14 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             log(`Warning: ${warning}`);
         }
 
-        if (mods.length > 0) {
-            log(`Mods: ${mods.map(mod => `${mod.name} [${mod.addons.map(addon => addon.prefix).join(", ")}]`).join(" | ")}`);
+        if (workspaceModsFound.length > 0) {
+            log(`Mods: ${workspaceModsFound.map(mod => `${mod.name} (${modTypeForDirectory(mod.directory) ?? "unclassified"}) [${mod.addons.map(addon => addon.prefix).join(", ")}]`).join(" | ")}`);
         } else {
             log("No mod found in the workspace; launching with @SqfReloader only.");
         }
 
         log(`-mod= entries: ${launch.mods.join(" ; ")}`);
+        if (launch.serverMods.length > 0) log(`-serverMod= entries: ${launch.serverMods.join(" ; ")}`);
 
         if (port !== undefined && port !== requestedApiPort(settings)) {
             vscode.window.setStatusBarMessage(`SqfReloader API moved to port ${port} (${requestedApiPort(settings)} is in use).`, 8000);
@@ -143,7 +149,19 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             options.scenarioFile = path.join(options.missionFolder.directory, "mission.sqm");
         }
 
-        startProcess(launch, settings, options);
+        const args = launchArguments(launch, settings, options);
+        if (options.confirmLaunch) {
+            const command = `"${launch.executable}" ${args.join(" ")}`;
+            const choice = await vscode.window.showInformationMessage(
+                "Review the dedicated-server launch command before starting.",
+                { modal: true, detail: command },
+                "Start Dedicated Server",
+                "Cancel"
+            );
+            if (choice !== "Start Dedicated Server") return false;
+        }
+
+        startProcess(launch, settings, options, args);
 
         return true;
     } catch (error) {
@@ -163,8 +181,7 @@ export function armaLogDirectory(): string {    const localAppData = process.env
     return path.join(localAppData, "Arma 3");
 }
 
-function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions): void {
-    const args = launchArguments(launch, settings, options);
+function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions, args = launchArguments(launch, settings, options)): void {
 
     const output = getOutput();
     const rawCommand = `"${launch.executable}" ${args.join(" ")}`;
@@ -408,6 +425,10 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     // paths inside it. Quoting each path separately makes Arma ignore the startup scenario.
     if (launch.mods.length > 0) {
         args.push(`"-mod=${launch.mods.map(uppercaseDriveLetter).join(";")}"`);
+    }
+
+    if (options.dedicatedServer && launch.serverMods.length > 0) {
+        args.push(`"-serverMod=${launch.serverMods.map(uppercaseDriveLetter).join(";")}"`);
     }
 
     if (options.mission) {

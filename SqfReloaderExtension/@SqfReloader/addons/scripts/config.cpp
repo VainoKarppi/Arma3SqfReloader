@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "3.2.4";
-        versionStr = "3.2.4";
-        versionAr[] = {3, 2, 4};
+        version = "3.2.6";
+        versionStr = "3.2.6";
+        versionAr[] = {3, 2, 6};
     };
 };
 

@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.2.4",
+  "version": "3.2.6",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -79,7 +79,23 @@
       },
       {
         "command": "sqfReloader.startDedicatedServer",
-        "title": "SqfReloader: Start dedicated server (example config)"
+        "title": "SqfReloader: Start dedicated server (server.cfg)"
+      },
+      {
+        "command": "sqfReloader.setClientMod",
+        "title": "Arma 3: Set folder as Client Mod"
+      },
+      {
+        "command": "sqfReloader.setServerMod",
+        "title": "Arma 3: Set folder as Server Mod"
+      },
+      {
+        "command": "sqfReloader.setSharedMod",
+        "title": "Arma 3: Set folder as Shared Mod"
+      },
+      {
+        "command": "sqfReloader.clearModType",
+        "title": "Arma 3: Clear Mod Type"
       },
       {
         "command": "sqfReloader.removeJunctions",
@@ -125,6 +141,11 @@
       ],
       "editor/context": [
         {
+          "command": "sqfReloader.startDedicatedServer",
+          "when": "resourceExtname == .cfg",
+          "group": "sqfReloader@1"
+        },
+        {
           "command": "sqfReloader.openInEden",
           "when": "resourceExtname == .sqm",
           "group": "sqfReloader@1"
@@ -152,6 +173,11 @@
       ],
       "explorer/context": [
         {
+          "command": "sqfReloader.startDedicatedServer",
+          "when": "resourceExtname == .cfg",
+          "group": "sqfReloader@1"
+        },
+        {
           "command": "sqfReloader.openInEden",
           "when": "resourceExtname == .sqm",
           "group": "sqfReloader@1"
@@ -175,6 +201,26 @@
           "command": "sqfReloader.setup",
           "when": "explorerResourceIsFolder",
           "group": "sqfReloader@1"
+        },
+        {
+          "command": "sqfReloader.setClientMod",
+          "when": "explorerResourceIsFolder",
+          "group": "sqfReloader@2"
+        },
+        {
+          "command": "sqfReloader.setServerMod",
+          "when": "explorerResourceIsFolder",
+          "group": "sqfReloader@2"
+        },
+        {
+          "command": "sqfReloader.setSharedMod",
+          "when": "explorerResourceIsFolder",
+          "group": "sqfReloader@2"
+        },
+        {
+          "command": "sqfReloader.clearModType",
+          "when": "explorerResourceIsFolder",
+          "group": "sqfReloader@2"
         }
       ]
     },
@@ -191,6 +237,20 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Arma 3 profile name to use for mission links and launch (for example `Razer`). Leave empty to use the most recently updated profile. If the named profile does not exist, the most recently updated profile is used."
+        },
+        "sqfReloader.modTypes": {
+          "type": "object",
+          "default": {},
+          "scope": "window",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "client",
+              "server",
+              "both"
+            ]
+          },
+          "markdownDescription": "Optional mod launch roles keyed by the mod folder path relative to its workspace folder. Server mods are omitted from regular client launches and use `-serverMod` on dedicated-server launches. Unclassified mods keep the existing `-mod` behavior."
         },
         "sqfReloader.clearArmaMissionArtifacts": {
           "type": "boolean",

@@ -174,7 +174,9 @@ This folder contains a local Arma 3 dedicated-server example, a live-reloadable 
 and a multiplayer mission. Change \`passwordAdmin\` in \`server.cfg\` before exposing a server.
 
 Use **SqfReloader: Play** for client/listen-server live reload from this workspace. To start a
-dedicated server, use the extension's dedicated-server command with this mission and config.
+dedicated server, right-click \`server.cfg\` and choose **SqfReloader: Start dedicated server
+(server.cfg)**. The workspace classifies \`@ExampleServerMod\` as server-only, so it is loaded
+through \`-serverMod\` instead of the regular \`-mod\` parameter.
 Live SQF reload through the local REST API is for a local Arma process; it does not attach a
 remote dedicated server.
 
@@ -1035,8 +1037,7 @@ function descriptionExt(multiplayer: boolean): string {
 ${multiplayer ? "respawn = 3;" : "respawn = 0;"}
 respawnDelay = 5;
 respawnOnStart = 0;
-respawnTemplates[] = {"MenuPosition"${multiplayer ? ', "ExampleRespawn"' : ""}};
-${multiplayer ? 'class CfgRespawnTemplates {\n    class ExampleRespawn {\n        onPlayerKilled = "OnPlayerKilled.sqf";\n        onPlayerRespawn = "OnPlayerRespawn.sqf";\n    };\n}' : ""}
+respawnTemplates[] = {"MenuPosition"};
 
 // Permit SqfReloader to replace CfgFunctions entries while this mission is open.
 allowFunctionsRecompile = 1;
@@ -1187,6 +1188,9 @@ function vscodeSettings(): string {
     "sqfReloader.junctionMode": "addon",
     "sqfReloader.logLevel": "info",
     "sqfReloader.reloadOnSave": "reload",
+    "sqfReloader.modTypes": {
+        "server-example/@ExampleServerMod": "server"
+    },
     "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"
 }
 `;

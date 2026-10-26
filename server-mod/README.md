@@ -1,13 +1,15 @@
 # Dedicated server mod example
 
-This directory is a workspace example for a server-side Arma mod. Open `server-mod` as a VS Code
-workspace and run **SqfReloader: Play** to launch a local development Arma instance with the
-`@ExampleServerMod` source mounted for live reload.
+This directory is a workspace example for a server-side Arma mod. The workspace classifies
+`@ExampleServerMod` as server-only, so **SqfReloader: Play** omits it from regular client launches.
 
 The `server.cfg` is a starting point for a dedicated server. Change `passwordAdmin` before running
-any server that can be reached by other people. In VS Code use **SqfReloader: Start dedicated
-server (example config)** to start the server with this config and the included mission. The
-command is available when this repository is the open workspace.
+any server that can be reached by other people. In VS Code right-click this file and choose
+**SqfReloader: Start dedicated server (server.cfg)** to start the server with this config.
+
+The workspace settings classify `@ExampleServerMod` as a server-only mod. It is passed using
+`-serverMod` on dedicated-server launches and omitted from normal client launches. Right-click
+another mod folder to choose its Client, Server, or Shared role.
 
 Functions in the addon use the `Example` tag and can be recompiled by SqfReloader. While a
 multiplayer mission is active, changes made on the server are sent to clients with

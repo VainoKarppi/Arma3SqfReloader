@@ -4,7 +4,7 @@ import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
-import { findArmaDirectory, findMissions, findModForFile, isArmaDirectory, MissionFolder, readMissionMaxPlayers } from "./arma";
+import { findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers } from "./arma";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
 import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
 import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
@@ -13,6 +13,8 @@ import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
 import { selectArmaProfile } from "./profile";
 import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./missionArtifacts";
+import { ModType, setModTypeForDirectory } from "./modTypes";
+import { hasHostnameAssignment } from "./serverConfig";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -502,48 +504,61 @@ export function activate(context: vscode.ExtensionContext): void {
         await refreshStatus();
     });
 
-    register(context, "sqfReloader.startDedicatedServer", async () => {
+    register(context, "sqfReloader.startDedicatedServer", async (resource?: unknown) => {
         if (!runtime) {
             vscode.window.showErrorMessage("The SqfReloader files bundled with this extension are missing. Reinstall the extension.");
             return;
         }
         const settings = readSettings();
-        const exampleRoots = [
-            ...((vscode.workspace.workspaceFolders ?? []).map(folder => path.join(folder.uri.fsPath, "server-example"))),
-            path.join(context.extensionPath, "server-example"),
-            path.resolve(context.extensionPath, "..", "server-mod"),
-            path.resolve(__dirname, "..", "..", "server-mod")
-        ];
-        const exampleRoot = exampleRoots.find(candidate => fs.existsSync(path.join(candidate, "server.cfg"))) ?? exampleRoots[0];
-        const serverConfig = path.join(exampleRoot, "server.cfg");
-        const missions = findMissions([exampleRoot]).filter(mission => mission.multiplayer);
-        if (!missions.length) {
-            vscode.window.showWarningMessage("Open the server-mod example folder or a workspace containing a multiplayer mission first.");
+        const selectedUri = resource instanceof vscode.Uri
+            ? resource
+            : vscode.window.activeTextEditor?.document.uri;
+        let serverConfig = selectedUri && path.extname(selectedUri.fsPath).toLowerCase() === ".cfg"
+            ? selectedUri.fsPath
+            : undefined;
+        if (!serverConfig) {
+            const configFiles = await vscode.workspace.findFiles("**/*.cfg", "**/{.git,node_modules}/**", 100);
+            const candidates: vscode.Uri[] = [];
+            for (const uri of configFiles) {
+                if (!fs.existsSync(uri.fsPath)) continue;
+                candidates.push(uri);
+            }
+            const selected = await vscode.window.showQuickPick(candidates.map(uri => {
+                let hasHostname = false;
+                try {
+                    hasHostname = hasHostnameAssignment(fs.readFileSync(uri.fsPath, "utf8"));
+                } catch (error) {
+                    logError(`could not read config ${uri.fsPath}`, error);
+                }
+                return {
+                    label: path.basename(uri.fsPath),
+                    description: `${hasHostname ? "Arma server config" : "No hostname assignment (manual override)"} · ${uri.fsPath}`,
+                    uri
+                };
+            }), { placeHolder: "Select a config file to start as a dedicated server" });
+            serverConfig = selected?.uri.fsPath;
+        }
+        if (!serverConfig) return;
+        if (!fs.existsSync(serverConfig) || !fs.statSync(serverConfig).isFile() || path.extname(serverConfig).toLowerCase() !== ".cfg") {
+            vscode.window.showWarningMessage("Select an existing .cfg file to start as a dedicated server.");
             return;
         }
-        const selected = await vscode.window.showQuickPick(missions.map(mission => ({
-            label: path.basename(mission.directory),
-            description: mission.directory,
-            mission
-        })), { placeHolder: "Select the dedicated-server mission" });
-        if (!selected) return;
-        const mission = selected.mission;
-        const serverModDirectory = fs.existsSync(path.join(exampleRoot, "@ExampleServerMod", "addons", "server", "config.cpp"))
-            ? path.join(exampleRoot, "@ExampleServerMod")
-            : path.resolve(context.extensionPath, "..", "server-mod", "@ExampleServerMod");
-        if (!fs.existsSync(path.join(serverModDirectory, "addons", "server", "config.cpp"))) {
-            vscode.window.showErrorMessage(`Example server mod was not found under ${exampleRoot}.`);
+
+        let detectedServerConfig = false;
+        try {
+            detectedServerConfig = hasHostnameAssignment(fs.readFileSync(serverConfig, "utf8"));
+        } catch (error) {
+            logError(`could not read server config ${serverConfig}`, error);
+            vscode.window.showErrorMessage(`Could not read server config: ${serverConfig}`);
             return;
         }
-        if (!fs.existsSync(serverConfig)) {
-            vscode.window.showErrorMessage(`Dedicated server example config was not found: ${serverConfig}`);
-            return;
-        }
-        const relativeMission = path.relative(exampleRoot, mission.directory);
-        if (relativeMission === ".." || relativeMission.startsWith(`..${path.sep}`) || path.isAbsolute(relativeMission)) {
-            const serverDestination = path.join(exampleRoot, "MPMissions", `${path.basename(mission.directory)}.pbo`);
-            fs.mkdirSync(path.dirname(serverDestination), { recursive: true });
-            fs.cpSync(mission.directory, serverDestination, { recursive: true });
+        if (!detectedServerConfig) {
+            const proceed = await vscode.window.showWarningMessage(
+                `${path.basename(serverConfig)} has no hostname assignment. Start it as an Arma dedicated-server config anyway?`,
+                { modal: true },
+                "Start Anyway"
+            );
+            if (proceed !== "Start Anyway") return;
         }
         if (isRunning()) {
             vscode.window.showWarningMessage("A local Arma 3 instance is already running. Stop it before starting a dedicated server.");
@@ -552,15 +567,41 @@ export function activate(context: vscode.ExtensionContext): void {
         setStatus("$(sync~spin) Starting dedicated server...", false);
         const started = await launchArma(runtime, settings, {
             dedicatedServer: true,
-            missionFolder: mission,
             serverConfig,
-            additionalModDirectories: [serverModDirectory]
+            confirmLaunch: true
         });
         if (started) {
             vscode.window.showInformationMessage("Dedicated server process started. SqfReloader live reload uses the local Arma client/editor session; the remote server is not automatically attached.");
         }
         await refreshStatus();
     });
+
+    const assignModType = (type: ModType | undefined) => async (resource?: unknown) => {
+        const uri = resource instanceof vscode.Uri ? resource : undefined;
+        if (!uri || !fs.existsSync(uri.fsPath)) {
+            vscode.window.showWarningMessage("Select a mod folder in the Explorer.");
+            return;
+        }
+        if (!fs.statSync(uri.fsPath).isDirectory()) {
+            vscode.window.showWarningMessage("Select a folder in the Explorer.");
+            return;
+        }
+        if (type && !looksLikeMod(uri.fsPath)) {
+            vscode.window.showWarningMessage("Select an individual mod folder, not a workspace container.");
+            return;
+        }
+
+        try {
+            await setModTypeForDirectory(uri.fsPath, type);
+        } catch (error) {
+            logError("could not update mod launch type", error);
+            vscode.window.showErrorMessage(`Could not update mod launch type: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
+    register(context, "sqfReloader.setClientMod", assignModType("client"));
+    register(context, "sqfReloader.setServerMod", assignModType("server"));
+    register(context, "sqfReloader.setSharedMod", assignModType("both"));
+    register(context, "sqfReloader.clearModType", assignModType(undefined));
 
     register(context, "sqfReloader.removeJunctions", async () => {
         await removeJunctions(readSettings());
