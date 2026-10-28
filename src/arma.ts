@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { execFile } from "child_process";
 import { Settings, log } from "./settings";
 
 /** A source addon folder mounted by SqfReloader at its derived runtime path. */
@@ -37,9 +38,13 @@ export interface Mod {
 
 const ARMA_EXECUTABLES = ["arma3_x64.exe", "arma3.exe", "arma3server_x64.exe"];
 
+/** Path detected from the registry/Steam installs; kept in memory for this VS Code session. */
+let detectedDirectory: string | undefined;
+let detection: Promise<string | undefined> | undefined;
+
 /**
- * Finds the Arma 3 folder. Order: the explicit setting, the registry (Steam / retail),
- * Steam library folders, then a few common install paths.
+ * Finds the Arma 3 folder. Order: the explicit setting, the folder detected earlier in this
+ * session, the registry (Steam / retail), Steam library folders, then a few common install paths.
  */
 export async function findArmaDirectory(settings: Settings): Promise<string | undefined> {
     if (settings.armaDirectory) {
@@ -50,7 +55,47 @@ export async function findArmaDirectory(settings: Settings): Promise<string | un
         log(`sqfReloader.armaDirectory does not contain arma3_x64.exe: ${settings.armaDirectory}`);
     }
 
-    const candidates = [...readRegistryPaths(), ...readSteamLibraryPaths(), ...readCommonPaths()];
+    const detected = await detectArmaDirectory();
+
+    if (detected) {
+        return detected;
+    }
+
+    log("Arma 3 was not found automatically.");
+    return undefined;
+}
+
+/**
+ * Detects Arma 3 from the registry / Steam libraries once per session and remembers the result
+ * so later lookups (reload, snapshots, status) do not spawn `reg` again.
+ * sqfReloader.armaDirectory stays empty on purpose: nothing is written back to the settings.
+ */
+export function detectArmaDirectory(): Promise<string | undefined> {
+    if (detectedDirectory) {
+        return Promise.resolve(detectedDirectory);
+    }
+
+    // Failed lookups are cached too; otherwise every reload would retry the registry.
+    detection ??= detectArmaDirectoryOnce().then(directory => {
+        detectedDirectory = directory;
+        return directory;
+    });
+
+    return detection;
+}
+
+/** Forgets the in-memory detection so the next lookup scans the registry / Steam again. */
+export function resetArmaDetection(): void {
+    detectedDirectory = undefined;
+    detection = undefined;
+}
+
+async function detectArmaDirectoryOnce(): Promise<string | undefined> {
+    const [registryPaths, steamPaths] = await Promise.all([
+        readRegistryPaths(),
+        readSteamLibraryPaths()
+    ]);
+    const candidates = [...registryPaths, ...steamPaths, ...readCommonPaths()];
 
     for (const candidate of dedupe(candidates)) {
         if (isArmaDirectory(candidate)) {
@@ -59,7 +104,6 @@ export async function findArmaDirectory(settings: Settings): Promise<string | un
         }
     }
 
-    log("Arma 3 was not found automatically.");
     return undefined;
 }
 
@@ -68,11 +112,9 @@ export function isArmaDirectory(directory: string): boolean {
 }
 
 /** Reads the "main" value Arma 3 writes to the registry. */
-function readRegistryPaths(): string[] {
-    const result: string[] = [];
-
+async function readRegistryPaths(): Promise<string[]> {
     if (process.platform !== "win32") {
-        return result;
+        return [];
     }
 
     // Reading HKCU/HKLM through reg.exe keeps the extension free of native modules.
@@ -82,35 +124,32 @@ function readRegistryPaths(): string[] {
         ["HKCU\\SOFTWARE\\Bohemia Interactive\\ArmA 3", "main"]
     ];
 
-    for (const [key, value] of queries) {
+    return (await Promise.all(queries.map(async ([key, value]) => {
         try {
-            const output = require("child_process").execSync(`reg query "${key}" /v ${value}`, { encoding: "utf8" });
+            const output = await executeFile("reg", ["query", key, "/v", value]);
             const match = /REG_SZ\s+(.+)$/m.exec(output);
 
             if (match) {
                 const exe = match[1].trim();
-                result.push(fs.existsSync(exe) ? path.dirname(exe) : exe);
+                return fs.existsSync(exe) ? path.dirname(exe) : exe;
             }
         } catch {
             // Key not present.
         }
-    }
-
-    return result;
+        return undefined;
+    }))).filter((candidate): candidate is string => !!candidate);
 }
 
 /** Expands steamapps\libraryfolders.vdf of every known Steam installation. */
-function readSteamLibraryPaths(): string[] {
-    const result: string[] = [];
-
+async function readSteamLibraryPaths(): Promise<string[]> {
     if (process.platform !== "win32") {
-        return result;
+        return [];
     }
 
     const steamRoots = new Set<string>();
 
     try {
-        const output = require("child_process").execSync('reg query "HKCU\\SOFTWARE\\Valve\\Steam" /v SteamPath', { encoding: "utf8" });
+        const output = await executeFile("reg", ["query", "HKCU\\SOFTWARE\\Valve\\Steam", "/v", "SteamPath"]);
         const match = /REG_SZ\s+(.+)$/m.exec(output);
 
         if (match) {
@@ -122,16 +161,12 @@ function readSteamLibraryPaths(): string[] {
 
     steamRoots.add("C:\\Program Files (x86)\\Steam");
 
-    for (const root of steamRoots) {
-        if (!fs.existsSync(root)) {
-            continue;
-        }
-
+    return (await Promise.all([...steamRoots].map(async root => {
+        if (!fs.existsSync(root)) return [];
         const libraries = new Set<string>([root]);
         const libraryFile = path.join(root, "steamapps", "libraryfolders.vdf");
-
         try {
-            const content = fs.readFileSync(libraryFile, "utf8");
+            const content = await fs.promises.readFile(libraryFile, "utf8");
             const regex = /"path"\s+"([^"]+)"/g;
             let match: RegExpExecArray | null;
 
@@ -141,13 +176,17 @@ function readSteamLibraryPaths(): string[] {
         } catch {
             // No library files, only the default folder.
         }
+        return [...libraries].map(library => path.join(library, "steamapps", "common", "Arma 3"));
+    }))).flat();
+}
 
-        for (const library of libraries) {
-            result.push(path.join(library, "steamapps", "common", "Arma 3"));
-        }
-    }
-
-    return result;
+function executeFile(file: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        execFile(file, args, { encoding: "utf8", timeout: 1500 }, (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout);
+        });
+    });
 }
 
 function readCommonPaths(): string[] {

@@ -5,12 +5,11 @@ import {
     findArmaDirectory,
     findModForFile,
     findMods,
-    pickArmaDirectory,
     Mod,
     Addon
 } from "./arma";
 import { createLinks, Link, removeAllLinks, verifyAddonLink } from "./junctions";
-import { updateSetting, log, Settings } from "./settings";
+import { log, Settings } from "./settings";
 
 export interface SetupResult {
     armaDirectory: string;
@@ -24,8 +23,7 @@ export interface SetupResult {
  * the settings and verifies that every addon resolves to the working copy.
  */
 export async function setupMod(mod: Mod, settings: Settings, silent = false): Promise<SetupResult | undefined> {
-    const armaDirectory = await findArmaDirectory(settings)
-        ?? await pickArmaDirectory(settings);
+    const armaDirectory = await findArmaDirectory(settings);
 
     if (!armaDirectory) {
         if (!silent) {
@@ -33,10 +31,6 @@ export async function setupMod(mod: Mod, settings: Settings, silent = false): Pr
         }
 
         return undefined;
-    }
-
-    if (settings.armaDirectory !== armaDirectory) {
-        await updateSetting("armaDirectory", armaDirectory);
     }
 
     if (mod.addons.length === 0) {
@@ -98,15 +92,11 @@ export async function setupWorkspace(settings: Settings): Promise<SetupResult | 
         return undefined;
     }
 
-    const armaDirectory = await findArmaDirectory(settings) ?? await pickArmaDirectory(settings);
+    const armaDirectory = await findArmaDirectory(settings);
 
     if (!armaDirectory) {
         vscode.window.showErrorMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\" in the settings.");
         return undefined;
-    }
-
-    if (settings.armaDirectory !== armaDirectory) {
-        await updateSetting("armaDirectory", armaDirectory);
     }
 
     const { links, warnings } = createLinks(armaDirectory, mods, settings.junctionMode);

@@ -15,6 +15,7 @@ internal sealed class ApiConfig {
 
     public string Host { get; init; } = DefaultHost;
     public int Port { get; init; } = DefaultPort;
+
     public bool AutoStart { get; init; } = true;
 
     /// <summary>Folder with the plain fn_*.sqf sources (written by the installer).</summary>

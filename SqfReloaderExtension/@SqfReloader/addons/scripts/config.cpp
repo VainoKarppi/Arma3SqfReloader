@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "3.2.6";
-        versionStr = "3.2.6";
-        versionAr[] = {3, 2, 6};
+        version = "3.5.3";
+        versionStr = "3.5.3";
+        versionAr[] = {3, 5, 3};
     };
 };
 
@@ -25,6 +25,7 @@ class CfgFunctions {
             class handleCallback {};
             class handleBatch {};
             class apiStart {};
+            class evalWatch {};
             class apiStop {};
             class apiStatus {};
             class diagnose {};

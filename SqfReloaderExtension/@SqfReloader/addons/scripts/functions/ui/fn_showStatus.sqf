@@ -25,10 +25,11 @@ if !(call SqfReloader_fnc_init) exitWith {
 private _status = [] call SqfReloader_fnc_apiStatus;
 
 private _message = format [
-    "SqfReloader %1 - API %2<br/>%3",
+    "SqfReloader %1 - API %2<br/>%3<br/>Port %4 - the VS Code extension connects to this port",
     _status get "version",
     if (_status get "running") then {"running"} else {"stopped"},
-    _status get "url"
+    _status get "url",
+    _status get "port"
 ];
 
 if (is3DEN) then {

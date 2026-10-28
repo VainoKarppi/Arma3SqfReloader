@@ -3,6 +3,32 @@ import { Socket } from "net";
 export const DEFAULT_PORT = 8764;
 export const DEFAULT_HOST = "127.0.0.1";
 
+/** Returns only the scheme and host from the configured API address. */
+export function normalizeApiHost(apiUrl: string): string {
+    try {
+        const url = new URL(apiUrl);
+        url.port = "";
+        url.pathname = "/";
+        url.search = "";
+        url.hash = "";
+        return url.origin;
+    } catch {
+        return apiUrl;
+    }
+}
+
+/** Builds the endpoint used by the REST API from the host and its separately configured port. */
+export function makeApiUrl(apiHost: string, port: number): string {
+    try {
+        const url = new URL(normalizeApiHost(apiHost));
+        url.port = String(port);
+        url.pathname = "/api";
+        return url.toString().replace(/\/+$/, "");
+    } catch {
+        return apiHost;
+    }
+}
+
 /**
  * Highest port probed after the configured one. Searching upwards first means a busy 8764
  * (EdenOnline, an older SqfReloader build, a docs server) only costs a few numbers.

@@ -4,6 +4,7 @@ import * as path from "path";
 import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon, toArmaPath, toFunctionVariable } from "./arma";
 import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
 import { DEFAULT_HOST, DEFAULT_PORT, findFreePort } from "./ports";
+import { modFoldersOnce } from "./launchMods";
 import { log, logError, readSettings, Settings } from "./settings";
 import { ArmaProfileSelection, selectArmaProfile } from "./profile";
 
@@ -148,6 +149,14 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     const allMods = [...new Map([...mods, ...additionalMods].map(mod => [path.resolve(mod.directory).toLowerCase(), mod])).values()];
     const serverModDirectories: string[] = [];
     for (const mod of allMods) {
+        const isServerMod = additionalMods.some(additional =>
+            path.resolve(additional.directory).toLowerCase() === path.resolve(mod.directory).toLowerCase()
+        );
+        if (isServerMod) {
+            serverModDirectories.push(mod.directory);
+            continue;
+        }
+
         const open = openModFolder(armaDirectory, mod);
         if (!open) {
             continue;
@@ -162,24 +171,17 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
             // reloader could pick the copy that was not refreshed. The addon link below z\ is
             // the single mount point; -mod= mounts the workspace @Mod folder directly.
             removeModInZLink(armaDirectory, mod);
-            if (additionalMods.some(additional => path.resolve(additional.directory).toLowerCase() === path.resolve(mod.directory).toLowerCase())) {
-                serverModDirectories.push(mod.directory);
-            } else {
-                modFolders.push(mod.directory);
-            }
+            modFolders.push(mod.directory);
         }
 
         // The -mod= entry is the workspace @Mod folder itself (or the generated one when the
         // folder has no mod.cpp), so Arma reads addons from the junctioned working copy.
-        if (additionalMods.some(additional => path.resolve(additional.directory).toLowerCase() === path.resolve(mod.directory).toLowerCase())) {
-            serverModDirectories.push(open);
-        } else {
-            modFolders.push(open);
-        }
+        modFolders.push(open);
     }
 
     // --- 3. Missions -------------------------------------------------------
-    // Mission folders belong to the selected user profile, not the Arma install directory.
+    // Link missions into both the selected profile and Arma's install root so dedicated servers
+    // can resolve workspace mission folders from their MPMissions directory.
     const missions = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
     const profile = selectArmaProfile(armaDirectory, settings.extraLaunchArguments, settings.armaProfile);
     const missionLinks = linkMissions(armaDirectory, profile.directory, missions);
@@ -193,8 +195,10 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
     return {
         armaDirectory,
         executable: path.join(armaDirectory, "arma3_x64.exe"),
-        mods: [...new Set([...modFolders, bundledMod])],
-        serverMods: [...new Set(serverModDirectories)],
+        // One pass of dedupe here: every path below (the workspace @Mod folder, the generated
+        // @Mod copy and the bundled mod) must reach Arma exactly once.
+        mods: modFoldersOnce([...modFolders, bundledMod]),
+        serverMods: modFoldersOnce(serverModDirectories),
         modPath: bundledMod,
         warnings,
         userMods: allMods,
@@ -355,7 +359,10 @@ export function workspaceAddons(): Addon[] {
 }
 
 /**
- * Writes %LOCALAPPDATA%\SqfReloader\config.json so the DLL uses the configured port.
+ * Writes %LOCALAPPDATA%\SqfReloader\config.json, which the DLL reads when the API starts.
+ *
+ * One port is used by every Arma instance (client, editor, hosted mission, dedicated server), so
+ * the extension always knows where to send requests without guessing from the instance type.
  *
  * `pboPrefixes` is a legacy API field containing SqfReloader's derived z\ runtime paths, not
  * developer `$PBOPREFIX$` values. The API uses these paths to map function tags to addons.
@@ -373,7 +380,7 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
 
     const url = new URL(settings.apiUrl);
     const host = url.hostname || DEFAULT_HOST;
-    const preferredPort = url.port ? Number(url.port) : settings.defaultPort;
+    const preferredPort = url.port ? Number(url.port) : settings.apiPort;
     const port = probe ? await findFreePort(preferredPort, host) : (activePort ?? preferredPort);
 
     if (probe && port !== preferredPort) {
@@ -382,6 +389,7 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
 
     activePort = port;
     const file = path.join(directory, "config.json");
+
     const addons = workspaceAddons();
     const pboPrefixes = addons.map(addon => addon.prefix.replace(/\\/g, "/"));
     const workspaceFunctions: [string, string][] = [];

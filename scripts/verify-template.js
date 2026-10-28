@@ -43,6 +43,7 @@ try {
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     const generatedSettings = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
     check("server example mod is configured as server-only", /"server-example\/@ExampleServerMod"\s*:\s*"server"/.test(generatedSettings));
+    check("generated project includes the one-second watcher default", /"sqfReloader\.watchInterval"\s*:\s*1000/.test(generatedSettings));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
     check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "scripts", "$PBOPREFIX$")));
@@ -159,7 +160,9 @@ try {
     const parsed = JSON.parse(jsonc);
     check("generated settings.json parses", parsed["sqfReloader.junctionMode"] === "addon");
     check("generated settings.json log verbosity defaults to info", parsed["sqfReloader.logLevel"] === "info");
-    check("generated settings.json has armaDirectory", typeof parsed["sqfReloader.armaDirectory"] === "string");
+    check("generated settings.json omits armaDirectory (auto-detected, never written)", !("sqfReloader.armaDirectory" in parsed));
+    check("generated settings.json has one shared API port", parsed["sqfReloader.apiPort"] > 0 && !("sqfReloader.serverApiPort" in parsed));
+    check("generated settings.json has no watch target (always the local game)", !("sqfReloader.watchTarget" in parsed));
 } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
 }

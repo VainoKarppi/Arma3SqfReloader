@@ -3,10 +3,14 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { log } from "./settings";
 
-export type ModType = "client" | "server" | "both";
+export type ModType = "client" | "server" | "both" | "off";
 
 const MOD_TYPES_SETTING = "modTypes";
 
+/**
+ * Launch role of a workspace mod: undefined when unclassified (the default, launched with -mod),
+ * "off" when the folder was discovered but must not be passed to Arma at all.
+ */
 export function modTypeForDirectory(directory: string): ModType | undefined {
     const workspace = workspaceForDirectory(directory);
     if (!workspace) return undefined;
@@ -24,6 +28,22 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         throw new Error("The selected mod folder is not inside an open workspace folder.");
     }
 
+    const settingsFile = path.join(workspace.uri.fsPath, ".vscode", "settings.json");
+    if (!fs.existsSync(settingsFile)) {
+        const create = await vscode.window.showInformationMessage(
+            `This project has no .vscode/settings.json. Create it to save the mod launch role?`,
+            "Create Settings",
+            "Cancel"
+        );
+        if (create !== "Create Settings") return;
+        fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+        try {
+            fs.writeFileSync(settingsFile, "{}\n", { encoding: "utf8", flag: "wx" });
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        }
+    }
+
     const addonsPath = path.join(directory, "addons");
     let hasAddonsDirectory = false;
     try {
@@ -32,14 +52,14 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
-    if (type && !hasAddonsDirectory) {
+    if (type && type !== "off" && !hasAddonsDirectory) {
         const proceed = await vscode.window.showWarningMessage(
             `${path.basename(directory)} has no root addons folder and does not look like a conventional Arma mod. Assign a launch type anyway?`,
             { modal: true },
             "Assign Anyway"
         );
         if (proceed !== "Assign Anyway") return;
-    } else if (type && !containsPbo(addonsPath)) {
+    } else if (type && type !== "off" && !containsPbo(addonsPath)) {
         const proceed = await vscode.window.showWarningMessage(
             `${path.basename(directory)} has no PBO files under addons. It may be an unpacked development mod; mod.cpp is optional.`,
             { modal: true },
@@ -59,7 +79,7 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         delete next[key];
     }
 
-    await configuration.update(MOD_TYPES_SETTING, next, vscode.ConfigurationTarget.WorkspaceFolder);
+    await configuration.update(MOD_TYPES_SETTING, next, vscode.ConfigurationTarget.Workspace);
     log(`${type ? `Set ${path.basename(directory)} mod type to ${type}` : `Cleared mod type for ${path.basename(directory)}`}.`);
 }
 
@@ -105,5 +125,5 @@ function containsPbo(directory: string): boolean {
 }
 
 function isModType(value: unknown): value is ModType {
-    return value === "client" || value === "server" || value === "both";
+    return value === "client" || value === "server" || value === "both" || value === "off";
 }

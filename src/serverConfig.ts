@@ -1,4 +1,15 @@
+/** Reads the `hostname = "..."` value of an Arma server config, or "" when it has none. */
+export function hostnameValue(content: string): string {
+    const match = /^\s*hostname\s*=\s*"((?:[^"\\]|\\.)*)"/im.exec(stripComments(content));
+    return match ? match[1].trim() : "";
+}
+
 export function hasHostnameAssignment(content: string): boolean {
+    return /^\s*hostname\s*=/im.test(stripComments(content));
+}
+
+/** Returns the content with comments blanked out, leaving strings and line breaks intact. */
+function stripComments(content: string): string {
     let cleaned = "";
     let inBlockComment = false;
     let quote: "\"" | "'" | undefined;
@@ -44,5 +55,5 @@ export function hasHostnameAssignment(content: string): boolean {
         }
     }
 
-    return /^\s*hostname\s*=/im.test(cleaned);
+    return cleaned;
 }

@@ -4,17 +4,20 @@ import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
-import { findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers } from "./arma";
+import { detectArmaDirectory, findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers, resetArmaDetection } from "./arma";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
 import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
-import { isRunning, launchArma, setRptDiagnosticCollection, startRptMonitor, stopRptMonitor } from "./launcher";
+import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, startRptMonitor, stopDedicatedServer, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
 import { selectArmaProfile } from "./profile";
 import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./missionArtifacts";
 import { ModType, setModTypeForDirectory } from "./modTypes";
-import { hasHostnameAssignment } from "./serverConfig";
+import { hasHostnameAssignment, hostnameValue } from "./serverConfig";
+import { apiTargets, GameConnectionMonitor, readApiTarget, setRemoteLogLevel } from "./connectionMonitor";
+import { statusPresentation, StatusSnapshot, StatusTone, toneColor } from "./status";
+import { ProjectViewProvider } from "./projectView";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -23,9 +26,17 @@ let workspaceInjectionGeneration = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
     const version = context.extension.packageJSON.version;
+    getOutput();
     log(`Arma 3 SQF Reloader ${version} activated.`);
 
     runtime = loadRuntime(context);
+    // Resolve the Arma folder once on load (registry / Steam) and keep it in memory; the
+    // setting stays empty unless the user pins a folder.
+    void detectArmaDirectory();
+    const projectView = new ProjectViewProvider(context.extensionUri);
+    context.subscriptions.push(projectView, vscode.window.registerWebviewViewProvider("sqfReloader.projectView", projectView, {
+        webviewOptions: { retainContextWhenHidden: true }
+    }));
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
     context.subscriptions.push(rptDiagnostics, { dispose: stopRptMonitor });
@@ -38,20 +49,43 @@ export function activate(context: vscode.ExtensionContext): void {
 
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
     statusBar.command = "sqfReloader.play";
-    refreshStatus();
+    setStatus("$(sync~spin) Checking Arma 3...", "ok", "Checking the Arma process and project status");
     statusBar.show();
-    let wasArmaRunning = isRunning();
+    let wasArmaRunning = false;
+    void refreshStatus();
     const statusTimer = setInterval(() => {
-        const running = isRunning();
-        if (wasArmaRunning && !running) {
-            void findArmaDirectory(readSettings()).then(armaDirectory => {
-                if (armaDirectory) cleanupSnapshots(armaDirectory);
-            });
-        }
-        wasArmaRunning = running;
-        void refreshStatus();
+        void refreshRunningStatus().then(running => {
+            if (wasArmaRunning && !running) {
+                void findArmaDirectory(readSettings()).then(armaDirectory => {
+                    if (armaDirectory) cleanupSnapshots(armaDirectory);
+                });
+            }
+            wasArmaRunning = running;
+            void refreshStatus(running);
+        });
     }, 2000);
     context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
+
+    // The status bar shows the API, so it is refreshed for connection changes too, and the
+    // first Arma 3 (or dedicated server) connection is written to the output channel.
+    const connectionMonitor = new GameConnectionMonitor((target, state) => {
+        if (state.game) {
+            // Match the SQF log level as soon as the game callback is there, so the RPT carries
+            // the same diagnostics as the extension output.
+            const settings = readSettings();
+            void setRemoteLogLevel(settings, target.apiUrl, settings.logLevel === "verbose" ? "debug" : settings.logLevel)
+                .catch(error => logError("could not apply SqfReloader log level", error));
+            return `SqfReloader connected: Arma reports a game callback on ${target.apiUrl} (port ${apiPort(target.apiUrl)}).`;
+        }
+        if (!state.api) return undefined;
+        return `SqfReloader API is up on ${target.apiUrl} (port ${apiPort(target.apiUrl)}), waiting for Arma's callback.`;
+    });
+    connectionMonitor.start();
+    const connectionTimer = setInterval(() => void refreshStatus(), 3000);
+    context.subscriptions.push(
+        { dispose: () => connectionMonitor.stop() },
+        { dispose: () => clearInterval(connectionTimer) }
+    );
 
     // --- Save -> reload ---------------------------------------------------
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
@@ -63,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         // Offline saves are normal while editing; avoid sending a request or showing an API
         // warning until an Arma process is actually running.
-        if (!isRunning()) {
+        if (!await refreshRunningStatus()) {
             return;
         }
 
@@ -75,15 +109,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
             if (outcome.ok) {
                 if (/^(Reloaded|Reload queued|Recompile|Compiled)/.test(outcome.message)) {
-                    setStatus(`$(check) ${shorten(outcome.message)}`, false);
+                    setStatus(`$(check) ${shorten(outcome.message)}`, "ok");
                 }
             } else {
-                setStatus("$(warning) SqfReloader: reload failed", true);
+                setStatus("$(warning) SqfReloader: reload failed", "error");
                 log(`Reload failed: ${outcome.message}${outcome.detail ? ` (${outcome.detail})` : ""}`);
             }
         } catch (error) {
             logError("save handler failed", error);
-            setStatus("$(warning) SqfReloader: reload failed", true);
+            setStatus("$(warning) SqfReloader: reload failed", "error");
         }
     }));
 
@@ -99,19 +133,45 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     };
 
-    void onWorkspaceChange();
+    const startupWorkspaceTimer = setTimeout(() => {
+        void onWorkspaceChange();
+    }, 1000);
+    context.subscriptions.push({ dispose: () => clearTimeout(startupWorkspaceTimer) });
 
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(onWorkspaceChange));
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("sqfReloader")) {
             if (configuredLogLevel() === "verbose") log("Settings changed.");
-            void onWorkspaceChange();
+            void refreshStatus();
+            const cleanupChanged = [
+                "sqfReloader.clearArmaMissionArtifacts",
+                "sqfReloader.armaDirectory",
+                "sqfReloader.armaProfile",
+                "sqfReloader.extraLaunchArguments"
+            ].some(key => event.affectsConfiguration(key));
+            const junctionsChanged = [
+                "sqfReloader.autoJunction",
+                "sqfReloader.armaDirectory",
+                "sqfReloader.junctionMode"
+            ].some(key => event.affectsConfiguration(key));
+            if (event.affectsConfiguration("sqfReloader.armaDirectory")) {
+                // Clearing the setting falls back to a fresh registry lookup for this session.
+                resetArmaDetection();
+            }
+            if (cleanupChanged || junctionsChanged) {
+                void (async () => {
+                    if (cleanupChanged) await configureMissionArtifactCleanup(readSettings());
+                    if (junctionsChanged) await ensureJunctions(readSettings());
+                })().catch(error => logError("settings change handling failed", error));
+            }
             if (event.affectsConfiguration("sqfReloader.logLevel")) {
                 workspaceInjectionGeneration++;
                 workspaceInjectionLoop = undefined;
             }
-            if (event.affectsConfiguration("sqfReloader.logLevel") && isRunning()) {
-                void applyRuntimeLogLevel(readSettings()).catch(error => {
+            if (event.affectsConfiguration("sqfReloader.logLevel")) {
+                void refreshRunningStatus().then(running => {
+                    if (running) return applyRuntimeLogLevel(readSettings());
+                }).catch(error => {
                     logError("could not apply SqfReloader log level", error);
                 });
             }
@@ -131,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         if (!hasArmaWorkspace()) {
-            if (workspaceHasNoFiles()) {
+            if (await workspaceHasNoFiles()) {
                 const action = await vscode.window.showWarningMessage(
                     "No workspace found for Arma 3. Create an example mod in this empty workspace?",
                     { modal: true },
@@ -169,7 +229,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (mission && !(await confirmMissionFunctionRecompile(mission.directory))) {
             return false;
         }
-        setStatus("$(sync~spin) Starting Arma 3...", false);
+        setStatus("$(sync~spin) Starting Arma 3...", "busy");
 
         const started = await launchArma(runtime, settings, mission ? { missionFolder: mission } : {});
 
@@ -189,7 +249,7 @@ export function activate(context: vscode.ExtensionContext): void {
     register(context, "sqfReloader.play", playCommand);
 
     register(context, "sqfReloader.stop", async () => {
-        if (!isRunning()) {
+        if (!await refreshRunningStatus()) {
             vscode.window.showInformationMessage("Arma 3 is not running.");
             return;
         }
@@ -214,10 +274,34 @@ export function activate(context: vscode.ExtensionContext): void {
                     vscode.window.showWarningMessage(`Arma 3 stopped, but ${failures} mod link(s) could not be removed. See the SqfReloader output.`);
                 }
             }
-            setStatus("$(play) Play Arma 3", false);
+            setStatus("$(play) Play Arma 3", "ok");
             log("Arma 3 closed.");
         } catch (error) {
             logError("could not close Arma 3", error);
+        }
+    });
+
+    register(context, "sqfReloader.stopDedicatedServer", async () => {
+        if (!await refreshDedicatedServerStatus()) {
+            vscode.window.showInformationMessage("The dedicated server is not running.");
+            await refreshStatus();
+            return;
+        }
+        const choice = await vscode.window.showWarningMessage(
+            "Close the running Arma 3 dedicated server?",
+            { modal: true },
+            "Close Dedicated Server"
+        );
+        if (choice !== "Close Dedicated Server") return;
+        await stopDedicatedServer();
+        // Re-read the process list instead of trusting the cached flag: the panel and the status
+        // bar must say "Stopped" as soon as arma3server_x64.exe is gone.
+        const stillRunning = await refreshDedicatedServerStatus();
+        await refreshStatus();
+        if (stillRunning) {
+            vscode.window.showWarningMessage("The dedicated server process is still running; close it manually.");
+        } else {
+            vscode.window.showInformationMessage("Arma 3 dedicated server stopped.");
         }
     });
 
@@ -260,7 +344,7 @@ export function activate(context: vscode.ExtensionContext): void {
             const connected = status.gameConnected === true;
             const message = `SqfReloader ${status.version ?? "?"} on ${settings.apiUrl} - game callback ${connected ? "registered" : "NOT registered"}.`;
 
-            if (connected && isRunning() && settings.logLevel === "verbose") {
+            if (connected && await refreshRunningStatus() && settings.logLevel === "verbose") {
                 try {
                     await applyRuntimeLogLevel({ ...settings, logLevel: level });
                 } catch (error) {
@@ -287,7 +371,7 @@ export function activate(context: vscode.ExtensionContext): void {
     register(context, "sqfReloader.reloadAll", async () => {
         const settings = readSettings();
         const outcome = await reloadAll(settings);
-        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", !outcome.ok);
+        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", outcome.ok ? "ok" : "error");
 
         if (outcome.ok) {
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -304,7 +388,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const settings = readSettings();
         const outcome = await reloadAndRestartMission(settings, mission);
-        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: mission restart failed", !outcome.ok);
+        setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: mission restart failed", outcome.ok ? "ok" : "error");
         if (outcome.ok) {
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
         } else {
@@ -322,7 +406,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         try {
             const outcome = await reloadFileNow(document, readSettings());
-            setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", !outcome.ok);
+            setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", outcome.ok ? "ok" : "error");
 
             if (!outcome.ok) {
                 vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -349,7 +433,7 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
-        if (!isRunning()) {
+        if (!await refreshRunningStatus()) {
             vscode.window.showWarningMessage("Arma 3 is not running. Start it with SqfReloader: Play, then run the SQF file again.");
             return;
         }
@@ -393,13 +477,13 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
-        if (!isRunning()) {
+        if (!await refreshRunningStatus()) {
             if (!runtime) {
                 vscode.window.showErrorMessage("The SqfReloader files bundled with this extension are missing. Reinstall the extension.");
                 return;
             }
 
-            setStatus("$(sync~spin) Starting Arma 3...", false);
+            setStatus("$(sync~spin) Starting Arma 3...", "busy");
             // Ensure the profile mission link exists while still opening the workspace mission directly.
             const started = await launchArma(runtime, settings, { scenarioFile: uri.fsPath, missionFolder: mission });
             if (started) {
@@ -483,13 +567,13 @@ export function activate(context: vscode.ExtensionContext): void {
             vscode.window.showErrorMessage("The SqfReloader files bundled with this extension are missing. Reinstall the extension.");
             return;
         }
-        if (isRunning()) {
+        if (await refreshRunningStatus()) {
             vscode.window.showWarningMessage("Arma 3 is already running. Stop it before starting a hosted mission.");
             return;
         }
         if (!(await confirmMissionFunctionRecompile(mission.directory))) return;
 
-        setStatus("$(sync~spin) Starting hosted mission...", false);
+        setStatus("$(sync~spin) Starting hosted mission...", "busy");
         const launchSettings = readSettings();
         const extraArguments = parseLaunchArguments(launchSettings.extraLaunchArguments)
             .filter(argument => !/^-mission(?:=|$)/i.test(argument));
@@ -517,25 +601,33 @@ export function activate(context: vscode.ExtensionContext): void {
             ? selectedUri.fsPath
             : undefined;
         if (!serverConfig) {
+            // Only real Arma dedicated-server configs (they assign hostname) are offered; other
+            // .cfg files in the workspace (launcher, mod, or tool configs) would fail on start.
             const configFiles = await vscode.workspace.findFiles("**/*.cfg", "**/{.git,node_modules}/**", 100);
-            const candidates: vscode.Uri[] = [];
+            const candidates: Array<{ uri: vscode.Uri; hostname: string }> = [];
             for (const uri of configFiles) {
                 if (!fs.existsSync(uri.fsPath)) continue;
-                candidates.push(uri);
-            }
-            const selected = await vscode.window.showQuickPick(candidates.map(uri => {
-                let hasHostname = false;
+                let content: string;
                 try {
-                    hasHostname = hasHostnameAssignment(fs.readFileSync(uri.fsPath, "utf8"));
+                    content = fs.readFileSync(uri.fsPath, "utf8");
                 } catch (error) {
                     logError(`could not read config ${uri.fsPath}`, error);
+                    continue;
                 }
-                return {
-                    label: path.basename(uri.fsPath),
-                    description: `${hasHostname ? "Arma server config" : "No hostname assignment (manual override)"} · ${uri.fsPath}`,
-                    uri
-                };
-            }), { placeHolder: "Select a config file to start as a dedicated server" });
+                if (!hasHostnameAssignment(content)) continue;
+                candidates.push({ uri, hostname: hostnameValue(content) });
+            }
+            if (candidates.length === 0) {
+                vscode.window.showWarningMessage("No Arma dedicated-server config (.cfg with a hostname assignment) found in this workspace. Create one with \"SqfReloader: Create example project\", or right-click the .cfg file to start it explicitly.");
+                return;
+            }
+            const selected = candidates.length === 1
+                ? candidates[0]
+                : await vscode.window.showQuickPick(candidates.map(candidate => ({
+                    label: path.basename(candidate.uri.fsPath),
+                    description: candidate.hostname ? `hostname "${candidate.hostname}" · ${candidate.uri.fsPath}` : candidate.uri.fsPath,
+                    uri: candidate.uri
+                })), { placeHolder: "Select a dedicated-server config to start" });
             serverConfig = selected?.uri.fsPath;
         }
         if (!serverConfig) return;
@@ -560,11 +652,11 @@ export function activate(context: vscode.ExtensionContext): void {
             );
             if (proceed !== "Start Anyway") return;
         }
-        if (isRunning()) {
+        if (await refreshRunningStatus()) {
             vscode.window.showWarningMessage("A local Arma 3 instance is already running. Stop it before starting a dedicated server.");
             return;
         }
-        setStatus("$(sync~spin) Starting dedicated server...", false);
+        setStatus("$(sync~spin) Starting dedicated server...", "busy");
         const started = await launchArma(runtime, settings, {
             dedicatedServer: true,
             serverConfig,
@@ -629,9 +721,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await refreshStatus();
     });
 
-    describeWorkspace();
     installTestHook(context, playCommand);
-    void promptForExampleIfNeeded(context, version);
     void refreshStatus();
 }
 
@@ -641,12 +731,8 @@ async function promptForExampleIfNeeded(context: vscode.ExtensionContext, versio
     const stateKey = "setupExamplePromptVersion";
     if (context.globalState.get<string>(stateKey) === version) return;
 
-    if (hasArmaWorkspace()) {
-        await context.globalState.update(stateKey, version);
-        return;
-    }
-
-    if (!workspaceHasNoFiles()) return;
+    const workspaceFiles = await vscode.workspace.findFiles("**/*", "**/{.git,.vscode,node_modules}/**", 1);
+    if (workspaceFiles.length > 0) return;
 
     // Record before showing the prompt so workspace/settings changes cannot stack notices.
     await context.globalState.update(stateKey, version);
@@ -797,14 +883,25 @@ function installTestHook(context: vscode.ExtensionContext, play: () => Promise<b
     }, 2000);
 }
 
-function setStatus(text: string, warning: boolean, tooltip?: string): void {
+function setStatus(text: string, warning: boolean | StatusTone, tooltip?: string): void {
     if (!statusBar) {
         return;
     }
 
+    const tone: StatusTone = typeof warning === "boolean" ? (warning ? "warning" : "ok") : warning;
+    const color = toneColor(tone);
     statusBar.text = text;
-    statusBar.backgroundColor = warning ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+    statusBar.backgroundColor = color ? new vscode.ThemeColor(color) : undefined;
     statusBar.tooltip = tooltip ?? `${text}\nClick to start Arma 3 with this mod.`;
+}
+
+/** "8764" for http://127.0.0.1:8764/api. */
+function apiPort(apiUrl: string): string {
+    try {
+        return new URL(apiUrl).port || "?";
+    } catch {
+        return "?";
+    }
 }
 
 function findCurrentMission(): { directory: string } | undefined {
@@ -831,27 +928,9 @@ function hasArmaWorkspace(): boolean {
     return roots.length > 0 && (workspaceMods().length > 0 || findMissions(roots).length > 0);
 }
 
-function workspaceHasNoFiles(): boolean {
-    const ignoredDirectories = new Set([".git", ".vscode", "node_modules"]);
-    const hasFile = (directory: string): boolean => {
-        let entries: fs.Dirent[];
-        try {
-            entries = fs.readdirSync(directory, { withFileTypes: true });
-        } catch {
-            return false;
-        }
-
-        for (const entry of entries) {
-            if (entry.isDirectory()) {
-                if (!ignoredDirectories.has(entry.name.toLowerCase()) && hasFile(path.join(directory, entry.name))) return true;
-            } else if (entry.isFile()) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    return (vscode.workspace.workspaceFolders ?? []).every(folder => !hasFile(folder.uri.fsPath));
+async function workspaceHasNoFiles(): Promise<boolean> {
+    const files = await vscode.workspace.findFiles("**/*", "**/{.git,.vscode,node_modules}/**", 1);
+    return files.length === 0;
 }
 
 function findMissionForCurrentEditor(): MissionFolder | undefined {
@@ -961,41 +1040,33 @@ function shorten(message: string): string {
     return message.length > 40 ? `${message.slice(0, 37)}...` : message;
 }
 
-/** Startup log: what the launcher will pass to Arma. */
-function describeWorkspace(): void {
-    const mods = workspaceMods();
-    const missions = findMissions((vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath));
+/**
+ * Reflects the game processes and the API in the status bar. Green when everything that should
+ * be connected is connected, red when Arma runs without its API, and the neutral Play action when
+ * no game is running.
+ */
+async function refreshStatus(runningState?: boolean): Promise<void> {
+    const settings = readSettings();
+    const [running, dedicatedServer, api] = await Promise.all([
+        runningState ?? refreshRunningStatus(),
+        refreshDedicatedServerStatus(),
+        readApiTarget({ name: "client", apiUrl: settings.apiUrl }, settings).catch(() => undefined)
+    ] as const);
 
-    if (mods.length === 0 && missions.length === 0) {
-        log("No Arma mod or mission found in this workspace. Open a project folder or choose Setup Example from the Play button.");
-        return;
+    // The process list is authoritative for "running": an SqfReloader API can outlive the game
+    // it was started from, so a status reply never proves that arma3_x64/arma3server_x64 runs.
+    const snapshot: StatusSnapshot = {
+        game: running,
+        dedicatedServer,
+        api: { api: api?.api === true, game: api?.game === true }
+    };
+    const presentation = statusPresentation(snapshot, settings);
+
+    if (statusBar) {
+        statusBar.command = snapshot.game ? "sqfReloader.stop" : snapshot.dedicatedServer ? "sqfReloader.stopDedicatedServer" : "sqfReloader.play";
     }
 
-    if (mods.length > 0) log(`Workspace mods: ${mods.map(mod => `${mod.name} [${mod.addons.map(addon => addon.prefix).join(", ")}]`).join(", ")}`);
-    if (missions.length > 0) log(`Workspace missions: ${missions.map(mission => `${path.basename(mission.directory)} (${mission.multiplayer ? "MP" : "SP"})`).join(", ")}`);
-}
-
-/** Reflects the live API state in the status bar; quiet when Arma is not running. */
-async function refreshStatus(): Promise<void> {
-    if (isRunning()) {
-        statusBar && (statusBar.command = "sqfReloader.stop");
-        setStatus("$(debug-stop) Stop Arma 3", false, "Stop the running Arma 3 process");
-        return;
-    }
-
-    if (statusBar) statusBar.command = "sqfReloader.play";
-    const settings: Settings = readSettings();
-    if (!hasArmaWorkspace()) {
-        setStatus("$(warning) No workspace found for Arma 3", true, "Open an Arma mod or mission, or click to set up an example workspace.");
-        return;
-    }
-
-    try {
-        const status = await getStatus(settings);
-        setStatus("$(play) Play Arma 3", false, status.gameConnected ? "Start another Arma 3 session with this mod" : "Start Arma 3 with this mod and SqfReloader");
-    } catch {
-        setStatus("$(play) Play Arma 3", false, "Start Arma 3 with this mod and SqfReloader");
-    }
+    setStatus(presentation.text, presentation.tone, presentation.tooltip);
 }
 
 // Kept exported for scripts/verify-extension.js.

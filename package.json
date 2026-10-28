@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.2.6",
+  "version": "3.5.3",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -15,6 +15,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onView:sqfReloader.projectView",
     "onStartupFinished",
     "onCommand:sqfReloader.createExample",
     "workspaceContains:**/*.sqf",
@@ -22,6 +23,24 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sqfReloader",
+          "title": "Arma 3",
+          "icon": "media/arma.svg"
+        }
+      ]
+    },
+    "views": {
+      "sqfReloader": [
+        {
+          "id": "sqfReloader.projectView",
+          "name": "Arma Project",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "sqfReloader.play",
@@ -80,6 +99,10 @@
       {
         "command": "sqfReloader.startDedicatedServer",
         "title": "SqfReloader: Start dedicated server (server.cfg)"
+      },
+      {
+        "command": "sqfReloader.stopDedicatedServer",
+        "title": "SqfReloader: Stop dedicated server"
       },
       {
         "command": "sqfReloader.setClientMod",
@@ -230,8 +253,8 @@
         "sqfReloader.armaDirectory": {
           "type": "string",
           "default": "",
-          "scope": "machine",
-          "markdownDescription": "Arma 3 installation folder (contains `arma3_x64.exe`). Leave empty to auto-detect from the registry / Steam libraries."
+          "scope": "resource",
+          "markdownDescription": "Arma 3 installation folder (contains `arma3_x64.exe`). Leave empty to auto-detect from the registry / Steam libraries. Can be set per project in `.vscode/settings.json`."
         },
         "sqfReloader.armaProfile": {
           "type": "string",
@@ -241,16 +264,52 @@
         "sqfReloader.modTypes": {
           "type": "object",
           "default": {},
-          "scope": "window",
+          "scope": "resource",
           "additionalProperties": {
             "type": "string",
             "enum": [
               "client",
               "server",
-              "both"
+              "both",
+              "off"
             ]
           },
-          "markdownDescription": "Optional mod launch roles keyed by the mod folder path relative to its workspace folder. Server mods are omitted from regular client launches and use `-serverMod` on dedicated-server launches. Unclassified mods keep the existing `-mod` behavior."
+          "markdownDescription": "Optional mod launch roles keyed by the mod folder path relative to its workspace folder. Server mods are omitted from regular client launches and use `-serverMod` on dedicated-server launches. `off` keeps a discovered folder out of the launch entirely. Unclassified mods keep the existing `-mod` behavior."
+        },
+        "sqfReloader.serverLaunchArguments": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "markdownDescription": "Additional startup arguments applied only to dedicated-server launches, e.g. `-port 2302` or `-profiles=profiles`."
+        },
+        "sqfReloader.watchInterval": {
+          "type": "integer",
+          "default": 1000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "scope": "resource",
+          "markdownDescription": "How often the project debug console reevaluates watch expressions, in milliseconds."
+        },
+        "sqfReloader.watchExpressions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "SQF expressions saved as project debug-console watches."
+        },
+        "sqfReloader.externalMods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "type": { "type": "string", "enum": ["client", "server", "both"] }
+            },
+            "required": ["path", "type"]
+          },
+          "default": [],
+          "scope": "resource",
+          "markdownDescription": "Additional local or Steam Workshop mod folders for this project. The extension passes these paths to Arma without modifying their contents."
         },
         "sqfReloader.clearArmaMissionArtifacts": {
           "type": "boolean",
@@ -262,17 +321,25 @@
           "default": true,
           "description": "Send SQF changes to Arma 3 when a file is saved."
         },
+        "sqfReloader.apiPort": {
+          "type": "integer",
+          "default": 8764,
+          "minimum": 1,
+          "maximum": 65535,
+          "markdownDescription": "Port used for client API requests."
+        },
         "sqfReloader.defaultPort": {
           "type": "integer",
           "default": 8764,
           "minimum": 1,
           "maximum": 65535,
-          "markdownDescription": "Fallback port for SqfReloader's REST server when Arma starts it without an explicit port. An explicit port in `sqfReloader.apiUrl` takes precedence."
+          "deprecationMessage": "Use sqfReloader.apiPort instead.",
+          "markdownDescription": "Deprecated. Use `sqfReloader.apiPort`."
         },
         "sqfReloader.apiUrl": {
           "type": "string",
-          "default": "http://127.0.0.1/api",
-          "description": "Base URL of the SqfReloader REST server. If no port is specified, sqfReloader.defaultPort is used."
+          "default": "http://127.0.0.1",
+          "description": "Host address of the SqfReloader REST API. The extension adds the API path and uses the configured client or server API port."
         },
         "sqfReloader.requestTimeout": {
           "type": "number",

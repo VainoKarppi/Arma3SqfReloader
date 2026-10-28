@@ -1,19 +1,19 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirectory, toArmaPath } from "./arma";
-import { getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
+import { getOutput, log, logError, readSettings, Settings } from "./settings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks, linkMissions } from "./junctions";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
 import { modTypeForDirectory } from "./modTypes";
+import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./launchMods";
 
-/** Port the configured sqfReloader.apiUrl asks for, before any fallback is applied. */
+/** Port the resolved project API URL requests, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
-    const configuredUrl = vscode.workspace.getConfiguration("sqfReloader").get<string>("apiUrl", "");
-    return configuredUrl ? parseApiUrl(configuredUrl).port : settings.defaultPort;
+    return parseApiUrl(settings.apiUrl).port;
 }
 
 export interface LaunchOptions {
@@ -37,12 +37,19 @@ export interface LaunchOptions {
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
+let dedicatedServerProcess: ReturnType<typeof spawn> | undefined;
+let externalArmaRunning = false;
+let externalDedicatedServerRunning = false;
+let runningStatusPromise: Promise<boolean> | undefined;
+let dedicatedServerStatusPromise: Promise<boolean> | undefined;
+const processStatusErrors = new Set<string>();
 let rptPoll: ReturnType<typeof setInterval> | undefined;
 let rptFile = "";
 let rptOffset = 0;
 let rptPartial = "";
 let rptErrorBlock: string[] = [];
 let rptDiagnostics: vscode.DiagnosticCollection | undefined;
+let rptReadInProgress = false;
 
 export function setRptDiagnosticCollection(collection: vscode.DiagnosticCollection): void {
     rptDiagnostics = collection;
@@ -53,6 +60,7 @@ export function setRptDiagnosticCollection(collection: vscode.DiagnosticCollecti
  * the REST API to answer. This is what a developer uses every day.
  */
 export async function launchArma(runtime: Runtime, settings: Settings, options: LaunchOptions = {}, silent = false): Promise<boolean> {
+    // A manual pick only selects the folder for this launch; sqfReloader.armaDirectory is not written.
     const armaDirectory = await findArmaDirectory(settings) ?? await pickArmaDirectory(settings);
 
     if (!armaDirectory) {
@@ -63,10 +71,6 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         }
 
         return false;
-    }
-
-    if (settings.armaDirectory !== armaDirectory) {
-        await updateSetting("armaDirectory", armaDirectory);
     }
 
     const executable = path.join(
@@ -80,7 +84,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         return false;
     }
 
-    if (!options.dedicatedServer && isRunning()) {
+    if (!options.dedicatedServer && await refreshRunningStatus()) {
         log("An Arma 3 instance is already running, so a new launch was skipped.");
         return false;
     }
@@ -88,9 +92,22 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     try {
         // Probe before starting the game: once Arma runs, its own listener owns the port, so a
         // busy 8764 (EdenOnline, an older SqfReloader instance) has to be detected up front.
-        const port = options.dedicatedServer ? undefined : await writeApiConfig(settings, true);
+        // A dedicated launch writes the config too but must not probe, because a running client
+        // already owns the port we are about to share with it.
+        if (!options.dedicatedServer) {
+            const port = await writeApiConfig(settings, true);
+            if (port !== requestedApiPort(settings)) {
+                vscode.window.setStatusBarMessage(`SqfReloader API moved to port ${port} (${requestedApiPort(settings)} is in use).`, 8000);
+            }
+        } else {
+            await writeApiConfig(settings, false);
+        }
 
-        const workspaceModsFound = workspaceMods();
+        const workspaceModsFound = workspaceMods().filter(mod => modTypeForDirectory(mod.directory) !== "off");
+        const disabledMods = workspaceMods().filter(mod => modTypeForDirectory(mod.directory) === "off");
+        if (disabledMods.length > 0) {
+            log(`Not passing these workspace mods to Arma (mod type "off"): ${disabledMods.map(mod => mod.directory).join(", ")}`);
+        }
         const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
         const clientAndSharedMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
         const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
@@ -98,30 +115,37 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         const launch = prepareRuntime(runtime, armaDirectory, settings, clientAndSharedMods, serverMods);
         launch.executable = executable;
 
+        // -mod= is the workspace mod folders plus the configured external mods. A folder that is
+        // both (very common: the workspace folder is a copy of the one in the Arma directory)
+        // used to be listed twice, e.g. "@APMS;...\@APMS", and Arma then loaded it twice.
+        const clientAndSharedDirectories = clientAndSharedMods.map(mod => mod.directory);
+        launch.mods = modFoldersOnce([
+            ...clientAndSharedDirectories,
+            ...launchModFolders(),
+            launch.modPath
+        ]);
+        launch.serverMods = modFoldersOnce([
+            ...launch.serverMods,
+            ...launchServerModFolders()
+        ]);
+
         if (options.missionFolder) {
-            const profileMissionPath = path.join(
-                launch.profile.directory,
-                options.missionFolder.multiplayer ? "MPMissions" : "Missions",
-                path.basename(options.missionFolder.directory)
-            );
-            if (path.resolve(profileMissionPath).toLowerCase() !== path.resolve(options.missionFolder.directory).toLowerCase()) {
-                const missionLinks = linkMissions(armaDirectory, launch.profile.directory, [options.missionFolder]);
-                launch.warnings.push(...missionLinks.warnings);
-                if (missionLinks.links.length === 0 && missionLinks.warnings.length > 0) {
-                    throw new Error(missionLinks.warnings[0]);
-                }
-                if (missionLinks.links.length > 0) {
-                    log(`Mission linked to Arma profile: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
-                }
+            const missionLinks = linkMissions(armaDirectory, launch.profile.directory, [options.missionFolder]);
+            launch.warnings.push(...missionLinks.warnings);
+            if (missionLinks.links.length === 0 && missionLinks.warnings.length > 0) {
+                throw new Error(missionLinks.warnings[0]);
+            }
+            if (missionLinks.links.length > 0) {
+                log(`Mission linked to Arma profile and installation: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
             }
         }
 
         const linkWarnings = verifyWorkspaceAddons(armaDirectory, workspaceAddons());
         launch.warnings.push(...linkWarnings);
         if (options.dedicatedServer && options.missionFolder) {
-            const serverMissionPath = path.join(armaDirectory, "MPMissions", `${path.basename(options.missionFolder.directory)}.pbo`);
-            if (!fs.existsSync(serverMissionPath)) {
-                throw new Error(`Dedicated server mission package was not prepared at ${serverMissionPath}.`);
+            const serverMissionPath = path.join(armaDirectory, "MPMissions", path.basename(options.missionFolder.directory));
+            if (!fs.existsSync(path.join(serverMissionPath, "mission.sqm"))) {
+                throw new Error(`Dedicated-server mission folder was not prepared at ${serverMissionPath}.`);
             }
         }
 
@@ -137,10 +161,6 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
 
         log(`-mod= entries: ${launch.mods.join(" ; ")}`);
         if (launch.serverMods.length > 0) log(`-serverMod= entries: ${launch.serverMods.join(" ; ")}`);
-
-        if (port !== undefined && port !== requestedApiPort(settings)) {
-            vscode.window.setStatusBarMessage(`SqfReloader API moved to port ${port} (${requestedApiPort(settings)} is in use).`, 8000);
-        }
 
         if (options.hostMission && options.missionFolder) {
             if (options.missionFolder.maxPlayers === undefined || options.missionFolder.maxPlayers <= 1) {
@@ -196,7 +216,7 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
 
     // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
     // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
-    armaProcess = spawn(launch.executable, args, {
+    const processHandle = spawn(launch.executable, args, {
         // Match the quoted argv[0] emitted by the working Arma Launcher command line.
         argv0: `"${launch.executable}"`,
         cwd: launch.armaDirectory,
@@ -204,15 +224,20 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
         stdio: "ignore",
         windowsVerbatimArguments: true
     });
+    if (options.dedicatedServer) dedicatedServerProcess = processHandle;
+    else armaProcess = processHandle;
 
-    log(`Launched pid ${armaProcess.pid ?? "?"}.`);
+    log(`Launched pid ${processHandle.pid ?? "?"}.`);
     startRptMonitor();
 
-    armaProcess.on("error", error => logError("arma3_x64.exe could not be started", error));
-    armaProcess.on("exit", (code, signal) => {
-        log(`Arma 3 exited (${signal ?? code ?? "?"}).`);
-        cleanupSnapshots(launch.armaDirectory);
-        armaProcess = undefined;
+    processHandle.on("error", error => logError(`${path.basename(launch.executable)} could not be started`, error));
+    processHandle.on("exit", (code, signal) => {
+        log(`${path.basename(launch.executable)} exited (${signal ?? code ?? "?"}).`);
+        if (options.dedicatedServer) dedicatedServerProcess = undefined;
+        else {
+            cleanupSnapshots(launch.armaDirectory);
+            armaProcess = undefined;
+        }
     });
 }
 
@@ -224,51 +249,66 @@ export function startRptMonitor(): void {
     rptPartial = "";
     rptErrorBlock = [];
     rptPoll = setInterval(() => {
-        try {
-            const files = fs.readdirSync(armaLogDirectory())
-                .filter(name => /^arma3_x64_.*\.rpt$/i.test(name))
-                .map(name => path.join(armaLogDirectory(), name))
-                .filter(file => fs.statSync(file).isFile())
-                .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-            const latest = files[0];
-            if (!latest) return;
-            if (latest !== rptFile) {
-                rptFile = latest;
-                // Start at the end of an already-existing RPT. It can contain results and
-                // diagnostics from a previous VS Code/Arma session; replaying those makes an
-                // old "Run in Arma" result appear as soon as the extension activates.
-                rptOffset = fs.statSync(rptFile).size;
-                rptPartial = "";
-                rptErrorBlock = [];
-                return;
+        if (rptReadInProgress) return;
+        rptReadInProgress = true;
+        void pollRptFile().catch(error => {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                logError("could not read the Arma RPT file", error);
             }
-            const stat = fs.statSync(rptFile);
-            if (stat.size < rptOffset) {
-                // Arma may recreate or truncate the current log. Treat its current contents
-                // as the new baseline for the same reason as a newly discovered file.
-                rptOffset = stat.size;
-                rptPartial = "";
-                rptErrorBlock = [];
-                return;
-            }
-            if (stat.size === rptOffset) return;
-            // Keep the RPT descriptor open only for the duration of this read.
-            const fd = fs.openSync(rptFile, "r");
-            const buffer = Buffer.alloc(stat.size - rptOffset);
-            try {
-                fs.readSync(fd, buffer, 0, buffer.length, rptOffset);
-            } finally {
-                fs.closeSync(fd);
-            }
-            rptOffset = stat.size;
-            const lines = (rptPartial + buffer.toString("utf8")).split(/\r?\n/);
-            rptPartial = lines.pop() ?? "";
-            for (const line of lines) consumeRptLine(line);
-        } catch {
-            // The log may not exist until Arma starts; retry on the next poll.
-        }
+        }).finally(() => {
+            rptReadInProgress = false;
+        });
     }, 1000);
     rptPoll.unref?.();
+}
+
+async function pollRptFile(): Promise<void> {
+    const names = await fs.promises.readdir(armaLogDirectory());
+    const files = await Promise.all(names
+        .filter(name => /^arma3_x64_.*\.rpt$/i.test(name))
+        .map(async name => {
+            const file = path.join(armaLogDirectory(), name);
+            try {
+                const stat = await fs.promises.stat(file);
+                return stat.isFile() ? { file, modified: stat.mtimeMs } : undefined;
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+                throw error;
+            }
+        }));
+    const latest = files
+        .filter((entry): entry is { file: string; modified: number } => !!entry)
+        .sort((left, right) => right.modified - left.modified)[0]?.file;
+    if (!latest) return;
+    if (latest !== rptFile) {
+        rptFile = latest;
+        // Skip existing output so previous-session diagnostics are not replayed on activation.
+        const stat = await fs.promises.stat(rptFile);
+        rptOffset = stat.size;
+        rptPartial = "";
+        rptErrorBlock = [];
+        return;
+    }
+    const stat = await fs.promises.stat(rptFile);
+    if (stat.size < rptOffset) {
+        rptOffset = stat.size;
+        rptPartial = "";
+        rptErrorBlock = [];
+        return;
+    }
+    if (stat.size === rptOffset) return;
+    const handle = await fs.promises.open(rptFile, "r");
+    let buffer: Buffer;
+    try {
+        buffer = Buffer.alloc(stat.size - rptOffset);
+        await handle.read(buffer, 0, buffer.length, rptOffset);
+    } finally {
+        await handle.close();
+    }
+    rptOffset = stat.size;
+    const lines = (rptPartial + buffer.toString("utf8")).split(/\r?\n/);
+    rptPartial = lines.pop() ?? "";
+    for (const line of lines) consumeRptLine(line);
 }
 
 export function stopRptMonitor(): void {
@@ -388,7 +428,10 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
         args.push(`-config="${config}"`);
     }
 
-    const extra = options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments);
+    const serverExtraArguments = options.dedicatedServer
+        ? parseExtraArguments(vscode.workspace.getConfiguration("sqfReloader").get<string>("serverLaunchArguments", ""))
+        : [];
+    const extra = [...(options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments)), ...serverExtraArguments];
     const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
 
     // BattlEye cannot load unsigned extensions, so it is off unless the user asks for it.
@@ -423,12 +466,14 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
 
     // Arma expects the whole -mod value quoted as one argument, with semicolons separating
     // paths inside it. Quoting each path separately makes Arma ignore the startup scenario.
-    if (launch.mods.length > 0) {
-        args.push(`"-mod=${launch.mods.map(uppercaseDriveLetter).join(";")}"`);
+    const mods = launch.mods;
+    if (mods.length > 0) {
+        args.push(`"-mod=${mods.map(uppercaseDriveLetter).join(";")}"`);
     }
 
-    if (options.dedicatedServer && launch.serverMods.length > 0) {
-        args.push(`"-serverMod=${launch.serverMods.map(uppercaseDriveLetter).join(";")}"`);
+    const serverMods = launch.serverMods;
+    if (options.dedicatedServer && serverMods.length > 0) {
+        args.push(`"-serverMod=${serverMods.map(uppercaseDriveLetter).join(";")}"`);
     }
 
     if (options.mission) {
@@ -441,6 +486,7 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
 function uppercaseDriveLetter(value: string): string {
     return value.replace(/^([a-z]):/i, (_match, drive: string) => `${drive.toUpperCase()}:`);
 }
+
 
 function withoutProfileName(argumentsList: string[]): string[] {
     const result: string[] = [];
@@ -485,24 +531,114 @@ export function isRunning(): boolean {
         return true;
     }
 
-    if (process.platform !== "win32") {
-        return false;
+    return externalArmaRunning;
+}
+
+export function refreshRunningStatus(): Promise<boolean> {
+    if (armaProcess && !armaProcess.killed) return Promise.resolve(true);
+    if (process.platform !== "win32") return Promise.resolve(false);
+    if (runningStatusPromise) return runningStatusPromise;
+
+    runningStatusPromise = new Promise(resolve => {
+        void queryProcessImage("arma3_x64.exe").then(running => {
+            externalArmaRunning = running;
+            runningStatusPromise = undefined;
+            resolve(externalArmaRunning);
+        }, error => {
+            reportProcessStatusError("arma3_x64.exe", "could not check whether Arma 3 is running", error);
+            runningStatusPromise = undefined;
+            resolve(externalArmaRunning);
+        });
+    });
+    return runningStatusPromise;
+}
+
+export function refreshDedicatedServerStatus(): Promise<boolean> {
+    if (dedicatedServerProcess && !dedicatedServerProcess.killed) return Promise.resolve(true);
+    if (process.platform !== "win32") return Promise.resolve(false);
+    if (dedicatedServerStatusPromise) return dedicatedServerStatusPromise;
+
+    dedicatedServerStatusPromise = new Promise(resolve => {
+        void queryProcessImage("arma3server_x64.exe").then(running => {
+            externalDedicatedServerRunning = running;
+            dedicatedServerStatusPromise = undefined;
+            resolve(externalDedicatedServerRunning);
+        }, error => {
+            reportProcessStatusError("arma3server_x64.exe", "could not check whether the dedicated server is running", error);
+            dedicatedServerStatusPromise = undefined;
+            resolve(externalDedicatedServerRunning);
+        });
+    });
+    return dedicatedServerStatusPromise;
+}
+
+function queryProcessImage(imageName: string): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+        execFile("tasklist", ["/FI", `IMAGENAME eq ${imageName}`, "/FO", "CSV", "/NH"], { timeout: 2000 }, (error, stdout, stderr) => {
+            if (!error) {
+                processStatusErrors.delete(imageName);
+                resolve(stdout.toLowerCase().includes(imageName.toLowerCase()));
+                return;
+            }
+
+            const tasklistError = [error.message, stderr?.trim()].filter(Boolean).join("\n");
+            const processName = imageName.replace(/\.exe$/i, "");
+            const command = `(Get-Process -Name '${processName}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName) -join '\n'`;
+            execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 3000 }, (fallbackError, fallbackStdout, fallbackStderr) => {
+                if (!fallbackError) {
+                    processStatusErrors.delete(imageName);
+                    resolve(fallbackStdout.toLowerCase().includes(processName.toLowerCase()));
+                    return;
+                }
+
+                reject(new Error(
+                    `tasklist failed: ${tasklistError}; PowerShell fallback failed: ${fallbackError.message}${fallbackStderr ? ` (${fallbackStderr.trim()})` : ""}`
+                ));
+            });
+        });
+    });
+}
+
+function reportProcessStatusError(imageName: string, message: string, error: unknown): void {
+    if (processStatusErrors.has(imageName)) return;
+    processStatusErrors.add(imageName);
+    logError(message, error);
+}
+
+export async function stopDedicatedServer(): Promise<boolean> {
+    // A handle that outlived its process would otherwise make kill() look like success.
+    if (dedicatedServerProcess && (dedicatedServerProcess.killed || dedicatedServerProcess.exitCode !== null)) {
+        dedicatedServerProcess = undefined;
+        externalDedicatedServerRunning = false;
     }
 
-    // Localised hint that tasklist prints when no matching process exists.
-    const noTaskLine = "INFO: No tasks";
-
-    try {
-        const output = require("child_process").execSync('tasklist /FI "IMAGENAME eq arma3_x64.exe" /FO CSV /NH', { encoding: "utf8" });
-
-        if (!output.includes("arma3_x64.exe") && !output.includes(noTaskLine)) {
-            log(`tasklist output: ${output.split(/\r?\n/).slice(0, 3).join(" | ")}`);
+    if (dedicatedServerProcess && !dedicatedServerProcess.killed) {
+        const processHandle = dedicatedServerProcess;
+        const stopped = await new Promise<boolean>(resolve => {
+            const timeout = setTimeout(() => resolve(false), 2000);
+            processHandle.once("exit", () => {
+                clearTimeout(timeout);
+                resolve(true);
+            });
+            processHandle.kill();
+            timeout.unref();
+        });
+        if (stopped) {
+            dedicatedServerProcess = undefined;
+            externalDedicatedServerRunning = false;
+            return true;
         }
-
-        return output.includes("arma3_x64.exe");
-    } catch {
-        return false;
     }
+
+    if (process.platform !== "win32") return false;
+    await new Promise<void>((resolve, reject) => {
+        execFile("taskkill", ["/IM", "arma3server_x64.exe", "/F"], { timeout: 5000 }, error => {
+            if (error && (error as NodeJS.ErrnoException).code !== "ESRCH") reject(error);
+            else resolve();
+        });
+    });
+    externalDedicatedServerRunning = false;
+    return true;
 }
 
 /**

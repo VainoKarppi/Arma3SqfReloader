@@ -54,7 +54,7 @@ export async function configureMissionArtifactCleanup(settings: Settings): Promi
     void removeMissionArtifacts();
     // Keep this independent of Arma's close cleanup: preview artifacts are removed during
     // the session, while the existing close handler continues to clean SqfReloader snapshots.
-    scanTimer = setInterval(() => void removeMissionArtifacts(), 500);
+    scanTimer = setInterval(() => void removeMissionArtifacts(), 2000);
 }
 
 export function stopMissionArtifactCleanup(): void {

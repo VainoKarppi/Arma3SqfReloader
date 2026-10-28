@@ -175,7 +175,11 @@ console.log(`  args: ${cmdArgs.join(" ")}`);
 
 check("starts with -filePatching", cmdArgs[0] === "-filePatching", cmdArgs[0]);
 check("BattlEye disabled", cmdArgs.includes("-noBattlEye"));
-check("-mod= quotes every entry", cmdArgs.some(value => /^-mod=".+"(;"".+")*$/.test(value)), cmdArgs.find(value => value.startsWith("-mod=")));
+// One quoted -mod="a;b" argument: the semicolons are inside the quotes, the paths are not
+// quoted individually (quoting each path makes Arma ignore the startup scenario).
+check("-mod= is one quoted argument (quotes wrap all paths, ; separated)",
+    cmdArgs.some(value => value.startsWith('"-mod=') && value.endsWith('"') && !value.slice(1, -1).includes('"')),
+    cmdArgs.find(value => value.startsWith('"-mod=')));
 check("does not inject a -init startup parameter", !cmdArgs.some(value => /^-init(?:=|$)/i.test(value)), cmdArgs.find(value => value.startsWith("-init")));
 
 if (mods.length > 0) {

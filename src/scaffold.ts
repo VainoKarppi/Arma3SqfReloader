@@ -1175,12 +1175,15 @@ systemChat format ["OnPlayerRespawn.sqf ran for %1", name _newUnit];
 
 function vscodeSettings(): string {
     return `{
-    // Set this when Arma 3 is not detected automatically (folder with arma3_x64.exe).
-    "sqfReloader.armaDirectory": "",
+    // Arma 3 is detected automatically from the registry / Steam libraries on load; set
+    // "sqfReloader.armaDirectory" here only to pin a specific installation.
     // Set a profile name to choose it; leave empty to use the most recently updated profile.
     "sqfReloader.armaProfile": "",
-    // Fallback REST port used when Arma starts SqfReloader without an explicit port.
-    "sqfReloader.defaultPort": 8764,
+    // API host. The extension adds /api and uses the port below for every Arma instance
+    // (client, editor, hosted mission and dedicated server).
+    "sqfReloader.apiUrl": "http://127.0.0.1",
+    // SqfReloader API port.
+    "sqfReloader.apiPort": 8764,
     // Maximum seconds to wait for Run in Arma to return an SQF value.
     "sqfReloader.runTimeout": 30,
     // Remove Arma-generated ~Mission.World preview folders from the active profile.
@@ -1191,7 +1194,11 @@ function vscodeSettings(): string {
     "sqfReloader.modTypes": {
         "server-example/@ExampleServerMod": "server"
     },
-    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window"
+    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
+    "sqfReloader.serverLaunchArguments": "",
+    "sqfReloader.watchInterval": 1000,
+    "sqfReloader.watchExpressions": [],
+    "sqfReloader.externalMods": []
 }
 `;
 }

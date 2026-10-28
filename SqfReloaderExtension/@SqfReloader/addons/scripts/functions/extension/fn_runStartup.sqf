@@ -31,6 +31,16 @@ if (_message == "") exitWith {
 
 ["ApiSetLogLevel", [_logLevel]] call SqfReloader_fnc_call;
 
+// Always announce the resolved endpoint: the port can differ from config.json when another
+// process already holds it and the DLL falls back to the next free one.
+private _apiMessage = ["ApiUrl", []] call SqfReloader_fnc_call;
+private _apiUrl = if (_apiMessage isEqualType "") then {""} else {str (_apiMessage param [0, ""])};
+private _apiPort = ["ApiPort", []] call SqfReloader_fnc_call;
+private _apiPortNumber = if (_apiPort isEqualType 0) then {_apiPort} else {parseNumber str (_apiPort param [0, 0])};
+
+if (_apiUrl == "") then {_apiUrl = format ["http://127.0.0.1:%1/api/", _apiPortNumber]};
+diag_log format ["[SqfReloader] REST API port %1 (%2) - the VS Code extension connects to %3", _apiPortNumber, _message, _apiUrl];
+
 if (_logLevel == "verbose") then {
     diag_log format ["[SqfReloader] startup: %1", _message];
 };

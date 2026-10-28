@@ -228,8 +228,8 @@ function registerLinks(armaDirectory: string, links: Link[]): void {
  * Links the workspace missions into `<Arma 3>\Missions` and `<Arma 3>\MPMissions` so they show
  * up in the editor's mission lists without copying.
  *
- * A mission from an `mpmissions` folder is linked into `MPMissions` only; a single-player
- * mission goes to both (Arma lists `Missions` for single player and both are valid for hosting).
+ * Missions are linked into both the selected profile and the Arma install root. A mission from
+ * an `mpmissions` folder is linked into `MPMissions` only; a single-player mission goes to both.
  *
  * These are plain directory junctions created here (not registered in the link registry):
  * unlike the addon links they are re-done on every launch, and the registry is what
@@ -238,6 +238,8 @@ function registerLinks(armaDirectory: string, links: Link[]): void {
 export function linkMissions(armaDirectory: string, profileDirectory: string, missions: MissionFolder[]): LinkResult {
     const links: Link[] = [];
     const warnings: string[] = [];
+    const destinationRoots = [...new Map([profileDirectory, armaDirectory]
+        .map(directory => [path.resolve(directory).toLowerCase(), directory])).values()];
 
     // A mission is mounted under its folder name (example.Altis), so two workspaces missions
     // with the same name would fight over the same link. Multiplayer missions win, because
@@ -255,29 +257,22 @@ export function linkMissions(armaDirectory: string, profileDirectory: string, mi
 
         const folders = mission.multiplayer ? ["MPMissions"] : MISSION_FOLDERS;
 
-        for (const folder of folders) {
-            const linkPath = path.join(profileDirectory, folder, name);
+        for (const root of destinationRoots) {
+            for (const folder of folders) {
+                const linkPath = path.join(root, folder, name);
 
-            if (!mission.multiplayer && folder === "MPMissions" && multiplayerNames.has(name.toLowerCase())) {
-                continue;
-            }
+                if (!mission.multiplayer && folder === "MPMissions" && multiplayerNames.has(name.toLowerCase())) {
+                    continue;
+                }
+                if (path.resolve(linkPath).toLowerCase() === path.resolve(mission.directory).toLowerCase()) {
+                    continue;
+                }
 
-            const link = ensureDirectoryLink(linkPath, mission.directory, warnings, true);
+                const link = ensureDirectoryLink(linkPath, mission.directory, warnings, true);
 
-            if (link) {
-                links.push(link);
-            }
-        }
-
-        // Older versions linked workspace missions into the Arma install folder. Remove only
-        // those known links that still point at this workspace mission.
-        for (const folder of mission.multiplayer ? ["MPMissions"] : MISSION_FOLDERS) {
-            const oldPath = path.join(armaDirectory, folder, name);
-            const newPath = path.join(profileDirectory, folder, name);
-            if (path.resolve(oldPath).toLowerCase() === path.resolve(newPath).toLowerCase()) continue;
-            const oldTarget = readLinkTarget(oldPath);
-            if (oldTarget && path.resolve(oldTarget).toLowerCase() === path.resolve(mission.directory).toLowerCase()) {
-                removeLink(oldPath);
+                if (link) {
+                    links.push(link);
+                }
             }
         }
     }

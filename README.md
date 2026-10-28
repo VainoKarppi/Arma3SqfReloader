@@ -80,8 +80,24 @@ Right-click a mod folder in the Explorer and choose **Arma 3: Set folder as Clie
 **Server Mod**, or **Shared Mod**. The selection is saved in the workspace's `.vscode/settings.json`
 under `sqfReloader.modTypes`, keyed by the folder's path relative to the workspace root. A server
 mod is left out of normal Arma launches and is passed as `-serverMod` when starting a dedicated
-server. Client, shared, and unclassified folders use `-mod`; unclassified mods retain the
-extension's previous behavior. **Clear Mod Type** removes an explicit assignment.
+server directly from its workspace folder; it is not copied into the Arma installation. Client,
+shared, and unclassified folders use `-mod`; unclassified mods retain the extension's previous
+behavior. **Clear Mod Type** removes an explicit assignment.
+
+Every mod folder reaches Arma exactly once: a folder that is both a workspace mod and a configured
+external mod (`sqfReloader.externalMods`), which is common when the workspace folder is a copy of
+the one in the Arma directory, is listed once in `-mod=` instead of twice, so the game and the
+dedicated server no longer load the same PBOs twice.
+
+Mods the extension discovers in the workspace are listed in the project settings panel together
+with their launch role, including unclassified ones, so a folder it picked up on its own is always
+visible. Set the role to **Not launched** (`"off"` in `sqfReloader.modTypes`) to keep a discovered
+folder out of `-mod=`/`-serverMod=` entirely, for example an unpacked server source tree that Arma
+itself reports as `GAME DIR (Empty)`.
+
+Workspace missions are junctioned into both the selected profile and the Arma installation's
+`Missions` / `MPMissions` folders, so dedicated servers can resolve mission directories without
+copying them.
 
 The role is a launch choice, not an automatic analysis of `config.cpp`. Mod folders should
 normally contain a root `addons` directory. Missing `mod.cpp` is not an error; if no PBO is found
@@ -89,10 +105,13 @@ under `addons`, the folder may still be an unpacked development mod and the exte
 assigning it.
 
 Right-click any `.cfg` file and choose **SqfReloader: Start dedicated server**. A real
-`hostname = ...` assignment (not a comment or a substring) identifies likely server configs.
-Configs without one can still be started after confirming the manual override. Before launching,
-the extension displays the exact command and asks for confirmation. This starts
-`arma3server_x64.exe`; a hosted player session remains a separate `-host` mission action.
+`hostname = ...` assignment (not a comment or a substring) identifies server configs: the file
+picker lists only those, and a single match (for example `server.cfg`) is started right away.
+Running the command without a `.cfg` file announces that no server config was found. A `.cfg`
+without a `hostname` assignment can only be started by picking that file explicitly, after
+confirming the manual override. Before launching, the extension displays the exact command and
+asks for confirmation. This starts `arma3server_x64.exe`; a hosted player session remains a
+separate `-host` mission action.
 
 Use **SqfReloader: Reload and restart mission functions** from the Command Palette while a
 file inside the mission is active and that mission is running in Arma. It terminates running SQF
@@ -123,6 +142,45 @@ output and as VS Code diagnostics.
 Right-click an `.sqf` file and choose **Run in Arma** to execute it with no arguments, or
 **Run in Arma With Parameters** to enter an SQF array such as `[1, 1]`. The returned value is
 shown in the **Arma 3 SQF Reloader** output channel.
+
+## Arma Project view
+
+Open the **Arma 3** icon in the Activity Bar for project settings, Host Mission, Debug Console, and
+connection status. Use the existing bottom status-bar control to start or stop Arma 3. The
+settings action opens a dedicated project settings management tab for launch options, reload
+behavior, and workspace or external mod roles. Changes are saved to the workspace's
+`.vscode/settings.json`; if that file does not exist, the extension asks before creating it.
+
+The status line reports `Game`, `Client API`, `Server API`, and the dedicated server, each with a
+green dot when it is up and a red one when it is down, for example
+`Game: Stopped · Client API: Connected · Server API: Stopped · Dedicated Server: Stopped`.
+The status-bar control is green when everything that should be connected is connected, red when
+Arma 3 runs without its SQF Reloader API, and shows a spinner while waiting for the game callback.
+When the game (or a dedicated server) connects, the extension writes the endpoint and port to the
+**Arma 3 SQF Reloader** output channel, and the mod logs the same port to the RPT:
+
+```text
+[SqfReloader] REST API port 8764 (REST API listening on http://127.0.0.1:8764/api/) - the VS Code extension connects to http://127.0.0.1:8764/api/
+```
+
+The port comes from `sqfReloader.apiUrl` / `sqfReloader.apiPort` in `settings.json` and is written
+to `%LOCALAPPDATA%\SqfReloader\config.json`, which the DLL reads. **Every Arma instance uses that
+one port**: the game, the Eden editor, a hosted mission and the dedicated server all bind it, so
+there is no separate server port to keep in sync. When the port is taken the DLL falls back to the
+next free one and the startup line shows the port actually used.
+
+A status reply never makes the extension claim that a game is running. `Game` and
+`Dedicated Server` follow the real `arma3_x64.exe` / `arma3server_x64.exe` process, so a leftover
+API from a crashed or closed server is reported as `API ... Connected` with
+`Dedicated Server: Stopped`, and the panel keeps showing **Start Dedicated Server**.
+
+The Debug Console opens in an editor tab and includes SQF execution, watch expressions, and latest
+RPT controls and output. Live RPT monitoring is enabled by default while the Debug Console tab is
+open and can be paused with its checkbox. Execution and watches always go to the Arma instance
+that owns the SqfReloader API (the local game); there is no target selector. The API accepts
+arbitrary SQF execution; never expose it to an untrusted network.
+Watch expressions are refreshed every 1000 ms by default (configurable from 1000 to 60000 ms) and
+are evaluated in one SQF batch by `SqfReloader_fnc_evalWatch`.
 
 ## Commands
 
@@ -201,10 +259,10 @@ server-side timeout.
 
 | Setting | Purpose |
 | --- | --- |
-| `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection. |
+| `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection: the folder is read once from the registry / Steam libraries when the extension loads and kept in memory for the session, so nothing is written back to this setting. Set it only to pin a specific install. |
 | `sqfReloader.enabled` | Enable or disable reload on save. |
-| `sqfReloader.defaultPort` | Fallback REST server port when Arma starts SqfReloader without an explicit port. Default: `8764`. |
-| `sqfReloader.apiUrl` | SqfReloader API address. If its URL omits a port, `defaultPort` is used. An explicit URL port takes precedence. |
+| `sqfReloader.apiUrl` | SqfReloader API host address. The extension adds the API path and uses `sqfReloader.apiPort`. Default: `http://127.0.0.1`. |
+| `sqfReloader.apiPort` | SqfReloader API port, used by every Arma instance (client, editor, hosted mission, dedicated server). Default: `8764`. |
 | `sqfReloader.runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
 | `sqfReloader.logLevel` | Output verbosity: `error`, `warning`, `info` (default), or `verbose`. Verbose includes Arma function registration diagnostics; change it live in `settings.json`. |
 | `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
@@ -213,7 +271,7 @@ server-side timeout.
 ## Troubleshooting
 
 **The extension cannot find Arma.** Set `sqfReloader.armaDirectory` to the folder containing
-`arma3_x64.exe`.
+`arma3_x64.exe`. Leave it empty to keep the automatic detection (registry / Steam libraries).
 
 **The game is running but the extension is waiting.** Open a mission in Eden once. SqfReloader
 starts its API when the editor initializes; the extension will inject the initial functions

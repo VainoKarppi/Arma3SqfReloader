@@ -60,6 +60,8 @@ internal static class RestApiServer {
             if (!string.IsNullOrEmpty(config.SourceDirectory) && System.IO.Directory.Exists(config.SourceDirectory))
                 ReloadPlugin.SourceDirectory = config.SourceDirectory;
 
+            // One port for every Arma instance: client, editor, hosted mission and dedicated
+            // server all use sqfReloader.apiPort, so the extension never has to guess.
             if (!CanBind(config.Host, config.Port, out string reason)) {
                 ArmaLog.Error($"API port {config.Host}:{config.Port} is already taken ({reason}); trying the next free port.");
                 int fallback = FindFreePort(config.Host, config.Port);
@@ -137,6 +139,7 @@ internal static class RestApiServer {
         }
     }
 
+    /// <summary>Port this instance uses from config.json.</summary>
     private static int DefaultListeningPort() => ApiConfig.Load().Port;
 
     /// <summary>
