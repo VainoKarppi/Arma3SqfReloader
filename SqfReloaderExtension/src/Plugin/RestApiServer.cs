@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
@@ -17,6 +18,8 @@ namespace SqfReloader;
 /// on the game thread.
 ///
 /// Routes (prefix <c>/api</c>):
+///   GET  /api              documentation page in a browser, status JSON otherwise
+///   GET  /api/docs         documentation page
 ///   POST /api/command      EdenOnline compatible: {"type":"code"|"recompile","code":"...","method":"..."}
 ///   POST /api/send         {"function":"MyFn","data":[...display formats...]}
 ///   POST /api/eval         {"code":"1 + 1","timeoutMs":30000} (waits for an SQF result)
@@ -220,7 +223,18 @@ internal static class RestApiServer {
             string path = (context.Request.Url?.AbsolutePath ?? "/").TrimEnd('/').ToLowerInvariant();
             string method = context.Request.HttpMethod.ToUpperInvariant();
 
-            if (method == "GET" && (path == "/api/status" || path == "/api")) {
+            if (method == "GET" && (path == "/api" || path == "/api/docs")) {
+                if (path == "/api/docs" || WantsHtml(context.Request)) {
+                    bool gameAvailable;
+                    unsafe { gameAvailable = ArmaHost.Callback != null; }
+                    await RespondHtml(context, 200, ApiDocs.Page(Url, ExtensionHost.Version, ArmaLog.CurrentLogLevel.ToString(), gameAvailable, ArmaLog.LogDirectory));
+                } else {
+                    await Respond(context, 200, StatusPayload());
+                }
+                return;
+            }
+
+            if (method == "GET" && path == "/api/status") {
                 await Respond(context, 200, StatusPayload());
                 return;
             }
@@ -266,7 +280,7 @@ internal static class RestApiServer {
                     return;
                 }
                 default:
-                    await Respond(context, 404, Error($"Unknown route '{path}'. See GET /api/status."));
+                    await Respond(context, 404, Error($"Unknown route '{path}'. Open {Url} for the API documentation."));
                     return;
             }
         } catch (Exception ex) {
@@ -357,6 +371,8 @@ internal static class RestApiServer {
             ["logLevel"] = ArmaLog.CurrentLogLevel.ToString(),
             ["logDirectory"] = ArmaLog.LogDirectory,
             ["endpoints"] = new object?[] {
+                "GET /api (documentation page; status JSON without an HTML accept header)",
+                "GET /api/docs (documentation page)",
                 "POST /api/command {type: code|recompile, code, method?}",
                 "POST /api/send {function, data}",
                 "POST /api/eval {code, timeoutMs} (returns the SQF result)",
@@ -478,6 +494,21 @@ internal static class RestApiServer {
 
         // BOM-prefixed bodies are common when a script writes files with Out-File.
         return body.TrimStart('\uFEFF');
+    }
+
+    /// <summary>A browser sends <c>Accept: ...text/html...</c>; scripts and curl do not.</summary>
+    private static bool WantsHtml(HttpListenerRequest request) =>
+        request.AcceptTypes?.Any(type => type.Contains("text/html", StringComparison.OrdinalIgnoreCase)) == true;
+
+    private static async Task RespondHtml(HttpListenerContext context, int status, string html) {
+        byte[] bytes = Encoding.UTF8.GetBytes(html);
+
+        context.Response.StatusCode = status;
+        context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+
+        await context.Response.OutputStream.WriteAsync(bytes);
     }
 
     private static async Task Respond(HttpListenerContext context, int status, Dictionary<string, object?> payload) {

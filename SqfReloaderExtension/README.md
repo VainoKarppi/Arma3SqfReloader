@@ -17,10 +17,14 @@ EdenOnline's scripts (extension call -> callback -> dispatch), it shares no code
 | POST | `/api/reload` | `{"functions":["MyTag_fnc_one"]}` or `{}` - recompiles `fn_*.sqf` from disk |
 | POST | `/api/source` | `{"directory":"...\\@SqfReloader\\source"}` - points the DLL at the SQF sources |
 | POST | `/api/log` | `{"level":"debug"}` |
+| GET | `/api` | documentation page in a browser, status JSON otherwise |
+| GET | `/api/docs` | documentation page |
 | GET | `/api/status` | - |
 | GET | `/api/functions` | - |
 
 Default endpoint: `http://127.0.0.1:8764/api/` (config: `%LOCALAPPDATA%\SqfReloader\config.json`).
+Opening that URL in a browser shows the generated API documentation; scripts that do not send an
+HTML `Accept` header keep receiving the status JSON.
 
 ## Quick start
 

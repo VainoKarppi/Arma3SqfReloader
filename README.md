@@ -151,12 +151,13 @@ settings action opens a dedicated project settings management tab for launch opt
 behavior, and workspace or external mod roles. Changes are saved to the workspace's
 `.vscode/settings.json`; if that file does not exist, the extension asks before creating it.
 
-The status line reports `Game`, `API`, and the dedicated server. Each row shows a green dot when it
-is up, a blue one while its `.exe` is running but Arma has not connected to the SqfReloader API
-yet (`Starting...`), and a red one when it is down, for example
-`Game: Running · API: Connected · Dedicated Server: Stopped`.
-The status-bar control is green when everything that should be connected is connected, red when
-Arma 3 runs without its SQF Reloader API, and shows a spinner while waiting for the game callback.
+The status line reports `Game`, the dedicated server, and the API (last). Each row shows a green dot
+when it is up, a blue one while its `.exe` is running but Arma has not connected to the SqfReloader
+API yet (`Starting...`), and a red one when it is down, for example
+`Game: Running · Dedicated Server: Stopped · API: Running`.
+The status-bar control is green when everything that should be connected is connected, shows a
+spinner while Arma 3 or the dedicated server is starting or waiting for the game callback, and
+turns red only when the API is still missing after that startup period.
 When the game (or a dedicated server) connects, the extension writes the endpoint and port to the
 **Arma 3 SQF Reloader** output channel, and the mod logs the same port to the RPT:
 
@@ -203,6 +204,11 @@ example project.
 The local REST API can also be called directly, without VS Code. Start Arma with `@SqfReloader`
 and wait until its API is listening. By default the address is `http://127.0.0.1:8764/api`; use
 the port shown by **SqfReloader: Check connection** or in the Arma `.rpt` if it changed.
+
+Open `http://127.0.0.1:8764/api` in a browser to read the generated API documentation: version,
+live Arma callback state, every endpoint with its body and result, and ready-to-copy
+`curl`/PowerShell examples. Requests without an HTML `Accept` header still get the status JSON, so
+existing scripts are unaffected.
 
 Query the running extension and the functions it can reload:
 
