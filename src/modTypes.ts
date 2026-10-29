@@ -52,6 +52,8 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
+    // An addons folder with loose sources and no PBOs is a normal unpacked development mod, so it
+    // is saved without a confirmation. Only a folder without addons/ at all asks first.
     if (type && type !== "off" && !hasAddonsDirectory) {
         const proceed = await vscode.window.showWarningMessage(
             `${path.basename(directory)} has no root addons folder and does not look like a conventional Arma mod. Assign a launch type anyway?`,
@@ -59,13 +61,6 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
             "Assign Anyway"
         );
         if (proceed !== "Assign Anyway") return;
-    } else if (type && type !== "off" && !containsPbo(addonsPath)) {
-        const proceed = await vscode.window.showWarningMessage(
-            `${path.basename(directory)} has no PBO files under addons. It may be an unpacked development mod; mod.cpp is optional.`,
-            { modal: true },
-            "Continue"
-        );
-        if (proceed !== "Continue") return;
     }
 
     const configuration = vscode.workspace.getConfiguration("sqfReloader", workspace.uri);
@@ -106,22 +101,6 @@ function workspaceForDirectory(directory: string): vscode.WorkspaceFolder | unde
 
 function relativeModPath(workspaceDirectory: string, directory: string): string {
     return path.relative(workspaceDirectory, path.resolve(directory)).replace(/\\/g, "/") || ".";
-}
-
-function containsPbo(directory: string): boolean {
-    let entries: fs.Dirent[];
-    try {
-        entries = fs.readdirSync(directory, { withFileTypes: true });
-    } catch (error) {
-        log(`Could not inspect ${directory}: ${error instanceof Error ? error.message : String(error)}`);
-        return false;
-    }
-
-    return entries.some(entry => {
-        const entryPath = path.join(directory, entry.name);
-        if (entry.isFile()) return /\.pbo$/i.test(entry.name);
-        return entry.isDirectory() && containsPbo(entryPath);
-    });
 }
 
 function isModType(value: unknown): value is ModType {

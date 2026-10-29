@@ -81,8 +81,12 @@ internal static class SimpleSerializer {
             char c = text[i];
 
             if (inString) {
-                if (c == '\\') { i++; continue; }
-                if (c == '"') inString = false;
+                // Backslashes are literal characters in SQF strings; only a doubled quote keeps
+                // the string open.
+                if (c == '"') {
+                    if (i + 1 < text.Length && text[i + 1] == '"') { i++; continue; }
+                    inString = false;
+                }
                 continue;
             }
 
@@ -119,9 +123,9 @@ internal static class SimpleSerializer {
         for (int i = 1; i < text.Length - 1; i++) {
             char c = text[i];
 
-            if (c == '\\' && i + 1 < text.Length - 1) {
-                sb.Append(text[++i]);
-            } else if (c == '"' && i + 1 < text.Length - 1 && text[i + 1] == '"') {
+            // SQF escapes a quote by doubling it; backslashes are literal (also in paths), so they
+            // must not be treated as escape characters here.
+            if (c == '"' && i + 1 < text.Length - 1 && text[i + 1] == '"') {
                 i++;
                 sb.Append('"');
             } else {

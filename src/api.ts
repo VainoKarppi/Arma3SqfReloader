@@ -103,6 +103,8 @@ export interface CommandResult {
     count?: number;
     functions?: unknown;
     result?: unknown;
+    /** SQF `str` output for /api/eval, e.g. "[[B Alpha 1-1,O Alpha 1-1]]". */
+    text?: string;
 }
 
 export async function reloadFunctions(settings: Settings, variables: string[]): Promise<CommandResult> {

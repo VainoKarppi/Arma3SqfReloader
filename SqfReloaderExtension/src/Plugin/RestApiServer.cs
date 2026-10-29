@@ -395,17 +395,23 @@ internal static class RestApiServer {
         var pending = new PendingExecution();
 
         PendingExecutions[requestId] = pending;
+        // The result travels as SQF text (str), exactly as Arma's debug console prints it, so the
+        // client never has to untangle nested JSON/SQF escaping. The literal is parsed back into a
+        // structure on this side for clients that want values instead of text.
+        //
+        // The strings are passed as they are: callExtension already quotes and escapes every string
+        // argument, so wrapping them in str again would add one visible layer of quotes.
         string sqf = $"[{SimpleSerializer.ToArma(requestId)}, {SimpleSerializer.ToArma(code)}] spawn {{\n" +
             "    params [\"_requestId\", \"_code\"];\n" +
-            "    private _resultJson = \"null\";\n" +
+            "    private _resultText = \"nil\";\n" +
             "    private _error = \"\";\n" +
             "    try {\n" +
             "        private _value = call compile _code;\n" +
-            "        if !(isNil \"_value\") then { _resultJson = toJSON _value; };\n" +
+            "        if !(isNil \"_value\") then { _resultText = str _value; };\n" +
             "    } catch {\n" +
-            "        _error = str _exception;\n" +
+            "        _error = if (_exception isEqualType \"\") then {_exception} else {str _exception};\n" +
             "    };\n" +
-            "    \"SqfReloader\" callExtension [\"ApiPublishResult\", [_requestId, str _resultJson, str _error]];\n" +
+            "    \"SqfReloader\" callExtension [\"ApiPublishResult\", [_requestId, _resultText, _error]];\n" +
             "};";
 
         MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, sqf }));
@@ -423,25 +429,38 @@ internal static class RestApiServer {
             return;
         }
 
-        await Respond(context, 200, Ok("execution completed", new Dictionary<string, object?> { ["result"] = result.Value }));
+        await Respond(context, 200, Ok("execution completed", new Dictionary<string, object?> {
+            ["result"] = result.Value,
+            ["text"] = result.Text
+        }));
     }
 
-    public static string PublishExecutionResult(string requestId, string resultJson, string error) {
+    /// <summary>
+    /// Receives <c>str</c> output from SQF. <paramref name="resultText"/> is the Arma formatted
+    /// literal ("2", "[""a"",""b""]", ...); it is parsed here so the HTTP response carries a real
+    /// value, while <c>text</c> keeps Arma's exact rendering for display.
+    /// </summary>
+    public static string PublishExecutionResult(string requestId, string resultText, string error) {
         if (!PendingExecutions.TryGetValue(requestId, out PendingExecution? pending))
             return "expired";
 
         object? value = null;
-        if (!string.IsNullOrEmpty(resultJson) && !SimpleJson.TryParseValue(resultJson, out value))
-            value = resultJson;
+        try {
+            if (!string.IsNullOrEmpty(resultText))
+                value = SimpleSerializer.Parse(resultText);
+        } catch (Exception ex) {
+            ArmaLog.Error($"Could not parse the SQF result '{resultText}': {ex.Message}");
+            value = resultText;
+        }
 
-        return pending.Completion.TrySetResult(new ExecutionResult(value, error)) ? "accepted" : "already completed";
+        return pending.Completion.TrySetResult(new ExecutionResult(value, resultText, error)) ? "accepted" : "already completed";
     }
 
     private sealed class PendingExecution {
         public TaskCompletionSource<ExecutionResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    private sealed record ExecutionResult(object? Value, string Error);
+    private sealed record ExecutionResult(object? Value, string Text, string Error);
 
     private static Dictionary<string, object?> Ok(string message, Dictionary<string, object?>? extra = null) {
         var result = new Dictionary<string, object?> { ["success"] = true, ["message"] = message };

@@ -33,10 +33,10 @@ function port(url: string): string {
 }
 
 /**
- * "Game: Stopped · Client API: Connected · Server API: Disconnected · Dedicated Server: Stopped"
+ * "Game: Running · Dedicated Server: Stopped · API: Connected"
  *
- * There is one API port, so both API lines report the same state; they stay separate because
- * the panel shows them next to the client and dedicated-server rows.
+ * There is one API for every Arma instance (client, editor, hosted mission, dedicated server),
+ * so it is reported once instead of per instance type.
  */
 export function statusSummary(snapshot: StatusSnapshot): string {
     const api = snapshot.api.api ? "Connected" : "Disconnected";

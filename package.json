@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.5.3",
+  "version": "3.6.1",
   "publisher": "Razer",
   "repository": {
     "type": "git",
@@ -174,11 +174,6 @@
           "group": "sqfReloader@1"
         },
         {
-          "command": "sqfReloader.hostMission",
-          "when": "resourceExtname == .sqm",
-          "group": "sqfReloader@1"
-        },
-        {
           "command": "sqfReloader.reloadFile",
           "when": "resourceExtname == .sqf",
           "group": "sqfReloader@1"
@@ -202,11 +197,6 @@
         },
         {
           "command": "sqfReloader.openInEden",
-          "when": "resourceExtname == .sqm",
-          "group": "sqfReloader@1"
-        },
-        {
-          "command": "sqfReloader.hostMission",
           "when": "resourceExtname == .sqm",
           "group": "sqfReloader@1"
         },
@@ -285,7 +275,7 @@
         "sqfReloader.watchInterval": {
           "type": "integer",
           "default": 1000,
-          "minimum": 1000,
+          "minimum": 100,
           "maximum": 60000,
           "scope": "resource",
           "markdownDescription": "How often the project debug console reevaluates watch expressions, in milliseconds."

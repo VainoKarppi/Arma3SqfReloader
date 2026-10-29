@@ -66,10 +66,10 @@ callback example and working `OnPlayerKilled.sqf` / `OnPlayerRespawn.sqf` script
 through an example respawn template. Its respawn delay and settings are declared in
 `description.ext`.
 
-For multiplayer development, open a multiplayer mission's `mission.sqm`, right-click it, and
-choose **SqfReloader: Start mission as non-dedicated server** to launch it with Arma's `-host`
-option. In a multiplayer session, saved workspace function changes are compiled on the server
-and broadcast to connected clients using `remoteExec`. The active mission must permit
+For multiplayer development, open a multiplayer mission's `mission.sqm` and choose **Host
+Mission** in the Arma 3 view to launch it with Arma's `-host` option. In a multiplayer session,
+saved workspace function changes are compiled on the server and broadcast to connected clients
+using `remoteExec`. The active mission must permit
 `SqfReloader_fnc_receiveReloadedFunction` in its `CfgRemoteExec` configuration for client
 broadcasts. `server-example/` contains the dedicated server example created by the scaffold; the
 dedicated server process is separate from SqfReloader's local API.
@@ -151,9 +151,10 @@ settings action opens a dedicated project settings management tab for launch opt
 behavior, and workspace or external mod roles. Changes are saved to the workspace's
 `.vscode/settings.json`; if that file does not exist, the extension asks before creating it.
 
-The status line reports `Game`, `Client API`, `Server API`, and the dedicated server, each with a
-green dot when it is up and a red one when it is down, for example
-`Game: Stopped · Client API: Connected · Server API: Stopped · Dedicated Server: Stopped`.
+The status line reports `Game`, `API`, and the dedicated server. Each row shows a green dot when it
+is up, a blue one while its `.exe` is running but Arma has not connected to the SqfReloader API
+yet (`Starting...`), and a red one when it is down, for example
+`Game: Running · API: Connected · Dedicated Server: Stopped`.
 The status-bar control is green when everything that should be connected is connected, red when
 Arma 3 runs without its SQF Reloader API, and shows a spinner while waiting for the game callback.
 When the game (or a dedicated server) connects, the extension writes the endpoint and port to the
@@ -238,8 +239,11 @@ The script returns `2`. Set `sqfReloader.runTimeout` to change the default timeo
 right-click **Run in Arma** commands. The scripts in [`examples`](examples) also show status
 and function queries, reloading functions, and sending a registered event.
 
-`/api/eval` returns `result` directly. On timeout it responds with HTTP 408; SQF already running
-in Arma is not forcibly stopped. For fire-and-forget scripts, call `/api/execute` instead:
+`/api/eval` returns the value twice: `text` is the exact SQF `str` rendering
+(`[[B Alpha 1-1:1,B Alpha 1-1:2],[],[-999]]`, no extra quoting), and `result` is that literal
+parsed into arrays, strings, numbers and booleans. On timeout it responds with HTTP 408; SQF
+already running in Arma is not forcibly stopped. For fire-and-forget scripts, call
+`/api/execute` instead:
 
 ```powershell
 $body = @{ code = 'systemChat "Queued from PowerShell";' } | ConvertTo-Json

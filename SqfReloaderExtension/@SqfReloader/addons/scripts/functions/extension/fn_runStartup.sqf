@@ -22,27 +22,44 @@ if (!(call SqfReloader_fnc_init)) exitWith {
     false
 };
 
-private _message = [] call SqfReloader_fnc_apiStart;
+// runStartup is called from preInit, postInit, the Cfg3DEN handlers and the launcher, often
+// several times per session. Only the first call starts the server; later calls reuse the
+// instance the DLL already runs instead of printing "already running" again.
+private _runningResult = ["ApiIsRunning", []] call SqfReloader_fnc_call;
+private _apiRunning = !isNil "_runningResult" && {(_runningResult param [0, false]) isEqualTo true};
+private _apiStartFailed = false;
 
-if (_message == "") exitWith {
+if (_apiRunning) then {
+    SqfReloader_var_apiRunning = true;
+} else {
+    private _message = [] call SqfReloader_fnc_apiStart;
+
+    if (_message == "") then {
+        _apiStartFailed = true;
+    } else {
+        SqfReloader_var_apiRunning = true;
+
+        // The port can differ from config.json when another process already holds it and the DLL
+        // falls back to the next free one.
+        private _apiMessage = ["ApiUrl", []] call SqfReloader_fnc_call;
+        private _apiUrl = if (_apiMessage isEqualType "") then {""} else {str (_apiMessage param [0, ""])};
+        private _apiPort = ["ApiPort", []] call SqfReloader_fnc_call;
+        private _apiPortNumber = if (_apiPort isEqualType 0) then {_apiPort} else {parseNumber str (_apiPort param [0, 0])};
+
+        if (_apiUrl == "") then {_apiUrl = format ["http://127.0.0.1:%1/api/", _apiPortNumber]};
+        diag_log format ["[SqfReloader] REST API port %1 (%2) - the VS Code extension connects to %3", _apiPortNumber, _message, _apiUrl];
+    };
+};
+
+if (_apiStartFailed) exitWith {
     diag_log "[SqfReloader] ERROR: the REST API could not be started";
     false
 };
 
 ["ApiSetLogLevel", [_logLevel]] call SqfReloader_fnc_call;
 
-// Always announce the resolved endpoint: the port can differ from config.json when another
-// process already holds it and the DLL falls back to the next free one.
-private _apiMessage = ["ApiUrl", []] call SqfReloader_fnc_call;
-private _apiUrl = if (_apiMessage isEqualType "") then {""} else {str (_apiMessage param [0, ""])};
-private _apiPort = ["ApiPort", []] call SqfReloader_fnc_call;
-private _apiPortNumber = if (_apiPort isEqualType 0) then {_apiPort} else {parseNumber str (_apiPort param [0, 0])};
-
-if (_apiUrl == "") then {_apiUrl = format ["http://127.0.0.1:%1/api/", _apiPortNumber]};
-diag_log format ["[SqfReloader] REST API port %1 (%2) - the VS Code extension connects to %3", _apiPortNumber, _message, _apiUrl];
-
 if (_logLevel == "verbose") then {
-    diag_log format ["[SqfReloader] startup: %1", _message];
+    diag_log format ["[SqfReloader] startup: API already running=%1", _apiRunning];
 };
 
 // The extension writes the $PBOPREFIX$ of every workspace addon to its config, so reloads can

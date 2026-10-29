@@ -394,7 +394,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             throw new Error("Unsupported project setting.");
         }
         if (key === "watchInterval") {
-            value = clampNumber(value, 1000, 60000);
+            value = clampNumber(value, 100, 60000);
         } else if (key === "runTimeout") {
             value = clampNumber(value, 1, 300);
         } else if (key === "apiPort") {
@@ -526,7 +526,10 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             throw new Error(`SqfReloader API is reachable on ${settings.apiUrl}, but no Arma game callback is connected.`);
         }
         const result = await evalCode(settings, code, settings.runTimeout * 1000);
-        this.post({ type: "execution", result: result.success ? formatResult(result.result) : result.error ?? "Execution failed." });
+        const output = result.text !== undefined
+            ? formatSqfText(result.text)
+            : result.result === undefined ? "nil" : formatSqfText(formatResult(result.result));
+        this.post({ type: "execution", result: result.success ? output : result.error ?? "Execution failed." });
     }
 
     private async addWatch(expression: unknown): Promise<void> {
@@ -564,10 +567,14 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             }
             const code = `[${watches.map(sqfString).join(",")}] call SqfReloader_fnc_evalWatch`;
             const result = await evalCode(settings, code, settings.runTimeout * 1000);
-            const values = result.success && Array.isArray(result.result)
-                ? result.result.map((item: unknown, index: number) => {
-                    const entry = Array.isArray(item) ? item : [];
-                    return { expression: watches[index], value: formatResult(entry[1] ?? item) };
+            // evalWatch returns [[expression, str (value)], ...], which the API parses back into
+            // this array; each value is already Arma formatted text.
+            const entries = result.success && Array.isArray(result.result) ? result.result : [];
+            const values = result.success
+                ? watches.map((expression, index) => {
+                    const entry = entries[index];
+                    const value = Array.isArray(entry) && typeof entry[1] === "string" ? formatSqfText(entry[1]) : undefined;
+                    return { expression, value: value ?? "No value returned." };
                 })
                 : watches.map(expression => ({ expression, value: result.error ?? "Watch evaluation failed." }));
             this.post({ type: "watchValues", values });
@@ -601,6 +608,19 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
         return vscode.workspace.getConfiguration("sqfReloader", this.root.uri).get<T>(key, fallback);
     }
 
+    /**
+     * Reads a setting from the project scopes only. The settings panel edits
+     * .vscode/settings.json, so an inherited user-level value must not look like a project
+     * setting - sqfReloader.armaDirectory in particular is auto-detected and never written by
+     * this extension, so a leftover global entry would otherwise prefill the field.
+     */
+    private projectSetting<T>(key: string, fallback: T): T {
+        if (!this.root) return fallback;
+        const config = vscode.workspace.getConfiguration("sqfReloader", this.root.uri);
+        const inspected = typeof config.inspect === "function" ? config.inspect<T>(key) : undefined;
+        return inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? fallback;
+    }
+
     private externalMods(): ExternalMod[] {
         const value = this.setting<unknown>("externalMods", []);
         if (!Array.isArray(value)) return [];
@@ -628,8 +648,8 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             refreshRunningStatus(),
             refreshDedicatedServerStatus()
         ] as const);
+        // There is one API for every Arma instance, so a single connection flag describes it.
         const clientConnected = apiStatus?.gameConnected === true;
-        const serverConnected = apiStatus?.gameConnected === true;
         // Only a real arma3server_x64.exe process flips the button to "Stop": a leftover API
         // answer must not claim the server is running when the process is gone.
         const serverRunning = dedicatedServerRunning === true;
@@ -646,7 +666,6 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             workspaceMods: this.workspaceModRoles(),
             externalMods: this.externalMods(),
             clientConnected,
-            serverConnected,
             dedicatedServerRunning: serverRunning,
             rptMonitoring: this.rptMonitoring,
             rptPath: this.rptPath,
@@ -657,7 +676,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
 
     private viewSettings(): ViewSettings {
         return {
-            armaDirectory: this.setting("armaDirectory", ""),
+            armaDirectory: this.projectSetting("armaDirectory", ""),
             armaProfile: this.setting("armaProfile", ""),
             extraLaunchArguments: this.setting("extraLaunchArguments", "-noSplash -skipIntro -noPause"),
             serverLaunchArguments: this.setting("serverLaunchArguments", ""),
@@ -695,6 +714,7 @@ button{font:inherit;cursor:pointer;width:100%;text-align:left;color:var(--vscode
 .status{padding:8px;background:var(--vscode-editor-background);margin-top:12px;line-height:1.6}.muted{color:var(--vscode-descriptionForeground);font-size:.9em}
 .status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
 .dot.ok{background:var(--vscode-testing-iconPassed,#3fb950)}.dot.bad{background:var(--vscode-testing-iconFailed,#f85149)}
+.dot.starting{background:var(--vscode-charts-blue,#3794ff)}
 .dot.idle{background:var(--vscode-descriptionForeground,#8b949e)}
 </style></head><body>
 <h2 id="project">Arma Project</h2>
@@ -705,9 +725,11 @@ button{font:inherit;cursor:pointer;width:100%;text-align:left;color:var(--vscode
 <div class="status" id="status">Checking status...</div>
 <script nonce="${nonce}">
 const vscode=acquireVsCodeApi();document.querySelectorAll('[data-command]').forEach(button=>button.addEventListener('click',()=>vscode.postMessage({command:button.dataset.command})));
-function statusItem(label,down,idle){const dot=document.createElement('span');dot.className='dot '+(idle?'idle':down?'bad':'ok');const text=document.createElement('span');text.textContent=label+': '+(idle?'Unknown':down?'Stopped':'Running');const line=document.createElement('div');line.append(dot,text);return line}
-function apiItem(label,connected,running){const dot=document.createElement('span');dot.className='dot '+(running===false&&!connected?'idle':connected?'ok':'bad');const text=document.createElement('span');text.textContent=label+': '+(connected?'Connected':running===false?'Stopped':'Disconnected');const line=document.createElement('div');line.append(dot,text);return line}
-window.addEventListener('message',event=>{if(event.data.type==='state'){const state=event.data;document.getElementById('project').textContent=state.project;const status=document.getElementById('status');status.replaceChildren(statusItem('Game',!state.running,state.running===undefined),apiItem('Client API',state.clientConnected,state.running),apiItem('Server API',state.serverConnected,state.dedicatedServerRunning),statusItem('Dedicated Server',!state.dedicatedServerRunning,state.dedicatedServerRunning===undefined));const serverButton=document.getElementById('dedicatedServer');serverButton.textContent=state.dedicatedServerRunning?'Stop Dedicated Server':'Start Dedicated Server';serverButton.dataset.command=state.dedicatedServerRunning?'stopServer':'launchServer'}});
+function statusItem(label,tone,text){const dot=document.createElement('span');dot.className='dot '+tone;const value=document.createElement('span');value.textContent=label+': '+text;const line=document.createElement('div');line.append(dot,value);return line}
+// The .exe exists (process running) but Arma has not reached the SqfReloader API yet: "Starting...".
+function processStatus(running,connected){if(typeof running!=='boolean')return['idle','Unknown'];if(!running)return['bad','Stopped'];return connected?['ok','Running']:['starting','Starting...']}
+function apiStatus(connected,running){if(connected)return['ok','Connected'];if(running)return['starting','Starting...'];return['idle','Stopped']}
+window.addEventListener('message',event=>{if(event.data.type==='state'){const state=event.data;document.getElementById('project').textContent=state.project;const status=document.getElementById('status');const anyProcessRunning=state.running===true||state.dedicatedServerRunning===true;const game=processStatus(state.running,state.clientConnected);const api=apiStatus(state.clientConnected,anyProcessRunning);const server=processStatus(state.dedicatedServerRunning,state.clientConnected);status.replaceChildren(statusItem('Game',game[0],game[1]),statusItem('API',api[0],api[1]),statusItem('Dedicated Server',server[0],server[1]));const serverButton=document.getElementById('dedicatedServer');serverButton.textContent=state.dedicatedServerRunning?'Stop Dedicated Server':'Start Dedicated Server';serverButton.dataset.command=state.dedicatedServerRunning?'stopServer':'launchServer'}});
 </script></body></html>`;
     }
 
@@ -736,7 +758,7 @@ label{display:block;margin:10px 0}.field{max-width:720px}.hint,.muted{color:var(
 <label class="field">Extra launch arguments<input type="text" data-setting="extraLaunchArguments"></label>
 <label class="field">Dedicated-server extra arguments<input type="text" data-setting="serverLaunchArguments" placeholder="-port 2302 -profiles=profiles"></label>
 <label class="field">API URL<input type="text" data-setting="apiUrl" placeholder="http://127.0.0.1"></label>
-<label class="field">Client API Port<input type="number" min="1" max="65535" data-setting="apiPort"></label>
+<label class="field">API Port<input type="number" min="1" max="65535" data-setting="apiPort"></label>
 <label class="field">Request timeout (milliseconds)<input type="number" min="500" max="60000" data-setting="requestTimeout"></label>
 <label class="field">SQF timeout (seconds)<input type="number" min="1" max="300" data-setting="runTimeout"></label>
 <h2>Mod Management</h2>
@@ -797,10 +819,10 @@ label{display:block;margin:7px 0}.label{display:block;margin-bottom:3px}.small{f
 <h2>Arma Debug Console</h2>
 <div id="targets" class="muted">SqfReloader API status</div>
 <textarea id="code" spellcheck="false" placeholder='SQF code, e.g. player sideChat "Hello";'></textarea>
-<div class="actions"><button id="execute">Execute SQF</button></div><pre id="result">Ready.</pre>
+<div class="actions"><button id="execute">Execute SQF</button></div><pre id="result"></pre>
 <h3>Watch Expressions</h3>
 <div class="row"><input id="watchInput" placeholder="SQF expression, e.g. count allPlayers"><button id="addWatch">Add</button></div>
-<label><span class="label">Update interval (milliseconds, minimum 1000)</span><input data-setting="watchInterval" type="number" min="1000" max="60000" step="1000"></label>
+<label><span class="label">Update interval (milliseconds, minimum 100)</span><input data-setting="watchInterval" type="number" min="100" max="60000" step="100"></label>
 <div id="watches"></div>
 <p class="muted small">Expressions run in the Arma instance that owns the SqfReloader API at the configured interval. The SqfReloader DLL must be loaded and its API reachable.</p>
 <h2>RPT Logs</h2>
@@ -822,7 +844,7 @@ function renderWatches(items){const container=document.getElementById('watches')
 function update(state){if(!state)return;document.getElementById('targets').textContent='SqfReloader API: '+(state.clientConnected?'ready':'offline');document.getElementById('rptMonitoring').checked=state.rptMonitoring;document.querySelectorAll('[data-setting]').forEach(input=>{if(document.activeElement!==input){const value=state.settings[input.dataset.setting];if(value!==undefined)input.value=value}});renderWatches(state.watches);
  document.getElementById('rptFile').textContent=state.rptPath||'No RPT file found';document.getElementById('rpt').textContent=state.rptTail||'No RPT output yet';
 }
-window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='watchValues'){message.values.forEach(item=>{const value=[...document.querySelectorAll('[data-watch]')].find(element=>element.dataset.watch===item.expression);if(value)value.textContent=item.value})}else if(message.type==='execution'){document.getElementById('result').textContent=message.target+': '+message.result}else if(message.type==='error'){document.getElementById('result').textContent='Error: '+message.message}});
+window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='watchValues'){message.values.forEach(item=>{const value=[...document.querySelectorAll('[data-watch]')].find(element=>element.dataset.watch===item.expression);if(value)value.textContent=item.value})}else if(message.type==='execution'){document.getElementById('result').textContent=message.result}else if(message.type==='error'){document.getElementById('result').textContent='Error: '+message.message}});
 send('refresh');
 </script></body></html>`;
     }
@@ -847,6 +869,19 @@ function samePath(left: string, right: string): boolean {
 
 function formatResult(result: unknown): string {
     return typeof result === "string" ? result : JSON.stringify(result, null, 2) ?? String(result);
+}
+
+/**
+ * Removes one quoting level from SQF text so values print like Arma's debug console output:
+ * `"[[...]]"` -> `[[...]]` and `[""respawn_west""]` -> `["respawn_west"]`. Text that is not a
+ * quoted literal is returned unchanged.
+ */
+function formatSqfText(text: string): string {
+    const trimmed = text.trim();
+    if (trimmed.length > 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+        return trimmed.slice(1, -1).replace(/""/g, "\"").trim();
+    }
+    return trimmed;
 }
 
 function getNonce(): string {
