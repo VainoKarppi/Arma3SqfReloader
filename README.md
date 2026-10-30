@@ -89,11 +89,14 @@ external mod (`sqfReloader.externalMods`), which is common when the workspace fo
 the one in the Arma directory, is listed once in `-mod=` instead of twice, so the game and the
 dedicated server no longer load the same PBOs twice.
 
-Mods the extension discovers in the workspace are listed in the project settings panel together
-with their launch role, including unclassified ones, so a folder it picked up on its own is always
-visible. Set the role to **Not launched** (`"off"` in `sqfReloader.modTypes`) to keep a discovered
-folder out of `-mod=`/`-serverMod=` entirely, for example an unpacked server source tree that Arma
-itself reports as `GAME DIR (Empty)`.
+Mods the extension discovers in the workspace are listed in the project settings panel with their
+launch role, so a folder it picked up on its own is always visible. Creating the project settings
+writes every discovered mod as **Not used** (`"off"` in `sqfReloader.modTypes`), so a new project
+never launches a folder that was not opted into. The panel offers **Client**, **Server**, and
+**Not used** only; a folder marked **Shared Mod** (or left unclassified) in the Explorer behaves
+like a client mod and is shown as Client there. **Remove** in the same list sets a mod back to Not
+used, which keeps it out of `-mod=`/`-serverMod=` entirely, for example an unpacked server source
+tree that Arma itself reports as `GAME DIR (Empty)`.
 
 Workspace missions are junctioned into both the selected profile and the Arma installation's
 `Missions` / `MPMissions` folders, so dedicated servers can resolve mission directories without

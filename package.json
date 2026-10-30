@@ -2,8 +2,9 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.6.2",
+  "version": "3.6.6",
   "publisher": "Razer",
+  "icon": "sqfReloader_logo.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/VainoKarppi/Arma3SqfReloader.git"
