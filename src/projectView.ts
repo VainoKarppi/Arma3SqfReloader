@@ -5,7 +5,18 @@ import * as vscode from "vscode";
 import { evalCode, getStatus, sqfString } from "./api";
 import { findMissions } from "./arma";
 import { ModType, setModTypeForDirectory } from "./modTypes";
-import { logError, readApiPort, readSettings } from "./settings";
+import { HookPresentation, hooksValue, hookValue, logError, presentationValue, readApiPort, readSettings } from "./settings";
+import { HOOK_EVENTS } from "./hookEvents";
+import { fireHook } from "./hooks";
+import {
+    ensureProjectSettings,
+    projectSetting as getProjectSetting,
+    projectSettingsExists,
+    projectSettingsPath,
+    readProjectSettings,
+    setProjectSetting,
+    PROJECT_SETTING_DEFAULTS
+} from "./projectSettings";
 import { refreshDedicatedServerStatus, refreshRunningStatus } from "./launcher";
 import { workspaceMods } from "./runtime";
 import { DEFAULT_PORT, normalizeApiHost } from "./ports";
@@ -36,6 +47,7 @@ interface ViewSettings {
     notifyOnError: boolean;
     createExampleWithMission: boolean;
     logLevel: string;
+    hookPresentation: HookPresentation;
 }
 
 const MOD_TYPES: ModType[] = ["client", "server", "both", "off"];
@@ -43,7 +55,7 @@ const SETTING_KEYS = new Set<keyof ViewSettings>([
     "armaDirectory", "armaProfile", "extraLaunchArguments", "serverLaunchArguments", "apiUrl",
     "watchInterval", "junctionMode", "reloadOnSave", "runTimeout",
     "apiPort", "requestTimeout", "enabled", "autoJunction", "clearArmaMissionArtifacts",
-    "notifyOnError", "createExampleWithMission", "logLevel"
+    "notifyOnError", "createExampleWithMission", "logLevel", "hookPresentation"
 ]);
 
 export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -101,19 +113,22 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
             return;
         }
         const rootPath = root.uri.fsPath;
-        const settingsFile = path.join(rootPath, ".vscode", "settings.json");
+        const exists = projectSettingsExists(root);
         if (this.promptedSettingsFor !== rootPath) {
-            this.projectSettingsReady = fs.existsSync(settingsFile);
+            this.projectSettingsReady = exists;
         }
         if (!forcePrompt && this.promptedSettingsFor === rootPath) return;
         this.promptedSettingsFor = rootPath;
-        if (fs.existsSync(settingsFile)) {
+        if (exists) {
             this.projectSettingsReady = true;
+            // The file may already exist without every setting (for example an empty {}), so the
+            // missing defaults are added while existing values are kept.
+            await this.initializeProjectSettings();
             return;
         }
 
         const create = await vscode.window.showInformationMessage(
-            `This Arma project has no .vscode/settings.json. Create project settings for launch options, mod roles, and debug watches?`,
+            `This Arma project has no .vscode/sqfReloader-settings.json. Create project settings for launch options, mod roles, and debug watches?`,
             "Create Settings",
             "Not Now"
         );
@@ -123,18 +138,10 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
         }
 
         try {
-            await fs.promises.mkdir(path.dirname(settingsFile), { recursive: true });
-            if (!fs.existsSync(settingsFile)) {
-                try {
-                    await fs.promises.writeFile(settingsFile, "{}\n", { encoding: "utf8", flag: "wx" });
-                } catch (error) {
-                    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-                }
-            }
             this.projectSettingsReady = true;
             await this.initializeProjectSettings();
             void this.refresh();
-            void vscode.window.showInformationMessage("Created .vscode/settings.json for this Arma project.");
+            void vscode.window.showInformationMessage("Created .vscode/sqfReloader-settings.json for this Arma project.");
         } catch (error) {
             logError("could not create project settings", error);
             void vscode.window.showErrorMessage(`Could not create project settings: ${error instanceof Error ? error.message : String(error)}`);
@@ -235,9 +242,9 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
             return;
         }
         if (!this.root) throw new Error("Open an Arma project folder first.");
-        const settingsFile = path.join(this.root.uri.fsPath, ".vscode", "settings.json");
-        if (!fs.existsSync(settingsFile)) await this.ensureProjectSettings(true);
-        if (!fs.existsSync(settingsFile)) return;
+        // Also fills in settings that are missing from an existing file before the panel opens.
+        await this.ensureProjectSettings(true);
+        if (!projectSettingsExists(this.root)) return;
 
         const panel = vscode.window.createWebviewPanel(
             "sqfReloader.projectSettings",
@@ -264,9 +271,9 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
 
     private async editSettingsManually(): Promise<void> {
         if (!this.root) throw new Error("Open an Arma project folder first.");
-        const settingsFile = path.join(this.root.uri.fsPath, ".vscode", "settings.json");
-        if (!fs.existsSync(settingsFile)) await this.ensureProjectSettings(true);
-        if (!fs.existsSync(settingsFile)) return;
+        await this.ensureProjectSettings(true);
+        const settingsFile = projectSettingsPath(this.root);
+        if (!settingsFile || !fs.existsSync(settingsFile)) return;
         const document = await vscode.workspace.openTextDocument(vscode.Uri.file(settingsFile));
         await vscode.window.showTextDocument(document, {
             preview: false,
@@ -361,48 +368,34 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
 
     private async initializeProjectSettings(): Promise<void> {
         if (!this.root) return;
-        const config = vscode.workspace.getConfiguration("sqfReloader", this.root.uri);
+        const existing = readProjectSettings(this.root);
         // Mods discovered in the workspace are written as "off" so a project never launches a
         // folder the user has not opted into; an existing role in the file is kept as is.
-        const configuredModTypes = config.get<unknown>("modTypes", {});
+        const configuredModTypes = existing.modTypes;
         const modTypes: Record<string, unknown> = configuredModTypes && typeof configuredModTypes === "object" && !Array.isArray(configuredModTypes)
             ? { ...(configuredModTypes as Record<string, unknown>) }
             : {};
+        let modTypesChanged = false;
         for (const modPath of this.discoveredWorkspaceModPaths()) {
-            if (!(modPath in modTypes)) modTypes[modPath] = "off";
+            if (!(modPath in modTypes)) {
+                modTypes[modPath] = "off";
+                modTypesChanged = true;
+            }
         }
 
-        // armaDirectory is deliberately not written: the folder is detected once from the
-        // registry / Steam libraries and kept in memory for the session.
-        const values: Record<string, unknown> = {
-            armaProfile: config.get("armaProfile", ""),
-            extraLaunchArguments: config.get("extraLaunchArguments", "-noSplash -skipIntro -noPause"),
-            serverLaunchArguments: config.get("serverLaunchArguments", ""),
-            apiUrl: normalizeApiHost(config.get("apiUrl", "http://127.0.0.1")),
-            apiPort: readApiPort(config),
-            requestTimeout: config.get("requestTimeout", 3000),
-            runTimeout: config.get("runTimeout", 30),
-            autoJunction: config.get("autoJunction", true),
-            junctionMode: config.get("junctionMode", "addon"),
-            reloadOnSave: config.get("reloadOnSave", "reload"),
-            notifyOnError: config.get("notifyOnError", true),
-            enabled: config.get("enabled", true),
-            createExampleWithMission: config.get("createExampleWithMission", true),
-            clearArmaMissionArtifacts: config.get("clearArmaMissionArtifacts", true),
-            logLevel: config.get("logLevel", "info"),
-            modTypes,
-            watchInterval: config.get("watchInterval", 1000),
-            watchExpressions: config.get("watchExpressions", []),
-            externalMods: config.get("externalMods", [])
-        };
-        const settingsFile = path.join(this.root.uri.fsPath, ".vscode", "settings.json");
-        const projectSettings = Object.fromEntries(
-            Object.entries(values).map(([key, value]) => [`sqfReloader.${key}`, value])
-        );
-        await fs.promises.writeFile(settingsFile, `${JSON.stringify(projectSettings, null, 4)}\n`, "utf8");
+        // armaDirectory is deliberately not part of the defaults: the folder is detected once
+        // from the registry / Steam libraries and kept in memory for the session.
+        await ensureProjectSettings(PROJECT_SETTING_DEFAULTS, this.root);
+        if (modTypesChanged) await setProjectSetting("modTypes", modTypes, this.root);
     }
 
     private async updateSetting(key: unknown, value: unknown): Promise<void> {
+        if (key === "hook") {
+            await this.saveHook(value);
+            await this.refresh();
+            this.post({ type: "settingSaved" });
+            return;
+        }
         if (typeof key !== "string" || !SETTING_KEYS.has(key as keyof ViewSettings)) {
             throw new Error("Unsupported project setting.");
         }
@@ -414,6 +407,8 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             value = clampNumber(value, 1, 65535);
         } else if (key === "requestTimeout") {
             value = clampNumber(value, 500, 60000);
+        } else if (key === "hookPresentation") {
+            value = presentationValue({ hookPresentation: value }, "hookPresentation");
         } else if (["enabled", "autoJunction", "clearArmaMissionArtifacts", "notifyOnError", "createExampleWithMission"].includes(key)) {
             if (typeof value !== "boolean") throw new Error("Setting value must be a boolean.");
         } else if (typeof value !== "string") {
@@ -428,14 +423,42 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
         this.post({ type: "settingSaved" });
     }
 
+    private async saveHook(value: unknown): Promise<void> {
+        if (!this.root) throw new Error("Open an Arma project folder first.");
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid hook.");
+        const source = value as Record<string, unknown>;
+        const definition = HOOK_EVENTS.find(item => item.event === source.event);
+        if (typeof source.event !== "string" || !definition) throw new Error("Unknown hook event.");
+
+        const raw = readProjectSettings(this.root);
+        const hooks = raw.hooks && typeof raw.hooks === "object" && !Array.isArray(raw.hooks)
+            ? { ...(raw.hooks as Record<string, unknown>) }
+            : {};
+        // The panel edits commands and flags only, so a hand-written presentation override must
+        // survive when the hook is saved from the panel.
+        const existing = hooks[source.event];
+        const payload = { ...source };
+        if (!("presentation" in payload) && existing && typeof existing === "object" && !Array.isArray(existing)) {
+            const existingPresentation = (existing as Record<string, unknown>).presentation;
+            if (existingPresentation) payload.presentation = existingPresentation;
+        }
+
+        const cleaned = hookValue(payload, definition.blocking);
+        hooks[source.event] = {
+            commands: cleaned.commands,
+            blocking: cleaned.blocking,
+            continueOnError: cleaned.continueOnError,
+            ...(cleaned.presentation ? { presentation: cleaned.presentation } : {})
+        };
+        await setProjectSetting("hooks", hooks, this.root);
+    }
+
     private async saveSetting(key: string, value: unknown): Promise<void> {
         if (!this.root) throw new Error("Open an Arma project folder first.");
-        const settingsFile = path.join(this.root.uri.fsPath, ".vscode", "settings.json");
-        if (!this.projectSettingsReady && !fs.existsSync(settingsFile)) {
-            throw new Error("Create the project .vscode/settings.json before changing project settings.");
+        if (!projectSettingsExists(this.root)) {
+            throw new Error("Create the project .vscode/sqfReloader-settings.json before changing project settings.");
         }
-        await vscode.workspace.getConfiguration("sqfReloader", this.root.uri)
-            .update(key, value, vscode.ConfigurationTarget.Workspace);
+        await setProjectSetting(key, value, this.root);
     }
 
     private async addExternalMod(): Promise<void> {
@@ -464,6 +487,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             }
         }
         await this.saveSetting("externalMods", mods);
+        fireHook("onModConfigChanged", readSettings(), { file: selected[0].fsPath });
         await this.refresh();
     }
 
@@ -529,12 +553,14 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
         if (!mod) throw new Error("External mod was not found in project settings.");
         mod.type = type;
         await this.saveSetting("externalMods", mods);
+        fireHook("onModConfigChanged", readSettings(), { file: directory });
         await this.refresh();
     }
 
     private async removeExternalMod(directory: unknown): Promise<void> {
         if (typeof directory !== "string") throw new Error("Invalid external mod path.");
         await this.saveSetting("externalMods", this.externalMods().filter(mod => !samePath(mod.path, directory)));
+        fireHook("onModConfigChanged", readSettings(), { file: directory });
         await this.refresh();
     }
 
@@ -631,20 +657,16 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
 
     private setting<T>(key: string, fallback: T): T {
         if (!this.root) return fallback;
-        return vscode.workspace.getConfiguration("sqfReloader", this.root.uri).get<T>(key, fallback);
+        return getProjectSetting(key, fallback, this.root);
     }
 
     /**
-     * Reads a setting from the project scopes only. The settings panel edits
-     * .vscode/settings.json, so an inherited user-level value must not look like a project
-     * setting - sqfReloader.armaDirectory in particular is auto-detected and never written by
-     * this extension, so a leftover global entry would otherwise prefill the field.
+     * Reads a setting from the project settings file only. The settings panel edits
+     * .vscode/sqfReloader-settings.json, so no inherited user-level value can look like a project
+     * setting - armaDirectory in particular is auto-detected and never written by this extension.
      */
     private projectSetting<T>(key: string, fallback: T): T {
-        if (!this.root) return fallback;
-        const config = vscode.workspace.getConfiguration("sqfReloader", this.root.uri);
-        const inspected = typeof config.inspect === "function" ? config.inspect<T>(key) : undefined;
-        return inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? fallback;
+        return this.setting(key, fallback);
     }
 
     private externalMods(): ExternalMod[] {
@@ -685,8 +707,10 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             type: "state",
             project: this.root?.name ?? "No folder open",
             projectRoot: rootPath ?? "",
-            projectSettingsReady: this.projectSettingsReady || !!(rootPath && fs.existsSync(path.join(rootPath, ".vscode", "settings.json"))),
+            projectSettingsReady: this.projectSettingsReady || projectSettingsExists(this.root),
             settings: this.viewSettings(),
+            hooks: hooksValue(readProjectSettings(this.root)),
+            hookEvents: HOOK_EVENTS,
             watches: this.watchExpressions(),
             modTypes: this.setting<Record<string, unknown>>("modTypes", {}),
             workspaceMods: this.workspaceModRoles(),
@@ -711,14 +735,15 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             junctionMode: this.setting("junctionMode", "addon"),
             reloadOnSave: this.setting("reloadOnSave", "reload"),
             runTimeout: clampNumber(this.setting("runTimeout", 30), 1, 300),
-            apiPort: readApiPort(vscode.workspace.getConfiguration("sqfReloader", this.root?.uri)),
+            apiPort: readApiPort(readProjectSettings(this.root)),
             requestTimeout: clampNumber(this.setting("requestTimeout", 3000), 500, 60000),
             enabled: this.setting("enabled", true),
             autoJunction: this.setting("autoJunction", true),
             clearArmaMissionArtifacts: this.setting("clearArmaMissionArtifacts", true),
             notifyOnError: this.setting("notifyOnError", true),
             createExampleWithMission: this.setting("createExampleWithMission", true),
-            logLevel: this.setting("logLevel", "info")
+            logLevel: this.setting("logLevel", "info"),
+            hookPresentation: presentationValue(readProjectSettings(this.root), "hookPresentation")
         };
     }
 
@@ -803,8 +828,9 @@ h1{margin:0;font-size:1.22em;font-weight:600;letter-spacing:.01em}
 .field{display:flex;flex-direction:column;gap:5px;min-width:0;margin:0}
 .field.wide{grid-column:1/-1}
 .label{font-size:.83em;color:var(--muted);letter-spacing:.02em}
-input[type=text],input[type=number],select{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--vscode-input-border,var(--line));border-radius:6px;color:var(--vscode-input-foreground);background:var(--vscode-input-background)}
-input[type=text]:focus,input[type=number]:focus,select:focus{outline:none;border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder)}
+input[type=text],input[type=number],select,textarea{width:100%;font:inherit;padding:7px 9px;border:1px solid var(--vscode-input-border,var(--line));border-radius:6px;color:var(--vscode-input-foreground);background:var(--vscode-input-background)}
+textarea{min-height:84px;resize:vertical;font-family:var(--mono);font-size:.92em}
+input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{outline:none;border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder)}
 input::placeholder{color:var(--muted)}
 .path-picker{display:flex;gap:8px}
 .path-picker input{flex:1;min-width:0;font-family:var(--mono);font-size:.94em}
@@ -857,6 +883,24 @@ select.role{width:200px;min-width:200px;flex:0 0 200px;font-size:.85em;padding:5
 </div>
 </section>
 
+<section class="card wide">
+<h2>Hooks</h2>
+<p class="hint">Run commands at lifecycle events, one command per line. Variables: <code>\${workspaceFolder}</code>, <code>\${armaDirectory}</code>, <code>\${missionFolder}</code>, <code>\${file}</code>, <code>\${apiUrl}</code>, <code>\${exitCode}</code>; the same values are exposed as <code>SQFRELOADER_*</code> environment variables.</p>
+<div class="fields">
+<label class="field"><span class="label">Event</span><select id="hookEvent"></select></label>
+<label class="field"><span class="label">Blocking</span><select id="hookBlocking"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Continue on error</span><select id="hookContinueOnError"><option value="false">false</option><option value="true">true</option></select></label>
+</div>
+<label class="field wide"><span class="label">Commands</span><textarea id="hookCommands" rows="4" spellcheck="false" placeholder="\${workspaceFolder}\\Tools\\BuildExtension.ps1"></textarea></label>
+<div class="actions"><button id="saveHook" class="btn">Save hook</button><button id="clearHook" class="btn ghost">Clear hook</button></div>
+<div class="fields">
+<label class="field"><span class="label">Echo command</span><select data-hookpresentation="echo"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Reveal terminal</span><select data-hookpresentation="reveal"><option value="always">always</option><option value="silent">silent</option><option value="never">never</option></select></label>
+<label class="field"><span class="label">Focus terminal</span><select data-hookpresentation="focus"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Terminal panel</span><select data-hookpresentation="panel"><option value="shared">shared</option><option value="dedicated">dedicated</option><option value="new">new</option></select></label>
+</div>
+</section>
+
 <section class="card">
 <h2>Reload and project behavior</h2>
 <p class="hint">What happens on save and how the mod links are created.</p>
@@ -886,7 +930,7 @@ select.role{width:200px;min-width:200px;flex:0 0 200px;font-size:.85em;padding:5
 </section>
 </main>
 
-<footer class="foot">Changes are written to <code>.vscode/settings.json</code> as soon as a field changes.</footer>
+<footer class="foot">Changes are written to <code>.vscode/sqfReloader-settings.json</code> as soon as a field changes.</footer>
 </div>
 <script nonce="${nonce}">
 const vscode=acquireVsCodeApi();let latestState;
@@ -897,6 +941,16 @@ document.getElementById('editManually').addEventListener('click',()=>send('editM
 document.getElementById('browseArmaDirectory').addEventListener('click',()=>send('browseArmaDirectory'));
 document.getElementById('addWorkspaceMod').addEventListener('click',()=>send('addWorkspaceMod'));
 document.getElementById('addExternalMod').addEventListener('click',()=>send('addMod'));
+let hookDirty=false;
+function hookEventSelect(){return document.getElementById('hookEvent')}
+function hookValueFromEditor(){return{event:hookEventSelect().value,commands:document.getElementById('hookCommands').value.split(/\\r?\\n/).map(line=>line.trim()).filter(Boolean),blocking:document.getElementById('hookBlocking').value==='true',continueOnError:document.getElementById('hookContinueOnError').value==='true'}}
+function loadHook(){const state=latestState;const select=hookEventSelect();if(!state||!select)return;const hook=(state.hooks||{})[select.value]||{};document.getElementById('hookCommands').value=Array.isArray(hook.commands)?hook.commands.join('\\n'):'';document.getElementById('hookBlocking').value=hook.blocking===false?'false':'true';document.getElementById('hookContinueOnError').value=hook.continueOnError?'true':'false'}
+function populateHookEvents(events){const select=hookEventSelect();if(!select||!Array.isArray(events)||select.options.length)return;events.forEach(definition=>{const option=document.createElement('option');option.value=definition.event;option.textContent=definition.event+' - '+definition.label;select.append(option)});select.value=events[0].event;loadHook()}
+['hookCommands','hookBlocking','hookContinueOnError'].forEach(id=>{const element=document.getElementById(id);['input','change'].forEach(type=>element.addEventListener(type,()=>{hookDirty=true}))});
+hookEventSelect().addEventListener('change',()=>{hookDirty=false;loadHook()});
+document.getElementById('saveHook').addEventListener('click',()=>{send('setting',{key:'hook',value:hookValueFromEditor()});hookDirty=false});
+document.getElementById('clearHook').addEventListener('click',()=>{const value=hookValueFromEditor();value.commands=[];document.getElementById('hookCommands').value='';send('setting',{key:'hook',value});hookDirty=false});
+document.querySelectorAll('[data-hookpresentation]').forEach(select=>select.addEventListener('change',()=>{const value={};document.querySelectorAll('[data-hookpresentation]').forEach(item=>{value[item.dataset.hookpresentation]=item.value==='true'?true:item.value==='false'?false:item.value});send('setting',{key:'hookPresentation',value})}));
 document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListener('change',()=>{let value=input.type==='checkbox'?input.checked:input.value;if(input.type==='number')value=Number(value);send('setting',{key:input.dataset.setting,value})}));
 function addRoleSelect(parent,path,type,command,values){const select=document.createElement('select');const current=roleValue(type,values);select.className='role role-'+current;values.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent=value==='off'?'Not used':value;select.append(option)});select.value=current;select.addEventListener('change',()=>{select.className='role role-'+select.value;send(command,{path,value:select.value})});parent.append(select)}
 // The panel offers Client / Server / Not used only. A stored "both" or "unclassified" role is a
@@ -906,7 +960,7 @@ function modInfo(text){const info=document.createElement('div');info.className='
 function emptyNote(container,text){container.className='empty';container.textContent=text}
 function renderMods(state){const workspace=document.getElementById('workspaceMods');workspace.replaceChildren();const roles=Array.isArray(state.workspaceMods)?state.workspaceMods:(state.modTypes&&typeof state.modTypes==='object'?Object.keys(state.modTypes).sort().map(key=>({path:key,type:state.modTypes[key]})):[]);if(!roles.length){emptyNote(workspace,'No workspace mod found.')}else{workspace.className='';roles.forEach(entry=>{const row=document.createElement('div');row.className='item';row.append(modInfo(entry.path));addRoleSelect(row,entry.path,entry.type,'modType',['client','server','off']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.title='Stop launching this mod (sets it to Not used)';remove.disabled=entry.type==='off';remove.addEventListener('click',()=>send('removeWorkspaceMod',{path:entry.path}));row.append(remove);workspace.append(row)})}
  const external=document.getElementById('externalMods');external.replaceChildren();const entries=Array.isArray(state.externalMods)?state.externalMods:[];if(!entries.length){emptyNote(external,'No external mods configured.')}else{external.className='';entries.forEach(mod=>{const row=document.createElement('div');row.className='item';row.append(modInfo(mod.path));addRoleSelect(row,mod.path,mod.type,'externalModType',['client','server']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.addEventListener('click',()=>send('removeExternalMod',{path:mod.path}));row.append(remove);external.append(row)})}}
-function update(state){latestState=state;document.getElementById('project').textContent=state.projectRoot||'No project folder open';document.querySelectorAll('[data-setting]').forEach(input=>{if(document.activeElement!==input){const value=state.settings[input.dataset.setting];if(value!==undefined){if(input.type==='checkbox')input.checked=value;else input.value=value}}});renderMods(state)}
+function update(state){latestState=state;document.getElementById('project').textContent=state.projectRoot||'No project folder open';document.querySelectorAll('[data-setting]').forEach(input=>{if(document.activeElement!==input){const value=state.settings[input.dataset.setting];if(value!==undefined){if(input.type==='checkbox')input.checked=value;else input.value=value}}});populateHookEvents(state.hookEvents);if(!hookDirty)loadHook();const presentation=state.settings.hookPresentation||{};document.querySelectorAll('[data-hookpresentation]').forEach(select=>{const value=presentation[select.dataset.hookpresentation];if(value!==undefined&&document.activeElement!==select)select.value=String(value)});renderMods(state)}
 window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='error')setSaved('Error: '+message.message,'error');else if(message.type==='settingSaved')setSaved('Saved','ok');else if(message.type==='armaDirectoryBrowsed'){const input=document.querySelector('[data-setting="armaDirectory"]');if(input)input.value=message.value;setSaved('Arma folder used for this session','ok')}});
 send('refresh');
 </script></body></html>`;

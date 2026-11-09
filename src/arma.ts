@@ -52,7 +52,7 @@ export async function findArmaDirectory(settings: Settings): Promise<string | un
             return settings.armaDirectory;
         }
 
-        log(`sqfReloader.armaDirectory does not contain arma3_x64.exe: ${settings.armaDirectory}`);
+        log(`armaDirectory does not contain arma3_x64.exe: ${settings.armaDirectory}`);
     }
 
     const detected = await detectArmaDirectory();
@@ -68,7 +68,7 @@ export async function findArmaDirectory(settings: Settings): Promise<string | un
 /**
  * Detects Arma 3 from the registry / Steam libraries once per session and remembers the result
  * so later lookups (reload, snapshots, status) do not spawn `reg` again.
- * sqfReloader.armaDirectory stays empty on purpose: nothing is written back to the settings.
+ * armaDirectory stays empty on purpose: nothing is written back to the project settings.
  */
 export function detectArmaDirectory(): Promise<string | undefined> {
     if (detectedDirectory) {

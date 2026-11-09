@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import * as vscode from "vscode";
+import { projectSetting } from "./projectSettings";
 
 interface ExternalModSetting {
     path: string;
@@ -27,9 +27,9 @@ export function modFoldersOnce(folders: string[]): string[] {
     });
 }
 
-/** sqfReloader.externalMods entries that name an existing folder. */
+/** externalMods entries that name an existing folder. */
 export function configuredExternalMods(): ExternalModSetting[] {
-    const value = vscode.workspace.getConfiguration("sqfReloader").get<unknown>("externalMods", []);
+    const value = projectSetting<unknown>("externalMods", []);
     if (!Array.isArray(value)) return [];
 
     const mods: ExternalModSetting[] = [];

@@ -77,21 +77,22 @@ dedicated server process is separate from SqfReloader's local API.
 ### Mod launch roles and dedicated server configs
 
 Right-click a mod folder in the Explorer and choose **Arma 3: Set folder as Client Mod**,
-**Server Mod**, or **Shared Mod**. The selection is saved in the workspace's `.vscode/settings.json`
-under `sqfReloader.modTypes`, keyed by the folder's path relative to the workspace root. A server
+**Server Mod**, or **Shared Mod**. The selection is saved in the workspace's
+`.vscode/sqfReloader-settings.json` under `modTypes`, keyed by the folder's path relative to the
+workspace root. A server
 mod is left out of normal Arma launches and is passed as `-serverMod` when starting a dedicated
 server directly from its workspace folder; it is not copied into the Arma installation. Client,
 shared, and unclassified folders use `-mod`; unclassified mods retain the extension's previous
 behavior. **Clear Mod Type** removes an explicit assignment.
 
 Every mod folder reaches Arma exactly once: a folder that is both a workspace mod and a configured
-external mod (`sqfReloader.externalMods`), which is common when the workspace folder is a copy of
+external mod (`externalMods`), which is common when the workspace folder is a copy of
 the one in the Arma directory, is listed once in `-mod=` instead of twice, so the game and the
 dedicated server no longer load the same PBOs twice.
 
 Mods the extension discovers in the workspace are listed in the project settings panel with their
 launch role, so a folder it picked up on its own is always visible. Creating the project settings
-writes every discovered mod as **Not used** (`"off"` in `sqfReloader.modTypes`), so a new project
+writes every discovered mod as **Not used** (`"off"` in `modTypes`), so a new project
 never launches a folder that was not opted into. The panel offers **Client**, **Server**, and
 **Not used** only; a folder marked **Shared Mod** (or left unclassified) in the Explorer behaves
 like a client mod and is shown as Client there. **Remove** in the same list sets a mod back to Not
@@ -151,8 +152,16 @@ shown in the **Arma 3 SQF Reloader** output channel.
 Open the **Arma 3** icon in the Activity Bar for project settings, Host Mission, Debug Console, and
 connection status. Use the existing bottom status-bar control to start or stop Arma 3. The
 settings action opens a dedicated project settings management tab for launch options, reload
-behavior, and workspace or external mod roles. Changes are saved to the workspace's
-`.vscode/settings.json`; if that file does not exist, the extension asks before creating it.
+behavior, and workspace or external mod roles. Changes are saved to the project's own
+`.vscode/sqfReloader-settings.json`; if that file does not exist, the extension asks before
+creating it. The extension never reads or writes `.vscode/settings.json`, and a file that already
+exists only gets the missing settings added, so existing values are kept.
+
+The panel also configures **hooks**: commands that run in a VS Code terminal at lifecycle
+events, for example `"${workspaceFolder}\\Tools\\BuildExtension.ps1"` before a client or server
+launch. A blocking hook waits for its commands and, unless `continueOnError` is set, a non-zero
+exit code cancels the action. The default terminal presentation (`echo`, `reveal`, `focus`,
+`panel`) is stored in `hookPresentation`; each hook can override it.
 
 The status line reports `Game`, the dedicated server, and the API (last). Each row shows a green dot
 when it is up, a blue one while its `.exe` is running but Arma has not connected to the SqfReloader
@@ -168,7 +177,7 @@ When the game (or a dedicated server) connects, the extension writes the endpoin
 [SqfReloader] REST API port 8764 (REST API listening on http://127.0.0.1:8764/api/) - the VS Code extension connects to http://127.0.0.1:8764/api/
 ```
 
-The port comes from `sqfReloader.apiUrl` / `sqfReloader.apiPort` in `settings.json` and is written
+The port comes from `apiUrl` / `apiPort` in `.vscode/sqfReloader-settings.json` and is written
 to `%LOCALAPPDATA%\SqfReloader\config.json`, which the DLL reads. **Every Arma instance uses that
 one port**: the game, the Eden editor, a hosted mission and the dedicated server all bind it, so
 there is no separate server port to keep in sync. When the port is taken the DLL falls back to the
@@ -244,7 +253,7 @@ The PowerShell helper does the same and enforces its timeout:
 .\examples\Invoke-ArmaSqf.ps1 -Code '1 + 1' -TimeoutSeconds 30
 ```
 
-The script returns `2`. Set `sqfReloader.runTimeout` to change the default timeout used by the
+The script returns `2`. Set `runTimeout` to change the default timeout used by the
 right-click **Run in Arma** commands. The scripts in [`examples`](examples) also show status
 and function queries, reloading functions, and sending a registered event.
 
@@ -270,20 +279,75 @@ server-side timeout.
 
 ## Settings
 
+Project settings live in the workspace's `.vscode/sqfReloader-settings.json`. Keys missing from
+that file use the built-in defaults below; VS Code `settings.json` is not read or written. The
+file is validated against a JSON schema, so the editor completes and documents its keys.
+
 | Setting | Purpose |
 | --- | --- |
-| `sqfReloader.armaDirectory` | Arma 3 install folder. Leave empty for automatic detection: the folder is read once from the registry / Steam libraries when the extension loads and kept in memory for the session, so nothing is written back to this setting. Set it only to pin a specific install. |
-| `sqfReloader.enabled` | Enable or disable reload on save. |
-| `sqfReloader.apiUrl` | SqfReloader API host address. The extension adds the API path and uses `sqfReloader.apiPort`. Default: `http://127.0.0.1`. |
-| `sqfReloader.apiPort` | SqfReloader API port, used by every Arma instance (client, editor, hosted mission, dedicated server). Default: `8764`. |
-| `sqfReloader.runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
-| `sqfReloader.logLevel` | Output verbosity: `error`, `warning`, `info` (default), or `verbose`. Verbose includes Arma function registration diagnostics; change it live in `settings.json`. |
-| `sqfReloader.extraLaunchArguments` | Extra Arma launch options. |
-| `sqfReloader.junctionMode` | Link per addon (`addon`) or per mod (`module`). |
+| `armaDirectory` | Arma 3 install folder. Leave empty for automatic detection: the folder is read once from the registry / Steam libraries when the extension loads and kept in memory for the session, so nothing is written back to this setting. Set it only to pin a specific install. |
+| `enabled` | Enable or disable reload on save. |
+| `apiUrl` | SqfReloader API host address. The extension adds the API path and uses `apiPort`. Default: `http://127.0.0.1`. |
+| `apiPort` | SqfReloader API port, used by every Arma instance (client, editor, hosted mission, dedicated server). Default: `8764`. |
+| `runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
+| `logLevel` | Output verbosity: `error`, `warning`, `info` (default), or `verbose`. Verbose includes Arma function registration diagnostics; change it live in the project settings file. |
+| `extraLaunchArguments` | Extra Arma launch options. |
+| `junctionMode` | Link per addon (`addon`) or per mod (`module`). |
+| `hooks` | Commands run in a VS Code terminal at lifecycle events, keyed by event name (`preClientLaunch`, `postReload`, `onServerCrash`, ...). Each hook has `commands`, `blocking`, `continueOnError`, and an optional `presentation` override. |
+| `hookPresentation` | Default presentation of every hook terminal: `echo`, `reveal` (`always`, `silent`, `never`), `focus`, and `panel` (`shared`, `dedicated`, `new`). Defaults: `{ "echo": true, "reveal": "always", "focus": false, "panel": "shared" }`. |
+
+Commands can use `${workspaceFolder}`, `${workspaceFolderBasename}`, `${armaDirectory}`,
+`${missionFolder}`, `${file}`, `${apiUrl}`, `${exitCode}`, and `${event}`. The same values are
+exposed as `SQFRELOADER_EVENT`, `SQFRELOADER_WORKSPACE`, `SQFRELOADER_ARMA_DIR`,
+`SQFRELOADER_MISSION`, `SQFRELOADER_FILE`, `SQFRELOADER_API_URL`, and `SQFRELOADER_EXIT_CODE`.
+
+### Lifecycle hooks
+
+Events marked blocking wait for their commands; a failing blocking command cancels the action
+unless `continueOnError` is enabled. All other events run in the background.
+
+| Event | When |
+| --- | --- |
+| `preClientLaunch` | Before Arma 3 starts (blocking) |
+| `postClientLaunch` | After the Arma 3 process starts |
+| `onClientConnected` | When Arma 3 registers its API callback |
+| `preClientStop` | Before "Stop Arma 3" closes the game (blocking) |
+| `postClientStop` | After Arma 3 is closed |
+| `onClientExit` | When Arma 3 exits |
+| `preServerLaunch` | Before the dedicated server starts (blocking) |
+| `postServerLaunch` | After the dedicated server process starts |
+| `onServerConnected` | When the dedicated server registers its API callback |
+| `preServerStop` | Before the dedicated server is stopped (blocking) |
+| `postServerStop` | After the dedicated server is stopped |
+| `onServerCrash` | When the dedicated server exits without a stop request |
+| `preReload` | Before a saved file is reloaded (blocking, cancellable) |
+| `postReload` | After a successful reload |
+| `onReloadError` | When a reload or compile fails |
+| `preReloadAll` | Before "Reload all functions" (blocking, cancellable) |
+| `postReloadAll` | After all functions were reloaded |
+| `postMissionRestart` | After mission functions were restarted |
+| `preSetup` | Before project setup (blocking, cancellable) |
+| `postSetup` | After project setup |
+| `preJunction` | Before junctions are created (blocking, cancellable) |
+| `postJunctionCleanup` | After junctions are removed |
+| `postScaffold` | After the example project is created |
+| `onModConfigChanged` | When a mod launch role changes |
+| `onSettingsChanged` | When the project settings file is saved |
+| `preMissionLink` | Before a mission is linked (blocking, cancellable) |
+| `postMissionLink` | After a mission is linked |
+| `preHostMission` | Before a mission is hosted (blocking, cancellable) |
+| `postHostMission` | After a mission is hosted |
 
 ## Troubleshooting
 
-**The extension cannot find Arma.** Set `sqfReloader.armaDirectory` to the folder containing
+**Only `config.cpp` (or an old copy) is visible in `z\<tag>\addons\<addon>`.** A real folder is
+sitting on the mount path, so the extension cannot create its junction there; Arma then reads
+that stale folder instead of your workspace sources. On startup, **Play**, and **Set up this
+mod**, the extension offers to move the folder to `<Arma 3>\.sqfreloader-backups` and replace it
+with a junction. Accept the prompt, or delete/rename the folder and run
+**SqfReloader: Set up this mod** again.
+
+**The extension cannot find Arma.** Set `armaDirectory` to the folder containing
 `arma3_x64.exe`. Leave it empty to keep the automatic detection (registry / Steam libraries).
 
 **The game is running but the extension is waiting.** Open a mission in Eden once. SqfReloader

@@ -1,5 +1,5 @@
 {
-    "sqfReloader.modTypes": {
+    "modTypes": {
         "@ExampleServerMod": "server"
     }
 }

@@ -4,12 +4,15 @@ import * as path from "path";
 import { execFile, spawn } from "child_process";
 import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirectory, toArmaPath } from "./arma";
 import { getOutput, log, logError, readSettings, Settings } from "./settings";
+import { projectSetting } from "./projectSettings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks, linkMissions } from "./junctions";
+import { createLinksWithRepair } from "./linkRepair";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
 import { modTypeForDirectory } from "./modTypes";
 import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./launchMods";
+import { fireHook, HookContext, runHook } from "./hooks";
 
 /** Port the resolved project API URL requests, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
@@ -60,14 +63,14 @@ export function setRptDiagnosticCollection(collection: vscode.DiagnosticCollecti
  * the REST API to answer. This is what a developer uses every day.
  */
 export async function launchArma(runtime: Runtime, settings: Settings, options: LaunchOptions = {}, silent = false): Promise<boolean> {
-    // A manual pick only selects the folder for this launch; sqfReloader.armaDirectory is not written.
+    // A manual pick only selects the folder for this launch; armaDirectory is not written.
     const armaDirectory = await findArmaDirectory(settings) ?? await pickArmaDirectory(settings);
 
     if (!armaDirectory) {
         log("launch: no Arma directory (findArmaDirectory returned nothing).");
 
         if (!silent) {
-            vscode.window.showErrorMessage("Arma 3 was not found. Pick the folder once: \"sqfReloader.armaDirectory\".");
+            vscode.window.showErrorMessage("Arma 3 was not found. Pick the folder once, or set \"armaDirectory\" in .vscode/sqfReloader-settings.json.");
         }
 
         return false;
@@ -89,7 +92,22 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         return false;
     }
 
+    const hookContext: HookContext = {
+        armaDirectory,
+        apiUrl: settings.apiUrl,
+        missionFolder: options.missionFolder?.directory,
+        file: options.serverConfig
+    };
+
     try {
+        // Builds and other setup run first; a failing command keeps Arma from starting.
+        if (options.dedicatedServer) {
+            if (!await runHook("preServerLaunch", settings, hookContext)) return false;
+        } else {
+            if (!await runHook("preClientLaunch", settings, hookContext)) return false;
+            if (options.hostMission && !await runHook("preHostMission", settings, hookContext)) return false;
+        }
+
         // Probe before starting the game: once Arma runs, its own listener owns the port, so a
         // busy 8764 (EdenOnline, an older SqfReloader instance) has to be detected up front.
         // A dedicated launch writes the config too but must not probe, because a running client
@@ -110,6 +128,10 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         }
         const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
         const clientAndSharedMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
+        // Link the sources before Arma starts. A real folder sitting on a mount path would
+        // otherwise make Arma read a stale copy; the user is offered to move it aside.
+        await createLinksWithRepair(armaDirectory, workspaceModsFound, settings, { silent });
+
         const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
         const serverMods = [...classifiedServerMods, ...additionalServerMods];
         const launch = prepareRuntime(runtime, armaDirectory, settings, clientAndSharedMods, serverMods);
@@ -130,6 +152,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         ]);
 
         if (options.missionFolder) {
+            if (!await runHook("preMissionLink", settings, hookContext)) return false;
             const missionLinks = linkMissions(armaDirectory, launch.profile.directory, [options.missionFolder]);
             launch.warnings.push(...missionLinks.warnings);
             if (missionLinks.links.length === 0 && missionLinks.warnings.length > 0) {
@@ -138,10 +161,15 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             if (missionLinks.links.length > 0) {
                 log(`Mission linked to Arma profile and installation: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
             }
+            fireHook("postMissionLink", settings, hookContext);
         }
 
         const linkWarnings = verifyWorkspaceAddons(armaDirectory, workspaceAddons());
         launch.warnings.push(...linkWarnings);
+        if (linkWarnings.length > 0 && !silent) {
+            // The repair prompt was declined or failed; do not launch silently on a stale copy.
+            void vscode.window.showWarningMessage(`Arma 3 SQF Reloader: ${linkWarnings[0]}`);
+        }
         if (options.dedicatedServer && options.missionFolder) {
             const serverMissionPath = path.join(armaDirectory, "MPMissions", path.basename(options.missionFolder.directory));
             if (!fs.existsSync(path.join(serverMissionPath, "mission.sqm"))) {
@@ -182,6 +210,9 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         }
 
         startProcess(launch, settings, options, args);
+
+        fireHook(options.dedicatedServer ? "postServerLaunch" : "postClientLaunch", settings, hookContext);
+        if (options.hostMission) fireHook("postHostMission", settings, hookContext);
 
         return true;
     } catch (error) {
@@ -429,7 +460,7 @@ export function launchArguments(launch: PreparedLaunch, settings: Settings, opti
     }
 
     const serverExtraArguments = options.dedicatedServer
-        ? parseExtraArguments(vscode.workspace.getConfiguration("sqfReloader").get<string>("serverLaunchArguments", ""))
+        ? parseExtraArguments(projectSetting("serverLaunchArguments", ""))
         : [];
     const extra = [...(options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments)), ...serverExtraArguments];
     const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;

@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { log } from "./settings";
+import { ensureProjectSettings, readProjectSettings, setProjectSetting, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
+import { log, readSettings } from "./settings";
+import { fireHook } from "./hooks";
 
 export type ModType = "client" | "server" | "both" | "off";
 
@@ -28,22 +30,6 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         throw new Error("The selected mod folder is not inside an open workspace folder.");
     }
 
-    const settingsFile = path.join(workspace.uri.fsPath, ".vscode", "settings.json");
-    if (!fs.existsSync(settingsFile)) {
-        const create = await vscode.window.showInformationMessage(
-            `This project has no .vscode/settings.json. Create it to save the mod launch role?`,
-            "Create Settings",
-            "Cancel"
-        );
-        if (create !== "Create Settings") return;
-        fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
-        try {
-            fs.writeFileSync(settingsFile, "{}\n", { encoding: "utf8", flag: "wx" });
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        }
-    }
-
     const addonsPath = path.join(directory, "addons");
     let hasAddonsDirectory = false;
     try {
@@ -63,7 +49,6 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         if (proceed !== "Assign Anyway") return;
     }
 
-    const configuration = vscode.workspace.getConfiguration("sqfReloader", workspace.uri);
     const configured = readConfiguredTypes(workspace);
     const next = { ...configured };
     const key = relativeModPath(workspace.uri.fsPath, directory);
@@ -74,15 +59,17 @@ export async function setModTypeForDirectory(directory: string, type: ModType | 
         delete next[key];
     }
 
-    await configuration.update(MOD_TYPES_SETTING, next, vscode.ConfigurationTarget.Workspace);
+    // The project settings file is created on demand so the launch role survives a restart.
+    await ensureProjectSettings(PROJECT_SETTING_DEFAULTS, workspace);
+    await setProjectSetting(MOD_TYPES_SETTING, next, workspace);
     log(`${type ? `Set ${path.basename(directory)} mod type to ${type}` : `Cleared mod type for ${path.basename(directory)}`}.`);
+    fireHook("onModConfigChanged", readSettings(), { file: directory });
 }
 
 function readConfiguredTypes(workspace: vscode.WorkspaceFolder): Record<string, unknown> {
-    const value = vscode.workspace.getConfiguration("sqfReloader", workspace.uri)
-        .get<unknown>(MOD_TYPES_SETTING, {});
+    const value = readProjectSettings(workspace)[MOD_TYPES_SETTING];
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        log(`sqfReloader.${MOD_TYPES_SETTING} in ${workspace.name} must be an object.`);
+        log(`${MOD_TYPES_SETTING} in the ${workspace.name} project settings must be an object.`);
         return {};
     }
 

@@ -1,0 +1,10 @@
+{
+    "enabled": true,
+    "apiUrl": "http://127.0.0.1",
+    "apiPort": 8764,
+    "autoJunction": true,
+    "junctionMode": "addon",
+    "reloadOnSave": "reload",
+    "notifyOnError": true,
+    "requestTimeout": 3000
+}

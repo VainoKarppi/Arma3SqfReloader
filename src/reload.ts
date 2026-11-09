@@ -166,7 +166,7 @@ async function writeSnapshot(
 ): Promise<CompileSnapshot> {
     const armaDirectory = await findArmaDirectory(settings);
     if (!armaDirectory) {
-        throw new Error("Arma 3 was not found; set sqfReloader.armaDirectory to store the compile snapshot under its z folder.");
+        throw new Error("Arma 3 was not found; set armaDirectory in .vscode/sqfReloader-settings.json to store the compile snapshot under its z folder.");
     }
 
     const id = `${Date.now()}-${++snapshotSequence}`;

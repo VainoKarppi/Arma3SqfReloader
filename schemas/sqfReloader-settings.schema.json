@@ -1,0 +1,245 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Arma 3 SQF Reloader project settings",
+    "description": "Project settings for .vscode/sqfReloader-settings.json. Missing keys use the extension defaults.",
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+        "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Send SQF changes to Arma 3 when a file is saved."
+        },
+        "armaDirectory": {
+            "type": "string",
+            "default": "",
+            "description": "Arma 3 installation folder (contains arma3_x64.exe). Leave empty to auto-detect from the registry / Steam libraries."
+        },
+        "armaProfile": {
+            "type": "string",
+            "default": "",
+            "description": "Arma 3 profile name to use for mission links and launch. Leave empty to use the most recently updated profile."
+        },
+        "apiUrl": {
+            "type": "string",
+            "default": "http://127.0.0.1",
+            "description": "Host address of the SqfReloader REST API. The extension appends the API path and uses apiPort."
+        },
+        "apiPort": {
+            "type": "integer",
+            "default": 8764,
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "Port used for API requests by every Arma instance (client, editor, hosted mission and dedicated server)."
+        },
+        "requestTimeout": {
+            "type": "number",
+            "default": 3000,
+            "minimum": 500,
+            "description": "Timeout in milliseconds for a request to Arma."
+        },
+        "runTimeout": {
+            "type": "integer",
+            "default": 30,
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Maximum seconds to wait for Run in Arma to return an SQF result."
+        },
+        "autoJunction": {
+            "type": "boolean",
+            "default": true,
+            "description": "Create a junction from the Arma 3 folder to the open mod folder automatically."
+        },
+        "junctionMode": {
+            "type": "string",
+            "enum": [
+                "addon",
+                "module"
+            ],
+            "default": "addon",
+            "description": "addon links each source addon below z\\<tag>\\addons; module links the whole @Mod folder."
+        },
+        "reloadOnSave": {
+            "type": "string",
+            "enum": [
+                "reload",
+                "recompile",
+                "off"
+            ],
+            "default": "reload",
+            "description": "How a saved SQF file is pushed to Arma."
+        },
+        "notifyOnError": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show a notification when Arma is not reachable or a reload fails."
+        },
+        "extraLaunchArguments": {
+            "type": "string",
+            "default": "-noSplash -skipIntro -noPause",
+            "description": "Extra arguments for SqfReloader: Play."
+        },
+        "serverLaunchArguments": {
+            "type": "string",
+            "default": "",
+            "description": "Additional startup arguments applied only to dedicated-server launches."
+        },
+        "createExampleWithMission": {
+            "type": "boolean",
+            "default": true,
+            "description": "Create example mod also writes a minimal test mission."
+        },
+        "clearArmaMissionArtifacts": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically remove Arma-generated ~Mission.World preview folders from the active profile."
+        },
+        "logLevel": {
+            "type": "string",
+            "enum": [
+                "error",
+                "warning",
+                "info",
+                "verbose"
+            ],
+            "default": "info",
+            "description": "Controls SqfReloader output verbosity."
+        },
+        "watchInterval": {
+            "type": "integer",
+            "default": 1000,
+            "minimum": 100,
+            "maximum": 60000,
+            "description": "How often the project debug console reevaluates watch expressions, in milliseconds."
+        },
+        "watchExpressions": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "default": [],
+            "description": "SQF expressions saved as project debug-console watches."
+        },
+        "hooks": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "default": [],
+                        "description": "Commands run for this event. ${workspaceFolder}, ${armaDirectory}, ${missionFolder}, ${file}, ${apiUrl} and ${exitCode} are expanded."
+                    },
+                    "blocking": {
+                        "type": "boolean",
+                        "description": "Whether the caller waits for the commands before continuing."
+                    },
+                    "continueOnError": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Keep going when a command exits with a non-zero code."
+                    },
+                    "presentation": {
+                        "$ref": "#/definitions/hookPresentation"
+                    }
+                },
+                "required": [
+                    "commands"
+                ],
+                "additionalProperties": false
+            },
+            "description": "Commands keyed by lifecycle event. Events: preClientLaunch, postClientLaunch, onClientConnected, preClientStop, postClientStop, onClientExit, preServerLaunch, postServerLaunch, onServerConnected, preServerStop, postServerStop, onServerCrash, preReload, postReload, onReloadError, preReloadAll, postReloadAll, postMissionRestart, preSetup, postSetup, preJunction, postJunctionCleanup, postScaffold, onModConfigChanged, onSettingsChanged, preMissionLink, postMissionLink, preHostMission, postHostMission."
+        },
+        "hookPresentation": {
+            "$ref": "#/definitions/hookPresentation",
+            "description": "Default VS Code task presentation options for every hook terminal."
+        },
+        "modTypes": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": {
+                "type": "string",
+                "enum": [
+                    "client",
+                    "server",
+                    "both",
+                    "off"
+                ]
+            },
+            "description": "Mod launch roles keyed by the mod folder path relative to the workspace folder."
+        },
+        "externalMods": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "client",
+                            "server",
+                            "both"
+                        ]
+                    }
+                },
+                "required": [
+                    "path",
+                    "type"
+                ]
+            },
+            "default": [],
+            "description": "Additional local or Steam Workshop mod folders for this project."
+        }
+    },
+    "definitions": {
+        "hookPresentation": {
+            "type": "object",
+            "properties": {
+                "echo": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Echo the command in the terminal."
+                },
+                "reveal": {
+                    "type": "string",
+                    "enum": [
+                        "always",
+                        "silent",
+                        "never"
+                    ],
+                    "default": "always",
+                    "description": "When the hook terminal is revealed."
+                },
+                "focus": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Move keyboard focus to the hook terminal."
+                },
+                "panel": {
+                    "type": "string",
+                    "enum": [
+                        "shared",
+                        "dedicated",
+                        "new"
+                    ],
+                    "default": "shared",
+                    "description": "Whether the hook terminal reuses a shared panel, a dedicated one, or a new panel per run."
+                }
+            },
+            "additionalProperties": false,
+            "default": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        }
+    }
+}

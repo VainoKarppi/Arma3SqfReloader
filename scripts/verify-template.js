@@ -41,9 +41,11 @@ try {
     check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
     check("files written", result.files.length === 48, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
-    const generatedSettings = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
+    const generatedSettings = fs.readFileSync(path.join(sandbox, ".vscode", "sqfReloader-settings.json"), "utf8");
     check("server example mod is configured as server-only", /"server-example\/@ExampleServerMod"\s*:\s*"server"/.test(generatedSettings));
-    check("generated project includes the one-second watcher default", /"sqfReloader\.watchInterval"\s*:\s*1000/.test(generatedSettings));
+    check("generated project includes the one-second watcher default", /"watchInterval"\s*:\s*1000/.test(generatedSettings));
+    check("generated project has no hooks by default", /"hooks"\s*:\s*\{\s*\}/.test(generatedSettings));
+    check("generated project has the default hook presentation", /"reveal"\s*:\s*"always"/.test(generatedSettings) && /"panel"\s*:\s*"shared"/.test(generatedSettings));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
     check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "scripts", "$PBOPREFIX$")));
@@ -133,16 +135,19 @@ try {
     check("config.cpp uses the tag-relative function path", /file = "\\example\\functions";/.test(config));
     check("every function class exists in config.cpp", ["hello", "add", "showCounter", "receiveReloadedFunction"].every(name => new RegExp(`class ${name} \\{\\}`).test(config)));
 
-    const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "settings.json"), "utf8");
-    check("workspace settings written", /"sqfReloader\.junctionMode": "addon"/.test(settingsJson));
-    check("workspace settings include normal log verbosity", /"sqfReloader\.logLevel": "info"/.test(settingsJson));
+    const settingsJson = fs.readFileSync(path.join(sandbox, ".vscode", "sqfReloader-settings.json"), "utf8");
+    check("project settings written", /"junctionMode": "addon"/.test(settingsJson));
+    check("project settings include normal log verbosity", /"logLevel": "info"/.test(settingsJson));
 
     // --- second run must not overwrite work --------------------------------
     const before = fs.readFileSync(hello, "utf8");
     fs.writeFileSync(hello, `${before}\n// edited by the user\n`, "utf8");
+    const settingsPath = path.join(sandbox, ".vscode", "sqfReloader-settings.json");
+    fs.writeFileSync(settingsPath, "{\n    \"logLevel\": \"verbose\"\n}\n", "utf8");
     const second = writeTemplate(sandbox, true, false);
     check("second run skips existing files", second.skipped.length === 48, `${second.skipped.length} skipped`);
     check("user edits survive a second run", fs.readFileSync(hello, "utf8").includes("edited by the user"));
+    check("second run keeps the project settings file", fs.readFileSync(settingsPath, "utf8").includes('"logLevel": "verbose"'));
 
     // --- mod-only variant ---------------------------------------------------
     const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
@@ -151,18 +156,18 @@ try {
     check("mod-only variant still writes server example (no $PBOPREFIX$)", modOnly.files.length === 21, `${modOnly.files.length} files`);
     fs.rmSync(modOnlyRoot, { recursive: true, force: true });
 
-    // --- extension .vscode/settings.json must be valid JSON ---------------
-    // (comments are allowed by VS Code, so strip them before parsing)
+    // --- .vscode/sqfReloader-settings.json must be valid JSON -------------
+    // (whole-line comments are allowed in the template, so strip them before parsing)
     const jsonc = settingsJson
         .split(/\r?\n/)
         .filter(line => !line.trim().startsWith("//"))
         .join("\n");
     const parsed = JSON.parse(jsonc);
-    check("generated settings.json parses", parsed["sqfReloader.junctionMode"] === "addon");
-    check("generated settings.json log verbosity defaults to info", parsed["sqfReloader.logLevel"] === "info");
-    check("generated settings.json omits armaDirectory (auto-detected, never written)", !("sqfReloader.armaDirectory" in parsed));
-    check("generated settings.json has one shared API port", parsed["sqfReloader.apiPort"] > 0 && !("sqfReloader.serverApiPort" in parsed));
-    check("generated settings.json has no watch target (always the local game)", !("sqfReloader.watchTarget" in parsed));
+    check("generated project settings parse", parsed.junctionMode === "addon");
+    check("generated project settings log verbosity defaults to info", parsed.logLevel === "info");
+    check("generated project settings omit armaDirectory (auto-detected, never written)", !("armaDirectory" in parsed));
+    check("generated project settings have one shared API port", parsed.apiPort > 0 && !("serverApiPort" in parsed));
+    check("generated project settings have no watch target (always the local game)", !("watchTarget" in parsed));
 } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
 }

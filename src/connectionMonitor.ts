@@ -28,7 +28,7 @@ const OFFLINE_CODES = ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH
 
 /**
  * The one endpoint every instance uses: client, editor, hosted mission and dedicated server all
- * bind sqfReloader.apiPort, so there is nothing to guess from the instance type.
+ * bind apiPort, so there is nothing to guess from the instance type.
  */
 export function apiTargets(settings: Settings = readSettings()): ApiTarget[] {
     return [{ name: "client", apiUrl: settings.apiUrl }];

@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.6.6",
+  "version": "3.7.0",
   "publisher": "Razer",
   "icon": "sqfReloader_logo.png",
   "repository": {
@@ -238,179 +238,12 @@
         }
       ]
     },
-    "configuration": {
-      "title": "Arma 3 SQF Reloader",
-      "properties": {
-        "sqfReloader.armaDirectory": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "markdownDescription": "Arma 3 installation folder (contains `arma3_x64.exe`). Leave empty to auto-detect from the registry / Steam libraries. Can be set per project in `.vscode/settings.json`."
-        },
-        "sqfReloader.armaProfile": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Arma 3 profile name to use for mission links and launch (for example `Razer`). Leave empty to use the most recently updated profile. If the named profile does not exist, the most recently updated profile is used."
-        },
-        "sqfReloader.modTypes": {
-          "type": "object",
-          "default": {},
-          "scope": "resource",
-          "additionalProperties": {
-            "type": "string",
-            "enum": [
-              "client",
-              "server",
-              "both",
-              "off"
-            ]
-          },
-          "markdownDescription": "Optional mod launch roles keyed by the mod folder path relative to its workspace folder. Server mods are omitted from regular client launches and use `-serverMod` on dedicated-server launches. `off` keeps a discovered folder out of the launch entirely. Unclassified mods keep the existing `-mod` behavior."
-        },
-        "sqfReloader.serverLaunchArguments": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "markdownDescription": "Additional startup arguments applied only to dedicated-server launches, e.g. `-port 2302` or `-profiles=profiles`."
-        },
-        "sqfReloader.watchInterval": {
-          "type": "integer",
-          "default": 1000,
-          "minimum": 100,
-          "maximum": 60000,
-          "scope": "resource",
-          "markdownDescription": "How often the project debug console reevaluates watch expressions, in milliseconds."
-        },
-        "sqfReloader.watchExpressions": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "scope": "resource",
-          "markdownDescription": "SQF expressions saved as project debug-console watches."
-        },
-        "sqfReloader.externalMods": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "path": { "type": "string" },
-              "type": { "type": "string", "enum": ["client", "server", "both"] }
-            },
-            "required": ["path", "type"]
-          },
-          "default": [],
-          "scope": "resource",
-          "markdownDescription": "Additional local or Steam Workshop mod folders for this project. The extension passes these paths to Arma without modifying their contents."
-        },
-        "sqfReloader.clearArmaMissionArtifacts": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "Automatically remove Arma-generated `~Mission.World` preview folders from the active profile's `Missions` and `MPMissions` directories."
-        },
-        "sqfReloader.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Send SQF changes to Arma 3 when a file is saved."
-        },
-        "sqfReloader.apiPort": {
-          "type": "integer",
-          "default": 8764,
-          "minimum": 1,
-          "maximum": 65535,
-          "markdownDescription": "Port used for client API requests."
-        },
-        "sqfReloader.defaultPort": {
-          "type": "integer",
-          "default": 8764,
-          "minimum": 1,
-          "maximum": 65535,
-          "deprecationMessage": "Use sqfReloader.apiPort instead.",
-          "markdownDescription": "Deprecated. Use `sqfReloader.apiPort`."
-        },
-        "sqfReloader.apiUrl": {
-          "type": "string",
-          "default": "http://127.0.0.1",
-          "description": "Host address of the SqfReloader REST API. The extension adds the API path and uses the configured client or server API port."
-        },
-        "sqfReloader.requestTimeout": {
-          "type": "number",
-          "default": 3000,
-          "description": "Timeout in milliseconds for a request to Arma."
-        },
-        "sqfReloader.runTimeout": {
-          "type": "integer",
-          "default": 30,
-          "minimum": 1,
-          "maximum": 300,
-          "markdownDescription": "Maximum seconds to wait for **Run in Arma** to return an SQF result."
-        },
-        "sqfReloader.autoJunction": {
-          "type": "boolean",
-          "default": true,
-          "description": "Create a junction from the Arma 3 folder to the open mod folder so Arma (and the reloader) can read the scripts from your working copy."
-        },
-        "sqfReloader.junctionMode": {
-          "type": "string",
-          "enum": [
-            "addon",
-            "module"
-          ],
-          "enumDescriptions": [
-            "Link each detected addon source folder into <arma>\\z\\<tag>\\addons\\<name>. The developer's $PBOPREFIX$ is left untouched.",
-            "Link the whole mod folder (@Mod) into <arma>\\<@Mod>. Closest to the normal -mod= layout."
-          ],
-          "default": "addon",
-          "description": "How mod folders are linked into the Arma 3 directory."
-        },
-        "sqfReloader.reloadOnSave": {
-          "type": "string",
-          "enum": [
-            "reload",
-            "recompile",
-            "off"
-          ],
-          "enumDescriptions": [
-            "Read the saved file from disk and recompile the TAG_fnc_name variable (recommended).",
-            "Send the file content through POST /api/command as a recompile request (compatible with the EdenOnline API).",
-            "Do not reload on save."
-          ],
-          "default": "reload",
-          "description": "How a saved SQF file is pushed to Arma."
-        },
-        "sqfReloader.notifyOnError": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show a notification when Arma is not reachable or a reload fails."
-        },
-        "sqfReloader.logLevel": {
-          "type": "string",
-          "enum": [
-            "error",
-            "warning",
-            "info",
-            "verbose"
-          ],
-          "enumDescriptions": [
-            "Only errors in the VS Code output; Arma logs errors only.",
-            "Errors and warnings in the VS Code output; Arma logs warnings and errors.",
-            "Normal output in VS Code and Arma (default).",
-            "Detailed diagnostics, including repeated function registration messages."
-          ],
-          "default": "info",
-          "description": "Controls SqfReloader output verbosity. Change this live from Settings or settings.json."
-        },
-        "sqfReloader.extraLaunchArguments": {
-          "type": "string",
-          "default": "-noSplash -skipIntro -noPause",
-          "markdownDescription": "Extra arguments for `SqfReloader: Play`. `-filePatching`, `-mod=` and `-noBattlEye` are always added (file patching and the mod are required by the reloader, BattlEye cannot load the unsigned extension); set `-be` here to start it anyway."
-        },
-        "sqfReloader.createExampleWithMission": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "**SqfReloader: Create example mod** also writes `missions/example.Altis`, a minimal mission that calls the generated functions."
-        }
+    "jsonValidation": [
+      {
+        "fileMatch": ".vscode/sqfReloader-settings.json",
+        "url": "./schemas/sqfReloader-settings.schema.json"
       }
-    }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

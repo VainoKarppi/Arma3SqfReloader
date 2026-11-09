@@ -8,8 +8,10 @@ import {
     Mod,
     Addon
 } from "./arma";
-import { createLinks, Link, removeAllLinks, verifyAddonLink } from "./junctions";
+import { Link, removeAllLinks, verifyAddonLink } from "./junctions";
+import { createLinksWithRepair } from "./linkRepair";
 import { log, Settings } from "./settings";
+import { fireHook, runHook } from "./hooks";
 
 export interface SetupResult {
     armaDirectory: string;
@@ -27,7 +29,7 @@ export async function setupMod(mod: Mod, settings: Settings, silent = false): Pr
 
     if (!armaDirectory) {
         if (!silent) {
-            vscode.window.showErrorMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\" in the settings or pick the folder when asked.");
+            vscode.window.showErrorMessage("Arma 3 was not found. Set \"armaDirectory\" in .vscode/sqfReloader-settings.json or pick the folder when asked.");
         }
 
         return undefined;
@@ -44,7 +46,10 @@ export async function setupMod(mod: Mod, settings: Settings, silent = false): Pr
         return { armaDirectory, mods: [mod], links: [], warnings: [warning] };
     }
 
-    const { links, warnings } = createLinks(armaDirectory, [mod], settings.junctionMode);
+    const { links, warnings } = await createLinksWithRepair(armaDirectory, [mod], settings, {
+        silent: silent || !!process.env.ARMA_API_TEST_OUTPUT,
+        force: true
+    });
 
     // Verify every addon resolves to the working copy; a real folder in the way is the most
     // common reason a reload silently reads an old PBO instead of the scripts.
@@ -95,11 +100,14 @@ export async function setupWorkspace(settings: Settings): Promise<SetupResult | 
     const armaDirectory = await findArmaDirectory(settings);
 
     if (!armaDirectory) {
-        vscode.window.showErrorMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\" in the settings.");
+        vscode.window.showErrorMessage("Arma 3 was not found. Set \"armaDirectory\" in .vscode/sqfReloader-settings.json.");
         return undefined;
     }
 
-    const { links, warnings } = createLinks(armaDirectory, mods, settings.junctionMode);
+    const { links, warnings } = await createLinksWithRepair(armaDirectory, mods, settings, {
+        silent: !!process.env.ARMA_API_TEST_OUTPUT,
+        force: true
+    });
 
     for (const mod of mods) {
         for (const addon of mod.addons) {
@@ -159,6 +167,7 @@ export async function removeJunctions(settings: Settings): Promise<void> {
         return;
     }
 
+    fireHook("postJunctionCleanup", settings, { armaDirectory });
     const text = `Removed ${removed.length} link(s)${failed.length > 0 ? `, ${failed.length} could not be removed` : ""}.`;
 
     if (failed.length > 0) {
@@ -204,7 +213,11 @@ export async function ensureJunctions(settings: Settings): Promise<void> {
         return;
     }
 
-    const { warnings } = createLinks(armaDirectory, linkable, settings.junctionMode);
+    if (!await runHook("preJunction", settings, { armaDirectory })) return;
+
+    const { warnings } = await createLinksWithRepair(armaDirectory, linkable, settings, {
+        silent: !!process.env.ARMA_API_TEST_OUTPUT
+    });
     const names = linkable.map(mod => mod.name).join(", ");
 
     log(`Junction check for ${names} in ${armaDirectory}: ${warnings.length === 0 ? "ok" : warnings.join(" | ")}`);

@@ -13,9 +13,18 @@ export interface Link {
     kind: "junction" | "directory-symlink" | "existing";
 }
 
+/** A real folder or foreign link that blocks the mount path Arma reads. */
+export interface LinkConflict {
+    armaDirectory: string;
+    linkPath: string;
+    target: string;
+    currentTarget?: string;
+}
+
 export interface LinkResult {
     links: Link[];
     warnings: string[];
+    conflicts: LinkConflict[];
 }
 
 interface Registration {
@@ -34,11 +43,12 @@ const REGISTRY_FILE = ".sqfreloader-links.json";
 export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMode): LinkResult {
     const links: Link[] = [];
     const warnings: string[] = [];
+    const conflicts: LinkConflict[] = [];
 
     for (const mod of mods) {
         if (mode === "module") {
             const linkPath = path.join(armaDirectory, mod.name.startsWith("@") ? mod.name : `@${mod.name}`);
-            const link = ensureDirectoryLink(linkPath, mod.directory, warnings);
+            const link = ensureDirectoryLink(linkPath, mod.directory, warnings, true, conflicts, armaDirectory);
 
             if (link) {
                 links.push(link);
@@ -49,7 +59,7 @@ export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMo
 
         for (const addon of mod.addons) {
             const linkPath = addonLinkPath(armaDirectory, addon);
-            const link = ensureDirectoryLink(linkPath, addon.localDirectory, warnings);
+            const link = ensureDirectoryLink(linkPath, addon.localDirectory, warnings, true, conflicts, armaDirectory);
 
             if (link) {
                 links.push(link);
@@ -58,7 +68,45 @@ export function createLinks(armaDirectory: string, mods: Mod[], mode: JunctionMo
     }
 
     registerLinks(armaDirectory, links);
-    return { links, warnings };
+    return { links, warnings, conflicts };
+}
+
+/**
+ * Moves the real folder at the mount path into <Arma 3>\.sqfreloader-backups and links the
+ * workspace sources instead. Used only after the user confirms the replacement.
+ */
+export function replaceRealFolderWithLink(conflict: LinkConflict): { ok: boolean; error?: string; backupPath?: string } {
+    if (readLinkTarget(conflict.linkPath)) {
+        return { ok: false, error: `${conflict.linkPath} is a link, not a real folder.` };
+    }
+    if (!fs.existsSync(conflict.linkPath)) {
+        return { ok: false, error: `${conflict.linkPath} no longer exists.` };
+    }
+
+    try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupRoot = path.join(conflict.armaDirectory, ".sqfreloader-backups", stamp);
+        fs.mkdirSync(backupRoot, { recursive: true });
+        const name = path.basename(conflict.linkPath);
+        let backupPath = path.join(backupRoot, name);
+        for (let index = 2; fs.existsSync(backupPath); index++) {
+            backupPath = path.join(backupRoot, `${name}-${index}`);
+        }
+
+        fs.renameSync(conflict.linkPath, backupPath);
+        fs.mkdirSync(path.dirname(conflict.linkPath), { recursive: true });
+
+        if (process.platform === "win32") {
+            execFileSync("cmd", ["/c", "mklink", "/J", conflict.linkPath, conflict.target], { stdio: "pipe" });
+        } else {
+            fs.symlinkSync(conflict.target, conflict.linkPath, "dir");
+        }
+
+        log(`Replaced ${conflict.linkPath} with a junction to ${conflict.target} (old folder: ${backupPath})`);
+        return { ok: true, backupPath };
+    } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
 }
 
 const MOUNT_ROOTS = ["z", "x"];
@@ -115,7 +163,14 @@ export function removeModInZLink(armaDirectory: string, mod: Mod): boolean {
 }
 
 /** Creates the link unless the path is already correct. */
-function ensureDirectoryLink(linkPath: string, target: string, warnings: string[], replace = false): Link | undefined {
+function ensureDirectoryLink(
+    linkPath: string,
+    target: string,
+    warnings: string[],
+    replace = false,
+    conflicts?: LinkConflict[],
+    armaDirectory?: string
+): Link | undefined {
     const resolvedTarget = path.resolve(target);
 
     if (fs.existsSync(linkPath)) {
@@ -127,8 +182,9 @@ function ensureDirectoryLink(linkPath: string, target: string, warnings: string[
             return { linkPath, target: resolvedTarget, kind: "existing" };
         }
 
-        // A mission link that points at an older copy is refreshed; a real folder is never
-        // touched, because it is user data.
+        // A link that points at an older copy is refreshed; a real folder is never touched,
+        // because it is user data. The real folder is reported so the setup flow can offer to
+        // move it aside instead of silently leaving Arma on the stale copy.
         if (replace && currentTarget) {
             try {
                 fs.rmdirSync(linkPath);
@@ -137,6 +193,10 @@ function ensureDirectoryLink(linkPath: string, target: string, warnings: string[
                 warnings.push(`Could not refresh ${linkPath}: ${error instanceof Error ? error.message : String(error)}`);
                 return undefined;
             }
+        } else if (!currentTarget && conflicts && armaDirectory) {
+            conflicts.push({ armaDirectory, linkPath, target: resolvedTarget });
+            warnings.push(`${linkPath} is a real folder, not a link to ${resolvedTarget}. The workspace sources are not mounted there.`);
+            return undefined;
         } else {
             warnings.push(`${linkPath} already exists and points to ${currentTarget ?? "a real folder"}; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
             return undefined;
@@ -277,7 +337,7 @@ export function linkMissions(armaDirectory: string, profileDirectory: string, mi
         }
     }
 
-    return { links, warnings };
+    return { links, warnings, conflicts: [] };
 }
 
 const MISSION_FOLDERS = ["Missions", "MPMissions"];
@@ -366,7 +426,9 @@ export function verifyAddonLink(armaDirectory: string, addon: Addon): { ok: bool
     const resolved = readLinkTarget(linkPath);
 
     if (!resolved) {
-        return { ok: fs.existsSync(linkPath) };
+        // A real folder at the mount path does not expose the workspace sources, even when a
+        // stale config.cpp makes the path look populated.
+        return { ok: false };
     }
 
     return { ok: path.resolve(resolved).toLowerCase() === path.resolve(addon.localDirectory).toLowerCase(), resolved };

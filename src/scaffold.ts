@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { findMods, Mod } from "./arma";
 import { log, readSettings } from "./settings";
+import { PROJECT_SETTINGS_FILE } from "./projectSettings";
 import { startupScript } from "./runtime";
 
 /** Tag of the generated example mod; drives the SqfReloader runtime path and function names. */
@@ -112,7 +113,15 @@ export function writeTemplate(root: string, withMission: boolean, force: boolean
     write(path.join(addonDirectory, "functions", "fn_hello.sqf"), fnHello());
     write(path.join(addonDirectory, "functions", "fn_add.sqf"), fnAdd());
     write(path.join(addonDirectory, "functions", "fn_showCounter.sqf"), fnShowCounter());
-    write(path.join(root, ".vscode", "settings.json"), vscodeSettings());
+
+    // The project settings file belongs to the user once it exists: recreating the template must
+    // never reset launch options or mod roles that were configured in the project settings panel.
+    const settingsFile = path.join(root, ".vscode", PROJECT_SETTINGS_FILE);
+    if (fs.existsSync(settingsFile)) {
+        skipped.push(settingsFile);
+    } else {
+        write(settingsFile, projectSettingsTemplate());
+    }
 
     let missionDirectory: string | undefined;
     let mpMissionDirectory: string | undefined;
@@ -517,7 +526,6 @@ class CfgFunctions {
             class hello {};
             class add {};
             class showCounter {};
-            class receiveReloadedFunction {};
         };
     };
 };
@@ -1173,32 +1181,53 @@ systemChat format ["OnPlayerRespawn.sqf ran for %1", name _newUnit];
 `;
 }
 
-function vscodeSettings(): string {
+function projectSettingsTemplate(): string {
     return `{
     // Arma 3 is detected automatically from the registry / Steam libraries on load; set
-    // "sqfReloader.armaDirectory" here only to pin a specific installation.
+    // "armaDirectory" here only to pin a specific installation.
     // Set a profile name to choose it; leave empty to use the most recently updated profile.
-    "sqfReloader.armaProfile": "",
+    "armaProfile": "",
     // API host. The extension adds /api and uses the port below for every Arma instance
     // (client, editor, hosted mission and dedicated server).
-    "sqfReloader.apiUrl": "http://127.0.0.1",
+    "apiUrl": "http://127.0.0.1",
     // SqfReloader API port.
-    "sqfReloader.apiPort": 8764,
+    "apiPort": 8764,
+    // Timeout in milliseconds for a request to Arma.
+    "requestTimeout": 3000,
     // Maximum seconds to wait for Run in Arma to return an SQF value.
-    "sqfReloader.runTimeout": 30,
+    "runTimeout": 30,
     // Remove Arma-generated ~Mission.World preview folders from the active profile.
-    "sqfReloader.clearArmaMissionArtifacts": true,
-    "sqfReloader.junctionMode": "addon",
-    "sqfReloader.logLevel": "info",
-    "sqfReloader.reloadOnSave": "reload",
-    "sqfReloader.modTypes": {
+    "clearArmaMissionArtifacts": true,
+    "enabled": true,
+    "autoJunction": true,
+    "junctionMode": "addon",
+    "notifyOnError": true,
+    "createExampleWithMission": true,
+    "logLevel": "info",
+    "reloadOnSave": "reload",
+    "modTypes": {
         "server-example/@ExampleServerMod": "server"
     },
-    "sqfReloader.extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
-    "sqfReloader.serverLaunchArguments": "",
-    "sqfReloader.watchInterval": 1000,
-    "sqfReloader.watchExpressions": [],
-    "sqfReloader.externalMods": []
+    "extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
+    "serverLaunchArguments": "",
+    "watchInterval": 1000,
+    "watchExpressions": [],
+    "externalMods": [],
+    // Commands run in a VS Code terminal at lifecycle events. Event names are listed in the
+    // project settings panel; \${workspaceFolder} expands to this project folder. Example:
+    // "preClientLaunch": {
+    //     "commands": ["\${workspaceFolder}\\Tools\\BuildExtension.ps1"],
+    //     "blocking": true,
+    //     "continueOnError": false
+    // }
+    "hooks": {},
+    // VS Code task presentation options for every hook terminal.
+    "hookPresentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+    }
 }
 `;
 }

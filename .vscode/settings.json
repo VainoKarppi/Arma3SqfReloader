@@ -1,14 +1,6 @@
 {
-    // Recommended workspace settings for developing this repository.
-    // When a user opens *their* mod folder, the extension settings below are what matter.
-    "sqfReloader.enabled": true,
-    "sqfReloader.apiUrl": "http://127.0.0.1",
-    "sqfReloader.apiPort": 8764,
-    "sqfReloader.autoJunction": true,
-    "sqfReloader.junctionMode": "addon",
-    "sqfReloader.reloadOnSave": "reload",
-    "sqfReloader.notifyOnError": true,
-    "sqfReloader.requestTimeout": 3000,
+    // Recommended workspace settings for developing this repository. This project's SqfReloader
+    // settings live in .vscode/sqfReloader-settings.json.
 
     // The SqfReloader mod sources live in SqfReloaderExtension/@SqfReloader (mod.cpp, logo.paa,
     // addons/scripts) and are packed into scripts.pbo; open them there to edit SqfReloader's own

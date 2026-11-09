@@ -4,6 +4,8 @@ import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
+import { ensureProjectSettings, projectSettingsPath, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
+import { fireHook, HookContext, runHook } from "./hooks";
 import { detectArmaDirectory, findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers, resetArmaDetection } from "./arma";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
 import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
@@ -23,6 +25,12 @@ let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
 let workspaceInjectionLoop: Promise<void> | undefined;
 let workspaceInjectionGeneration = 0;
+
+// Transition tracking for lifecycle hooks (connected, crashed, exited).
+let wasClientConnected = false;
+let wasServerConnected = false;
+let wasServerRunning = false;
+let serverStopRequested = false;
 
 export function activate(context: vscode.ExtensionContext): void {
     const version = context.extension.packageJSON.version;
@@ -56,7 +64,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const statusTimer = setInterval(() => {
         void refreshRunningStatus().then(running => {
             if (wasArmaRunning && !running) {
-                void findArmaDirectory(readSettings()).then(armaDirectory => {
+                const settings = readSettings();
+                fireHook("onClientExit", settings, { apiUrl: settings.apiUrl });
+                void findArmaDirectory(settings).then(armaDirectory => {
                     if (armaDirectory) cleanupSnapshots(armaDirectory);
                 });
             }
@@ -101,6 +111,16 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
+        const hookContext: HookContext = {
+            file: document.fileName,
+            armaDirectory: await findArmaDirectory(settings) ?? undefined,
+            apiUrl: settings.apiUrl
+        };
+        if (!await runHook("preReload", settings, hookContext)) {
+            log("Reload skipped by the preReload hook.");
+            return;
+        }
+
         // A save supersedes the previous Arma compile diagnostic; a new RPT block will add it back.
         rptDiagnostics.delete(document.uri);
 
@@ -108,16 +128,19 @@ export function activate(context: vscode.ExtensionContext): void {
             const outcome = await reloadDocument(document, settings);
 
             if (outcome.ok) {
+                fireHook("postReload", settings, hookContext);
                 if (/^(Reloaded|Reload queued|Recompile|Compiled)/.test(outcome.message)) {
                     setStatus(`$(check) ${shorten(outcome.message)}`, "ok");
                 }
             } else {
                 setStatus("$(warning) SqfReloader: reload failed", "error");
                 log(`Reload failed: ${outcome.message}${outcome.detail ? ` (${outcome.detail})` : ""}`);
+                fireHook("onReloadError", settings, hookContext);
             }
         } catch (error) {
             logError("save handler failed", error);
             setStatus("$(warning) SqfReloader: reload failed", "error");
+            fireHook("onReloadError", settings, hookContext);
         }
     }));
 
@@ -139,44 +162,49 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push({ dispose: () => clearTimeout(startupWorkspaceTimer) });
 
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(onWorkspaceChange));
-    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
-        if (event.affectsConfiguration("sqfReloader")) {
-            if (configuredLogLevel() === "verbose") log("Settings changed.");
-            void refreshStatus();
-            const cleanupChanged = [
-                "sqfReloader.clearArmaMissionArtifacts",
-                "sqfReloader.armaDirectory",
-                "sqfReloader.armaProfile",
-                "sqfReloader.extraLaunchArguments"
-            ].some(key => event.affectsConfiguration(key));
-            const junctionsChanged = [
-                "sqfReloader.autoJunction",
-                "sqfReloader.armaDirectory",
-                "sqfReloader.junctionMode"
-            ].some(key => event.affectsConfiguration(key));
-            if (event.affectsConfiguration("sqfReloader.armaDirectory")) {
-                // Clearing the setting falls back to a fresh registry lookup for this session.
-                resetArmaDetection();
-            }
-            if (cleanupChanged || junctionsChanged) {
-                void (async () => {
-                    if (cleanupChanged) await configureMissionArtifactCleanup(readSettings());
-                    if (junctionsChanged) await ensureJunctions(readSettings());
-                })().catch(error => logError("settings change handling failed", error));
-            }
-            if (event.affectsConfiguration("sqfReloader.logLevel")) {
-                workspaceInjectionGeneration++;
-                workspaceInjectionLoop = undefined;
-            }
-            if (event.affectsConfiguration("sqfReloader.logLevel")) {
-                void refreshRunningStatus().then(running => {
-                    if (running) return applyRuntimeLogLevel(readSettings());
-                }).catch(error => {
-                    logError("could not apply SqfReloader log level", error);
-                });
-            }
+
+    // Project settings live in their own file, so a file watcher picks up edits made outside the
+    // project settings panel instead of a VS Code configuration change event.
+    let previousSettings = readSettings();
+    const onProjectSettingsChanged = () => {
+        const nextSettings = readSettings();
+        const previous = previousSettings;
+        previousSettings = nextSettings;
+        if (configuredLogLevel() === "verbose") log("Project settings changed.");
+        void refreshStatus();
+        if (nextSettings.armaDirectory !== previous.armaDirectory) {
+            // Clearing the setting falls back to a fresh registry lookup for this session.
+            resetArmaDetection();
         }
-    }));
+        const cleanupChanged = nextSettings.clearArmaMissionArtifacts !== previous.clearArmaMissionArtifacts
+            || nextSettings.armaDirectory !== previous.armaDirectory
+            || nextSettings.armaProfile !== previous.armaProfile
+            || nextSettings.extraLaunchArguments !== previous.extraLaunchArguments;
+        const junctionsChanged = nextSettings.autoJunction !== previous.autoJunction
+            || nextSettings.armaDirectory !== previous.armaDirectory
+            || nextSettings.junctionMode !== previous.junctionMode;
+        if (cleanupChanged || junctionsChanged) {
+            void (async () => {
+                if (cleanupChanged) await configureMissionArtifactCleanup(readSettings());
+                if (junctionsChanged) await ensureJunctions(readSettings());
+            })().catch(error => logError("settings change handling failed", error));
+        }
+        if (nextSettings.logLevel !== previous.logLevel) {
+            workspaceInjectionGeneration++;
+            workspaceInjectionLoop = undefined;
+            void refreshRunningStatus().then(running => {
+                if (running) return applyRuntimeLogLevel(readSettings());
+            }).catch(error => {
+                logError("could not apply SqfReloader log level", error);
+            });
+        }
+        fireHook("onSettingsChanged", nextSettings);
+    };
+    const projectSettingsWatcher = vscode.workspace.createFileSystemWatcher("**/.vscode/sqfReloader-settings.json");
+    projectSettingsWatcher.onDidChange(onProjectSettingsChanged);
+    projectSettingsWatcher.onDidCreate(onProjectSettingsChanged);
+    projectSettingsWatcher.onDidDelete(onProjectSettingsChanged);
+    context.subscriptions.push(projectSettingsWatcher);
 
     // --- Commands ---------------------------------------------------------
     const playCommand = async (): Promise<boolean> => {
@@ -220,8 +248,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const settings = readSettings();
         const armaDirectory = await findArmaDirectory(settings);
         if (!armaDirectory || (settings.armaDirectory.trim() && !isArmaDirectory(settings.armaDirectory))) {
-            await vscode.commands.executeCommand("workbench.action.openSettings", "sqfReloader.armaDirectory");
-            vscode.window.showInformationMessage("Choose the Arma 3 installation folder in sqfReloader.armaDirectory, then click Play Arma 3 again.");
+            await openProjectSettingsFile();
+            vscode.window.showInformationMessage("Choose the Arma 3 installation folder in .vscode/sqfReloader-settings.json, then click Play Arma 3 again.");
             return false;
         }
 
@@ -260,9 +288,17 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
+        const settings = readSettings();
+        const hookContext: HookContext = {
+            armaDirectory: await findArmaDirectory(settings) ?? undefined,
+            apiUrl: settings.apiUrl
+        };
+        if (!await runHook("preClientStop", settings, hookContext)) return;
+
         try {
             require("child_process").execSync('taskkill /IM arma3_x64.exe /F');
-            const armaDirectory = await findArmaDirectory(readSettings());
+            fireHook("postClientStop", settings, hookContext);
+            const armaDirectory = await findArmaDirectory(settings);
             if (armaDirectory) {
                 // Remove only this extension's registered mod/addon links and any old
                 // z\@Mod alias it created. Empty z mount folders are pruned by cleanup.
@@ -293,25 +329,45 @@ export function activate(context: vscode.ExtensionContext): void {
             "Close Dedicated Server"
         );
         if (choice !== "Close Dedicated Server") return;
-        await stopDedicatedServer();
-        // Re-read the process list instead of trusting the cached flag: the panel and the status
-        // bar must say "Stopped" as soon as arma3server_x64.exe is gone.
-        const stillRunning = await refreshDedicatedServerStatus();
-        await refreshStatus();
-        if (stillRunning) {
-            vscode.window.showWarningMessage("The dedicated server process is still running; close it manually.");
-        } else {
-            vscode.window.showInformationMessage("Arma 3 dedicated server stopped.");
+        const settings = readSettings();
+        const hookContext: HookContext = {
+            armaDirectory: await findArmaDirectory(settings) ?? undefined,
+            apiUrl: settings.apiUrl
+        };
+        if (!await runHook("preServerStop", settings, hookContext)) return;
+
+        serverStopRequested = true;
+        try {
+            await stopDedicatedServer();
+            // Re-read the process list instead of trusting the cached flag: the panel and the status
+            // bar must say "Stopped" as soon as arma3server_x64.exe is gone.
+            const stillRunning = await refreshDedicatedServerStatus();
+            await refreshStatus();
+            if (stillRunning) {
+                vscode.window.showWarningMessage("The dedicated server process is still running; close it manually.");
+            } else {
+                fireHook("postServerStop", settings, hookContext);
+                vscode.window.showInformationMessage("Arma 3 dedicated server stopped.");
+            }
+        } finally {
+            // The status refresh above must not report the deliberate stop as a crash.
+            serverStopRequested = false;
         }
     });
 
     register(context, "sqfReloader.setup", async () => {
-        await setupFromContext(readSettings());
+        const settings = readSettings();
+        if (!await runHook("preSetup", settings, { apiUrl: settings.apiUrl })) return;
+        await setupFromContext(settings);
+        fireHook("postSetup", settings, { apiUrl: settings.apiUrl });
         await refreshStatus();
     });
 
     register(context, "sqfReloader.setupWorkspace", async () => {
-        await setupWorkspace(readSettings());
+        const settings = readSettings();
+        if (!await runHook("preSetup", settings, { apiUrl: settings.apiUrl })) return;
+        await setupWorkspace(settings);
+        fireHook("postSetup", settings, { apiUrl: settings.apiUrl });
         await refreshStatus();
     });
 
@@ -319,8 +375,10 @@ export function activate(context: vscode.ExtensionContext): void {
         const result = await scaffoldExample();
 
         if (result) {
+            const settings = readSettings();
+            fireHook("postScaffold", settings, { file: result.modDirectory });
             // Discover the new addon sources right away and create the runtime links eagerly.
-            await ensureJunctions(readSettings());
+            await ensureJunctions(settings);
             await refreshStatus();
             const action = await vscode.window.showInformationMessage(
                 "Example mod, missions, and dedicated server files are ready.",
@@ -370,10 +428,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
     register(context, "sqfReloader.reloadAll", async () => {
         const settings = readSettings();
+        const hookContext: HookContext = { apiUrl: settings.apiUrl };
+        if (!await runHook("preReloadAll", settings, hookContext)) return;
         const outcome = await reloadAll(settings);
         setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", outcome.ok ? "ok" : "error");
 
         if (outcome.ok) {
+            fireHook("postReloadAll", settings, hookContext);
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
         } else {
             vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -390,6 +451,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const outcome = await reloadAndRestartMission(settings, mission);
         setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: mission restart failed", outcome.ok ? "ok" : "error");
         if (outcome.ok) {
+            fireHook("postMissionRestart", settings, { apiUrl: settings.apiUrl, missionFolder: mission.directory });
             vscode.window.showInformationMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
         } else {
             vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
@@ -404,14 +466,26 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
+        const settings = readSettings();
+        const hookContext: HookContext = {
+            file: document.fileName,
+            armaDirectory: await findArmaDirectory(settings) ?? undefined,
+            apiUrl: settings.apiUrl
+        };
+        if (!await runHook("preReload", settings, hookContext)) return;
+
         try {
-            const outcome = await reloadFileNow(document, readSettings());
+            const outcome = await reloadFileNow(document, settings);
             setStatus(outcome.ok ? `$(check) ${shorten(outcome.message)}` : "$(warning) SqfReloader: reload failed", outcome.ok ? "ok" : "error");
 
             if (!outcome.ok) {
+                fireHook("onReloadError", settings, hookContext);
                 vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${outcome.message}`);
+            } else {
+                fireHook("postReload", settings, hookContext);
             }
         } catch (error) {
+            fireHook("onReloadError", settings, hookContext);
             logError("reload file failed", error);
             vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -496,7 +570,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         const armaDirectory = await findArmaDirectory(settings);
         if (!armaDirectory) {
-            vscode.window.showErrorMessage("Arma 3 is running, but its installation folder could not be found. Set sqfReloader.armaDirectory.");
+            vscode.window.showErrorMessage("Arma 3 is running, but its installation folder could not be found. Set armaDirectory in .vscode/sqfReloader-settings.json.");
             return;
         }
 
@@ -703,7 +777,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const armaDirectory = await findArmaDirectory(readSettings());
 
         if (!armaDirectory) {
-            vscode.window.showWarningMessage("Arma 3 was not found. Set \"sqfReloader.armaDirectory\".");
+            vscode.window.showWarningMessage("Arma 3 was not found. Set \"armaDirectory\" in .vscode/sqfReloader-settings.json.");
             return;
         }
 
@@ -715,6 +789,10 @@ export function activate(context: vscode.ExtensionContext): void {
     });
 
     register(context, "sqfReloader.toggleAutoReload", async () => {
+        if (!vscode.workspace.workspaceFolders?.length) {
+            vscode.window.showWarningMessage("Open an Arma project folder first: reload on save is stored in the project settings.");
+            return;
+        }
         const enabled = !readSettings().enabled;
         await updateSetting("enabled", enabled);
         vscode.window.showInformationMessage(`Arma 3 SQF Reloader: reload on save ${enabled ? "enabled" : "disabled"}.`);
@@ -1040,6 +1118,16 @@ function shorten(message: string): string {
     return message.length > 40 ? `${message.slice(0, 37)}...` : message;
 }
 
+/** Opens (and creates if needed) the project settings file in the editor. */
+async function openProjectSettingsFile(): Promise<void> {
+    const file = projectSettingsPath();
+    if (!file) return;
+    if (!fs.existsSync(file)) await ensureProjectSettings(PROJECT_SETTING_DEFAULTS);
+    if (!fs.existsSync(file)) return;
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document, { preview: false });
+}
+
 /**
  * Reflects the game processes and the API in the status bar. Green when everything that should
  * be connected is connected, red when Arma runs without its API, and the neutral Play action when
@@ -1060,6 +1148,21 @@ async function refreshStatus(runningState?: boolean): Promise<void> {
         dedicatedServer,
         api: { api: api?.api === true, game: api?.game === true }
     };
+    const clientConnected = snapshot.game && snapshot.api.game;
+    const serverConnected = snapshot.dedicatedServer && snapshot.api.game;
+    if (clientConnected && !wasClientConnected) {
+        fireHook("onClientConnected", settings, { apiUrl: settings.apiUrl });
+    }
+    if (serverConnected && !wasServerConnected) {
+        fireHook("onServerConnected", settings, { apiUrl: settings.apiUrl });
+    }
+    wasClientConnected = clientConnected;
+    wasServerConnected = serverConnected;
+    if (wasServerRunning && !snapshot.dedicatedServer && !serverStopRequested) {
+        fireHook("onServerCrash", settings, { apiUrl: settings.apiUrl });
+    }
+    wasServerRunning = snapshot.dedicatedServer;
+
     const presentation = statusPresentation(snapshot, settings);
 
     if (statusBar) {

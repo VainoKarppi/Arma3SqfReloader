@@ -13,6 +13,7 @@ module.exports = {
         showErrorMessage: () => Promise.resolve(undefined),
         showInformationMessage: () => Promise.resolve(undefined),
         showOpenDialog: () => Promise.resolve(undefined),
+        showTextDocument: () => Promise.resolve({}),
         activeTextEditor: undefined,
         createStatusBarItem: () => ({
             show: () => undefined,
@@ -25,6 +26,13 @@ module.exports = {
             update: () => Promise.resolve(undefined)
         }),
         workspaceFolders: [],
+        openTextDocument: () => Promise.resolve({}),
+        createFileSystemWatcher: () => ({
+            onDidChange: () => ({ dispose: () => undefined }),
+            onDidCreate: () => ({ dispose: () => undefined }),
+            onDidDelete: () => ({ dispose: () => undefined }),
+            dispose: () => undefined
+        }),
         onDidSaveTextDocument: () => ({ dispose: () => undefined }),
         onDidChangeWorkspaceFolders: () => ({ dispose: () => undefined }),
         onDidChangeConfiguration: () => ({ dispose: () => undefined })

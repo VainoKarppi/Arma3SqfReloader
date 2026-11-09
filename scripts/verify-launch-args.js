@@ -24,9 +24,9 @@ const { prepareRuntime, bundledModFolder } = require(path.join(repoRoot, "out", 
 const { findMods, findMissions } = require(path.join(repoRoot, "out", "arma.js"));
 const { readLinkTarget, addonLinkPath } = require(path.join(repoRoot, "out", "junctions.js"));
 
-/** Reads sqfReloader.* from <workspace>/.vscode/settings.json (JSONC, comments stripped). */
+/** Reads <workspace>/.vscode/sqfReloader-settings.json (JSONC, comments stripped). */
 function workspaceSettings(workspace) {
-    const file = path.join(workspace, ".vscode", "settings.json");
+    const file = path.join(workspace, ".vscode", "sqfReloader-settings.json");
 
     if (!fs.existsSync(file)) {
         return {};
@@ -38,15 +38,7 @@ function workspaceSettings(workspace) {
         .join("\n")
         .replace(/,\s*([}\]])/g, "$1");
 
-    const result = {};
-
-    for (const [key, value] of Object.entries(JSON.parse(text))) {
-        if (key.startsWith("sqfReloader.")) {
-            result[key.slice("sqfReloader.".length)] = value;
-        }
-    }
-
-    return result;
+    return JSON.parse(text);
 }
 
 // --- arguments --------------------------------------------------------------
