@@ -14,6 +14,7 @@ import { modTypeForDirectory } from "./modTypes";
 import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./launchMods";
 import { fireHook, HookContext, runHook } from "./hooks";
 import { buildWorkspaceAddonPbos } from "./pbo";
+import { armaLogDirectory } from "./rpt";
 
 /** Port the resolved project API URL requests, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
@@ -230,11 +231,6 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
  * Folder Arma writes its .rpt logs to: <c>%LOCALAPPDATA%\Arma 3</c> (single player profile).
  * Resolved at runtime because the output channel does not expand environment variables.
  */
-export function armaLogDirectory(): string {    const localAppData = process.env.LOCALAPPDATA?.trim() || path.join(require("os").homedir(), "AppData", "Local");
-
-    return path.join(localAppData, "Arma 3");
-}
-
 function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions, args = launchArguments(launch, settings, options)): void {
 
     const output = getOutput();

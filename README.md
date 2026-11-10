@@ -169,10 +169,11 @@ creating it. The extension never reads or writes `.vscode/settings.json`, and a 
 exists only gets the missing settings added, so existing values are kept.
 
 The **Arma AI** language-model tool can check connectivity, inspect the live Arma context (mode,
-mission, server/client role, loaded mods, activated addons, and SqfReloader log-file path), or run
-an SQF expression and return its result. It is instructed to fetch context before answering
-questions that depend on the current session. Evaluation requires user confirmation because SQF
-can change live game state. For manual evaluation, use the existing **Debug Console**.
+mission, server/client role, loaded mods, activated addons, and SqfReloader log-file path), read
+the current Arma `.rpt`, or run an SQF expression and return its result. After each evaluation, it
+checks the `.rpt` for script errors because an accepted API response does not guarantee that the
+SQF ran without errors. Evaluation requires user confirmation because SQF can change live game
+state. For manual evaluation, use the existing **Debug Console**.
 
 The panel also configures **hooks**: commands that run in a VS Code terminal at lifecycle
 events, for example `"${workspaceFolder}\\Tools\\BuildExtension.ps1"` before a client or server

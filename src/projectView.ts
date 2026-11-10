@@ -20,6 +20,7 @@ import {
 import { refreshDedicatedServerStatus, refreshRunningStatus } from "./launcher";
 import { workspaceMods } from "./runtime";
 import { DEFAULT_PORT, normalizeApiHost } from "./ports";
+import { armaLogDirectory, findLatestRptPath, readRptTail } from "./rpt";
 
 /** External mods are never "off": removing the entry is how you stop loading them. */
 type ExternalModType = "client" | "server" | "both";
@@ -1149,50 +1150,4 @@ function formatSqfText(text: string): string {
 function getNonce(): string {
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     return Array.from({ length: 32 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
-}
-
-function armaLogDirectory(): string {
-    return path.join(process.env.LOCALAPPDATA?.trim() || path.join(require("os").homedir(), "AppData", "Local"), "Arma 3");
-}
-
-async function findLatestRptPath(): Promise<string> {
-    let names: string[];
-    try {
-        names = await fs.promises.readdir(armaLogDirectory());
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-        throw error;
-    }
-    const files = await Promise.all(names
-        .filter(name => /^arma3(?:server)?_x64_.*\.rpt$/i.test(name))
-        .map(async name => {
-            const file = path.join(armaLogDirectory(), name);
-            try {
-                const stats = await fs.promises.stat(file);
-                return stats.isFile() ? { file, modified: stats.mtimeMs } : undefined;
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-                throw error;
-            }
-        }));
-    return files
-        .filter((entry): entry is { file: string; modified: number } => !!entry)
-        .sort((left, right) => right.modified - left.modified)[0]?.file ?? "";
-}
-
-async function readRptTail(file: string): Promise<string> {
-    try {
-        const handle = await fs.promises.open(file, "r");
-        try {
-            const { size } = await handle.stat();
-            const bytesToRead = Math.min(size, 64 * 1024);
-            const buffer = Buffer.alloc(bytesToRead);
-            await handle.read(buffer, 0, bytesToRead, size - bytesToRead);
-            return buffer.toString("utf8").split(/\r?\n/).slice(-80).join("\n");
-        } finally {
-            await handle.close();
-        }
-    } catch (error) {
-        return `Could not read RPT: ${error instanceof Error ? error.message : String(error)}`;
-    }
 }

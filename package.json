@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.7.8",
+  "version": "3.7.9",
   "publisher": "Razer",
   "icon": "sqfReloader_logo.png",
   "repository": {
@@ -143,15 +143,15 @@
         "name": "armaAiTool",
         "toolReferenceName": "armaAiTool",
         "displayName": "Arma AI",
-        "modelDescription": "Interact with the currently running Arma 3 session through SqfReloader. Before answering questions that depend on the live game or evaluating code without current session context, call action=context first and use its returned mode, mission, role flags, loaded mods, activated addons, API address, and SqfReloader log-file path. Use action=status for a lightweight connectivity check. Use action=eval to run SQF and return its result; evaluation can change live game state and requires user confirmation. The context's isServer flag describes the connected instance, not a separately running server.",
-        "userDescription": "Read live Arma context and SqfReloader log location, check connectivity, or evaluate SQF in Arma.",
+        "modelDescription": "Interact with the currently running Arma 3 session through SqfReloader. Before answering questions that depend on the live game or evaluating code without current session context, call action=context first and use its returned mode, mission, role flags, loaded mods, activated addons, API address, and SqfReloader log-file path. Use action=status for a lightweight connectivity check. Use action=eval to run SQF and return its result; evaluation can change live game state and requires user confirmation. After every evaluation, call action=rpt and inspect the current Arma RPT for new 'Error in expression', 'Error', or related script diagnostics before deciding whether the SQF worked; an ok API response means only that evaluation was submitted, not that the SQF completed without errors. Use the timestamps and context to distinguish new diagnostics from older log entries. Call action=rpt whenever the user asks about current script errors. The context's isServer flag describes the connected instance, not a separately running server.",
+        "userDescription": "Read live Arma context and RPT script errors, check connectivity, or evaluate SQF in Arma.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["context", "status", "eval"],
-              "description": "Use context first for live session details and log location, status for a connectivity check, and eval to execute SQF."
+              "enum": ["context", "status", "eval", "rpt"],
+              "description": "Use context first for live session details, status for connectivity, eval to execute SQF, and rpt to read the current Arma script log."
             },
             "code": {
               "type": "string",

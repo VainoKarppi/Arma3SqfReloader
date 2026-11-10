@@ -2,12 +2,13 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { evalCode, getStatus } from "./api";
 import { refreshRunningStatus } from "./launcher";
+import { findLatestRptPath, readRptTail } from "./rpt";
 import { Settings } from "./settings";
 
 export const ARMA_AI_TOOL_NAME = "armaAiTool";
 
 export interface ArmaAiToolInput {
-    action: "context" | "status" | "eval";
+    action: "context" | "status" | "eval" | "rpt";
     code?: string;
 }
 
@@ -94,6 +95,9 @@ export class ArmaAiTool implements vscode.LanguageModelTool<ArmaAiToolInput> {
 
     async prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<ArmaAiToolInput>): Promise<vscode.PreparedToolInvocation> {
         const action = options.input.action;
+        if (action === "rpt") {
+            return { invocationMessage: "Reading the current Arma RPT log" };
+        }
         if (action === "context") {
             return { invocationMessage: "Reading the current Arma session context" };
         }
@@ -116,6 +120,18 @@ export class ArmaAiTool implements vscode.LanguageModelTool<ArmaAiToolInput> {
         let result: Record<string, unknown>;
         if (token.isCancellationRequested) {
             result = { ok: false, error: "The Arma tool request was cancelled." };
+        } else if (options.input.action === "rpt") {
+            try {
+                const file = await findLatestRptPath();
+                result = file
+                    ? { ok: true, file, text: await readRptTail(file) }
+                    : { ok: false, error: "No Arma RPT file was found in the Arma log directory." };
+            } catch (error) {
+                result = {
+                    ok: false,
+                    error: `Could not read the current Arma RPT: ${error instanceof Error ? error.message : String(error)}`
+                };
+            }
         } else if (options.input.action === "context") {
             const settings = this.getSettings();
             const connection = await checkArmaConnection(settings);
