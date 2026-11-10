@@ -47,7 +47,7 @@ if (_apiRunning) then {
         private _apiPortNumber = if (_apiPort isEqualType 0) then {_apiPort} else {parseNumber str (_apiPort param [0, 0])};
 
         if (_apiUrl == "") then {_apiUrl = format ["http://127.0.0.1:%1/api/", _apiPortNumber]};
-        diag_log format ["[SqfReloader] REST API port %1 (%2) - the VS Code extension connects to %3", _apiPortNumber, _message, _apiUrl];
+        diag_log format ["[SqfReloader] REST API port %1 (%2)", _apiPortNumber, _message];
     };
 };
 

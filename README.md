@@ -192,7 +192,7 @@ When the game (or a dedicated server) connects, the extension writes the endpoin
 **Arma 3 SQF Reloader** output channel, and the mod logs the same port to the RPT:
 
 ```text
-[SqfReloader] REST API port 8764 (REST API listening on http://127.0.0.1:8764/api/) - the VS Code extension connects to http://127.0.0.1:8764/api/
+[SqfReloader] REST API port 8764 (REST API listening on http://127.0.0.1:8764/api/)
 ```
 
 The port comes from `apiUrl` / `apiPort` in `.vscode/sqfReloader-settings.json` and is written
