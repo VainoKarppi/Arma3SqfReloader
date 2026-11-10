@@ -20,6 +20,7 @@ import { hasHostnameAssignment, hostnameValue } from "./serverConfig";
 import { apiTargets, GameConnectionMonitor, readApiTarget, setRemoteLogLevel } from "./connectionMonitor";
 import { statusPresentation, StatusSnapshot, StatusTone, toneColor } from "./status";
 import { ProjectViewProvider } from "./projectView";
+import { ArmaAiTool, ARMA_AI_TOOL_NAME } from "./armaAiTool";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -68,6 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(projectView, vscode.window.registerWebviewViewProvider("sqfReloader.projectView", projectView, {
         webviewOptions: { retainContextWhenHidden: true }
     }));
+    context.subscriptions.push(vscode.lm.registerTool(ARMA_AI_TOOL_NAME, new ArmaAiTool(readSettings)));
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
     const duplicateFunctionDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader-functions");

@@ -6,5 +6,26 @@
     "junctionMode": "addon",
     "reloadOnSave": "reload",
     "notifyOnError": true,
-    "requestTimeout": 3000
+    "requestTimeout": 3000,
+    "armaProfile": "",
+    "runTimeout": 30,
+    "extraLaunchArguments": "-noSplash -skipIntro -noPause",
+    "serverLaunchArguments": "",
+    "createExampleWithMission": true,
+    "clearArmaMissionArtifacts": true,
+    "logLevel": "info",
+    "watchInterval": 1000,
+    "watchExpressions": [],
+    "modTypes": {
+        "server-mod/@ExampleServerMod": "off",
+        "SqfReloaderExtension/@SqfReloader": "off"
+    },
+    "externalMods": [],
+    "hooks": {},
+    "hookPresentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+    }
 }
