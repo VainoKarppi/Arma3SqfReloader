@@ -75,7 +75,7 @@ async function runCommandInTerminal(
     env: Record<string, string>
 ): Promise<number | undefined> {
     const task = new vscode.Task(
-        { type: "sqfReloader.hook", event },
+        { type: "shell" },
         folder,
         `SqfReloader: ${event}`,
         "SqfReloader",

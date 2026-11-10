@@ -231,6 +231,70 @@ function findMissionFunction(filePath: string): MissionFunction | undefined {
     return undefined;
 }
 
+/** Resolves the Arma function variable for a function file that has already been deleted. */
+export function deletedFunctionVariable(filePath: string): string | undefined {
+    if (!/^fn_[\w-]+\.sqf$/i.test(path.basename(filePath))) return undefined;
+
+    const missionFunction = findMissionFunction(filePath);
+    if (missionFunction) return missionFunction.variable;
+
+    const addon = findAddonForFile(filePath);
+    return addon ? toFunctionVariable(addon, filePath) : undefined;
+}
+
+/** Lists all workspace files that currently resolve to the same Arma function variable. */
+export function findDuplicateFunctionFiles(filePath: string): { variable: string; files: string[] } | undefined {
+    const variable = deletedFunctionVariable(filePath);
+    if (!variable) return undefined;
+
+    const matches = new Map<string, string>();
+    const addMatchingFiles = (directory: string, resolveVariable: (file: string) => string | undefined): void => {
+        const scan = (current: string): void => {
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(current, { withFileTypes: true });
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                    logError(`could not inspect SQF functions in ${current}`, error);
+                }
+                return;
+            }
+
+            for (const entry of entries) {
+                const child = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    scan(child);
+                } else if (entry.isFile() && /^fn_[\w-]+\.sqf$/i.test(entry.name)
+                    && resolveVariable(child)?.toLowerCase() === variable.toLowerCase()) {
+                    matches.set(path.resolve(child).toLowerCase(), child);
+                }
+            }
+        };
+        scan(directory);
+    };
+
+    for (const addon of workspaceAddons()) {
+        addMatchingFiles(addon.localDirectory, file => {
+            const sourceAddon = findAddonForFile(file);
+            return sourceAddon ? toFunctionVariable(sourceAddon, file) : undefined;
+        });
+    }
+
+    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
+    for (const mission of findMissions(roots)) {
+        const tag = readFunctionTag(mission.directory);
+        if (!tag) continue;
+        addMatchingFiles(mission.directory, file => {
+            const name = path.basename(file);
+            return /^fn_[\w-]+\.sqf$/i.test(name)
+                ? `${tag}_fnc_${name.slice(3, -4)}`
+                : undefined;
+        });
+    }
+
+    return matches.size > 1 ? { variable, files: [...matches.values()] } : undefined;
+}
+
 function scheduleSnapshotCleanup(snapshotDirectory: string, attempt = 0): void {
     const timer = setTimeout(() => {
         try {

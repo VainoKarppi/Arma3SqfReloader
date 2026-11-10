@@ -5,6 +5,7 @@ import { DEFAULT_HOOK_PRESENTATION, readProjectSettings, setProjectSetting } fro
 import { HOOK_EVENTS } from "./hookEvents";
 
 export type ReloadMode = "reload" | "recompile" | "off";
+export type DeletedFunctionBehavior = "clear" | "ask" | "keep";
 export type JunctionMode = "addon" | "module";
 export type LogLevel = "error" | "warning" | "info" | "verbose";
 export type HookReveal = "always" | "silent" | "never";
@@ -41,6 +42,7 @@ export interface Settings {
     autoJunction: boolean;
     junctionMode: JunctionMode;
     reloadOnSave: ReloadMode;
+    deletedFunctionBehavior: DeletedFunctionBehavior;
     notifyOnError: boolean;
     /** Extra arguments added when launching Arma (e.g. "-window -noSplash"). */
     extraLaunchArguments: string;
@@ -72,6 +74,7 @@ export function readSettings(): Settings {
         autoJunction: booleanValue(values, "autoJunction", true),
         junctionMode: normalizeJunctionMode(stringValue(values, "junctionMode", "addon")),
         reloadOnSave: normalizeReloadMode(stringValue(values, "reloadOnSave", "reload")),
+        deletedFunctionBehavior: normalizeDeletedFunctionBehavior(stringValue(values, "deletedFunctionBehavior", "keep")),
         notifyOnError: booleanValue(values, "notifyOnError", true),
         extraLaunchArguments: stringValue(values, "extraLaunchArguments", "-noSplash -skipIntro -noPause"),
         createExampleWithMission: booleanValue(values, "createExampleWithMission", true),
@@ -170,6 +173,17 @@ function normalizeReloadMode(mode: string): ReloadMode {
             return "off";
         default:
             return "reload";
+    }
+}
+
+function normalizeDeletedFunctionBehavior(value: string): DeletedFunctionBehavior {
+    switch (value.trim().toLowerCase()) {
+        case "clear":
+            return "clear";
+        case "ask":
+            return "ask";
+        default:
+            return "keep";
     }
 }
 

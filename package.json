@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.7.0",
+  "version": "3.7.5",
   "publisher": "Razer",
   "icon": "sqfReloader_logo.png",
   "repository": {
@@ -243,7 +243,18 @@
         "fileMatch": ".vscode/sqfReloader-settings.json",
         "url": "./schemas/sqfReloader-settings.schema.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Arma 3 SQF Reloader",
+      "properties": {
+        "sqfReloader.arma3ToolsDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Optional global Arma 3 Tools install directory (or full path to AddonBuilder.exe). When set, this path is used instead of registry discovery."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",

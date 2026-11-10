@@ -24,6 +24,7 @@ export const PROJECT_SETTING_DEFAULTS: Record<string, unknown> = {
     autoJunction: true,
     junctionMode: "addon",
     reloadOnSave: "reload",
+    deletedFunctionBehavior: "keep",
     notifyOnError: true,
     extraLaunchArguments: "-noSplash -skipIntro -noPause",
     serverLaunchArguments: "",

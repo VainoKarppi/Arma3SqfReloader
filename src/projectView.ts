@@ -38,6 +38,7 @@ interface ViewSettings {
     watchInterval: number;
     junctionMode: string;
     reloadOnSave: string;
+    deletedFunctionBehavior: string;
     runTimeout: number;
     apiPort: number;
     requestTimeout: number;
@@ -53,7 +54,7 @@ interface ViewSettings {
 const MOD_TYPES: ModType[] = ["client", "server", "both", "off"];
 const SETTING_KEYS = new Set<keyof ViewSettings>([
     "armaDirectory", "armaProfile", "extraLaunchArguments", "serverLaunchArguments", "apiUrl",
-    "watchInterval", "junctionMode", "reloadOnSave", "runTimeout",
+    "watchInterval", "junctionMode", "reloadOnSave", "deletedFunctionBehavior", "runTimeout",
     "apiPort", "requestTimeout", "enabled", "autoJunction", "clearArmaMissionArtifacts",
     "notifyOnError", "createExampleWithMission", "logLevel", "hookPresentation"
 ]);
@@ -168,6 +169,9 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
                     break;
                 case "debugConsole":
                     this.openDebugConsole();
+                    break;
+                case "moveDebugConsoleToNewWindow":
+                    await vscode.commands.executeCommand("workbench.action.moveEditorToNewWindow");
                     break;
                 case "rptMonitoring":
                     this.rptMonitoring = message.enabled === true;
@@ -409,6 +413,10 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             value = clampNumber(value, 500, 60000);
         } else if (key === "hookPresentation") {
             value = presentationValue({ hookPresentation: value }, "hookPresentation");
+        } else if (key === "deletedFunctionBehavior") {
+            if (value !== "clear" && value !== "ask" && value !== "keep") {
+                throw new Error("Invalid deleted function behavior.");
+            }
         } else if (["enabled", "autoJunction", "clearArmaMissionArtifacts", "notifyOnError", "createExampleWithMission"].includes(key)) {
             if (typeof value !== "boolean") throw new Error("Setting value must be a boolean.");
         } else if (typeof value !== "string") {
@@ -734,6 +742,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             watchInterval: clampNumber(this.setting("watchInterval", 1000), 1000, 60000),
             junctionMode: this.setting("junctionMode", "addon"),
             reloadOnSave: this.setting("reloadOnSave", "reload"),
+            deletedFunctionBehavior: this.setting("deletedFunctionBehavior", "keep"),
             runTimeout: clampNumber(this.setting("runTimeout", 30), 1, 300),
             apiPort: readApiPort(readProjectSettings(this.root)),
             requestTimeout: clampNumber(this.setting("requestTimeout", 3000), 500, 60000),
@@ -883,30 +892,13 @@ select.role{width:200px;min-width:200px;flex:0 0 200px;font-size:.85em;padding:5
 </div>
 </section>
 
-<section class="card wide">
-<h2>Hooks</h2>
-<p class="hint">Run commands at lifecycle events, one command per line. Variables: <code>\${workspaceFolder}</code>, <code>\${armaDirectory}</code>, <code>\${missionFolder}</code>, <code>\${file}</code>, <code>\${apiUrl}</code>, <code>\${exitCode}</code>; the same values are exposed as <code>SQFRELOADER_*</code> environment variables.</p>
-<div class="fields">
-<label class="field"><span class="label">Event</span><select id="hookEvent"></select></label>
-<label class="field"><span class="label">Blocking</span><select id="hookBlocking"><option value="true">true</option><option value="false">false</option></select></label>
-<label class="field"><span class="label">Continue on error</span><select id="hookContinueOnError"><option value="false">false</option><option value="true">true</option></select></label>
-</div>
-<label class="field wide"><span class="label">Commands</span><textarea id="hookCommands" rows="4" spellcheck="false" placeholder="\${workspaceFolder}\\Tools\\BuildExtension.ps1"></textarea></label>
-<div class="actions"><button id="saveHook" class="btn">Save hook</button><button id="clearHook" class="btn ghost">Clear hook</button></div>
-<div class="fields">
-<label class="field"><span class="label">Echo command</span><select data-hookpresentation="echo"><option value="true">true</option><option value="false">false</option></select></label>
-<label class="field"><span class="label">Reveal terminal</span><select data-hookpresentation="reveal"><option value="always">always</option><option value="silent">silent</option><option value="never">never</option></select></label>
-<label class="field"><span class="label">Focus terminal</span><select data-hookpresentation="focus"><option value="true">true</option><option value="false">false</option></select></label>
-<label class="field"><span class="label">Terminal panel</span><select data-hookpresentation="panel"><option value="shared">shared</option><option value="dedicated">dedicated</option><option value="new">new</option></select></label>
-</div>
-</section>
-
 <section class="card">
 <h2>Reload and project behavior</h2>
 <p class="hint">What happens on save and how the mod links are created.</p>
 <div class="fields">
 <label class="field"><span class="label">Junction mode</span><select data-setting="junctionMode"><option value="addon">Addon</option><option value="module">Mod folder</option></select></label>
 <label class="field"><span class="label">Reload on save</span><select data-setting="reloadOnSave"><option value="reload">Reload</option><option value="recompile">Recompile</option><option value="off">Off</option></select></label>
+<label class="field"><span class="label">Deleted function behavior</span><select data-setting="deletedFunctionBehavior"><option value="clear">Clear variable from Arma</option><option value="ask">Ask before clearing</option><option value="keep">Keep variable in Arma</option></select></label>
 <label class="field"><span class="label">Log level</span><select data-setting="logLevel"><option value="error">Error</option><option value="warning">Warning</option><option value="info">Info</option><option value="verbose">Verbose</option></select></label>
 </div>
 <div class="toggles">
@@ -927,6 +919,24 @@ select.role{width:200px;min-width:200px;flex:0 0 200px;font-size:.85em;padding:5
 <p class="hint">These directories are passed to Arma without modifying their contents.</p>
 <div class="actions"><button id="addExternalMod" class="btn">Add external mod folder</button></div>
 <div class="list" id="externalMods"></div>
+</section>
+
+<section class="card wide">
+<h2>Hooks</h2>
+<p class="hint">Run commands at lifecycle events, one command per line. Variables: <code>\${workspaceFolder}</code>, <code>\${armaDirectory}</code>, <code>\${missionFolder}</code>, <code>\${file}</code>, <code>\${apiUrl}</code>, <code>\${exitCode}</code>; the same values are exposed as <code>SQFRELOADER_*</code> environment variables.</p>
+<div class="fields">
+<label class="field"><span class="label">Event</span><select id="hookEvent"></select></label>
+<label class="field"><span class="label">Blocking</span><select id="hookBlocking"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Continue on error</span><select id="hookContinueOnError"><option value="false">false</option><option value="true">true</option></select></label>
+</div>
+<label class="field wide"><span class="label">Commands</span><textarea id="hookCommands" rows="4" spellcheck="false" placeholder="\${workspaceFolder}\\Tools\\BuildExtension.ps1"></textarea></label>
+<div class="actions"><button id="saveHook" class="btn">Save hook</button><button id="clearHook" class="btn ghost">Clear hook</button></div>
+<div class="fields">
+<label class="field"><span class="label">Echo command</span><select data-hookpresentation="echo"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Reveal terminal</span><select data-hookpresentation="reveal"><option value="always">always</option><option value="silent">silent</option><option value="never">never</option></select></label>
+<label class="field"><span class="label">Focus terminal</span><select data-hookpresentation="focus"><option value="true">true</option><option value="false">false</option></select></label>
+<label class="field"><span class="label">Terminal panel</span><select data-hookpresentation="panel"><option value="shared">shared</option><option value="dedicated">dedicated</option><option value="new">new</option></select></label>
+</div>
 </section>
 </main>
 
@@ -1048,7 +1058,7 @@ pre{margin:8px 0 0;padding:10px 11px;border:1px solid var(--line);border-radius:
 <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg></span>
 <div class="titles"><h1>Arma Debug Console</h1><div class="subline"><span id="targets" class="pill" data-state="unknown">SqfReloader API status</span></div></div>
 </div>
-<div class="toolbar"><button id="refresh" class="btn ghost">Refresh</button></div>
+<div class="toolbar"><button id="refresh" class="btn ghost">Refresh</button><button id="newWindow" class="btn ghost">Popup in New Window</button></div>
 </header>
 
 <main class="cards">
@@ -1086,6 +1096,7 @@ const vscode=acquireVsCodeApi();
 function send(command,extra={}){vscode.postMessage({command,...extra})}
 document.querySelectorAll('[data-command]').forEach(button=>button.addEventListener('click',()=>send(button.dataset.command)));
 document.getElementById('refresh').addEventListener('click',()=>send('refresh'));
+document.getElementById('newWindow').addEventListener('click',()=>send('moveDebugConsoleToNewWindow'));
 document.getElementById('rptMonitoring').addEventListener('change',event=>send('rptMonitoring',{enabled:event.target.checked}));
 document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListener('change',()=>{let value=input.value;if(input.type==='number')value=Number(value);send('setting',{key:input.dataset.setting,value})}));
 document.getElementById('execute').addEventListener('click',()=>send('execute',{code:document.getElementById('code').value}));

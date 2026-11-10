@@ -6,13 +6,14 @@ import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirec
 import { getOutput, log, logError, readSettings, Settings } from "./settings";
 import { projectSetting } from "./projectSettings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
-import { createLinks, linkMissions } from "./junctions";
+import { createLinks, linkMissions, reconcileLinks } from "./junctions";
 import { createLinksWithRepair } from "./linkRepair";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
 import { modTypeForDirectory } from "./modTypes";
 import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./launchMods";
 import { fireHook, HookContext, runHook } from "./hooks";
+import { buildWorkspaceAddonPbos } from "./pbo";
 
 /** Port the resolved project API URL requests, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
@@ -128,11 +129,13 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         }
         const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
         const clientAndSharedMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
+        const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
+        if (!await buildWorkspaceAddonPbos([...workspaceModsFound, ...additionalServerMods])) return false;
         // Link the sources before Arma starts. A real folder sitting on a mount path would
         // otherwise make Arma read a stale copy; the user is offered to move it aside.
+        reconcileLinks(armaDirectory, workspaceModsFound, settings.junctionMode);
         await createLinksWithRepair(armaDirectory, workspaceModsFound, settings, { silent });
 
-        const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
         const serverMods = [...classifiedServerMods, ...additionalServerMods];
         const launch = prepareRuntime(runtime, armaDirectory, settings, clientAndSharedMods, serverMods);
         launch.executable = executable;
@@ -236,9 +239,6 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
 
     const output = getOutput();
     const rawCommand = `"${launch.executable}" ${args.join(" ")}`;
-    output.appendLine("--- Raw Arma launch command ---");
-    output.appendLine(rawCommand);
-    output.appendLine(`Raw argument vector: ${JSON.stringify(args)}`);
     output.appendLine(`Executable: ${launch.executable}`);
     output.appendLine(`Arguments (${args.length}):`);
     args.forEach((argument, index) => output.appendLine(`  [${index}] ${JSON.stringify(argument)}`));

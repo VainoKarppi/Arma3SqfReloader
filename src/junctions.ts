@@ -264,11 +264,58 @@ export function registryPath(armaDirectory: string): string {
     return path.join(armaDirectory, REGISTRY_FILE);
 }
 
-function registerLinks(armaDirectory: string, links: Link[]): void {
-    if (links.length === 0) {
-        return;
+/**
+ * Removes registered links that are no longer part of the current launch and prunes their
+ * registry entries. Links replaced by another target are left untouched.
+ */
+export function reconcileLinks(armaDirectory: string, mods: Mod[], mode: JunctionMode): void {
+    const desired = new Map<string, string>();
+
+    for (const mod of mods) {
+        if (mode === "module") {
+            const linkPath = path.join(armaDirectory, mod.name.startsWith("@") ? mod.name : `@${mod.name}`);
+            desired.set(path.resolve(linkPath).toLowerCase(), path.resolve(mod.directory).toLowerCase());
+            continue;
+        }
+
+        for (const addon of mod.addons) {
+            desired.set(path.resolve(addonLinkPath(armaDirectory, addon)).toLowerCase(), path.resolve(addon.localDirectory).toLowerCase());
+        }
     }
 
+    const retained: Registration[] = [];
+
+    for (const entry of readRegistry(armaDirectory)) {
+        if (typeof entry.target !== "string") continue;
+        const key = path.resolve(entry.linkPath).toLowerCase();
+        const recordedTarget = path.resolve(entry.target).toLowerCase();
+        const desiredTarget = desired.get(key);
+        const currentTarget = readLinkTarget(entry.linkPath);
+        const currentMatchesRecord = !!currentTarget
+            && path.resolve(path.dirname(entry.linkPath), currentTarget).toLowerCase() === recordedTarget;
+
+        if (desiredTarget === recordedTarget && currentTarget
+            && path.resolve(path.dirname(entry.linkPath), currentTarget).toLowerCase() === desiredTarget) {
+            retained.push(entry);
+            continue;
+        }
+
+        if (currentMatchesRecord && !removeLink(entry.linkPath)) {
+            const remainingTarget = readLinkTarget(entry.linkPath);
+            if (remainingTarget
+                && path.resolve(path.dirname(entry.linkPath), remainingTarget).toLowerCase() === recordedTarget) {
+                retained.push(entry);
+                continue;
+            }
+        }
+
+        pruneEmptyMountDirectories(armaDirectory, entry.linkPath);
+    }
+
+    writeRegistry(armaDirectory, retained);
+}
+
+function registerLinks(armaDirectory: string, links: Link[]): void {
     const file = registryPath(armaDirectory);
     const existing = readRegistry(armaDirectory);
     const merged = new Map<string, Registration>();
@@ -277,8 +324,14 @@ function registerLinks(armaDirectory: string, links: Link[]): void {
         merged.set(entry.linkPath.toLowerCase(), entry);
     }
 
+    writeRegistry(armaDirectory, [...merged.values()]);
+}
+
+function writeRegistry(armaDirectory: string, entries: Registration[]): void {
+    const file = registryPath(armaDirectory);
+
     try {
-        fs.writeFileSync(file, JSON.stringify([...merged.values()], null, 2), "utf8");
+        fs.writeFileSync(file, JSON.stringify(entries, null, 2), "utf8");
     } catch (error) {
         log(`Could not write ${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -351,7 +404,9 @@ export function readRegistry(armaDirectory: string): Registration[] {
             return [];
         }
 
-        return parsed.filter((entry: Registration) => typeof entry?.linkPath === "string");
+        return parsed.filter((entry: Registration) =>
+            typeof entry?.linkPath === "string" && typeof entry?.target === "string"
+        );
     } catch {
         return [];
     }
@@ -361,6 +416,7 @@ export function readRegistry(armaDirectory: string): Registration[] {
 export function removeAllLinks(armaDirectory: string): { removed: string[]; failed: string[] } {
     const removed: string[] = [];
     const failed: string[] = [];
+    const retained: Registration[] = [];
 
     for (const entry of readRegistry(armaDirectory)) {
         // Only remove paths that still resolve to the recorded target, so a folder the user
@@ -379,28 +435,36 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
 
         if (removeLink(entry.linkPath)) {
             removed.push(entry.linkPath);
-            const zRoot = path.resolve(armaDirectory, "z");
-            const relativeToZ = path.relative(zRoot, path.resolve(entry.linkPath));
-            if (relativeToZ !== ".." && !relativeToZ.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToZ)) {
-                // Keep the shared z mount root for other mods. Remove only empty folders
-                // below z\<TAG>, including the tag directory itself.
-                const segments = relativeToZ.split(path.sep);
-                if (segments.length > 0) {
-                    removeEmptyDirectories(path.dirname(entry.linkPath), path.join(zRoot, segments[0]));
-                }
-            }
+            pruneEmptyMountDirectories(armaDirectory, entry.linkPath);
         } else {
-            failed.push(entry.linkPath);
+            const remainingTarget = readLinkTarget(entry.linkPath);
+            if (remainingTarget
+                && path.resolve(path.dirname(entry.linkPath), remainingTarget).toLowerCase() === resolvedRecorded) {
+                failed.push(entry.linkPath);
+                retained.push(entry);
+            }
         }
     }
 
-    try {
-        fs.rmSync(registryPath(armaDirectory), { force: true });
-    } catch {
-        // Nothing to clean.
-    }
+    writeRegistry(armaDirectory, retained);
 
     return { removed, failed };
+}
+
+function pruneEmptyMountDirectories(armaDirectory: string, linkPath: string): void {
+    const zRoot = path.resolve(armaDirectory, "z");
+    const relativeToZ = path.relative(zRoot, path.resolve(linkPath));
+
+    if (relativeToZ === ".." || relativeToZ.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToZ)) {
+        return;
+    }
+
+    // Keep the shared z mount root for other mods. Remove only empty folders below z\<TAG>,
+    // including the tag directory itself.
+    const segments = relativeToZ.split(path.sep);
+    if (segments.length > 0 && segments[0]) {
+        removeEmptyDirectories(path.dirname(linkPath), path.join(zRoot, segments[0]));
+    }
 }
 
 function removeEmptyDirectories(directory: string, stopAt: string): void {

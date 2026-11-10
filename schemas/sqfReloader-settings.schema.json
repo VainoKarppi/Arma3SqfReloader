@@ -69,6 +69,16 @@
             "default": "reload",
             "description": "How a saved SQF file is pushed to Arma."
         },
+        "deletedFunctionBehavior": {
+            "type": "string",
+            "enum": [
+                "clear",
+                "ask",
+                "keep"
+            ],
+            "default": "keep",
+            "description": "Whether to clear a deleted fn_*.sqf function's missionNamespace variable from the running Arma instance."
+        },
         "notifyOnError": {
             "type": "boolean",
             "default": true,

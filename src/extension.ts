@@ -4,11 +4,11 @@ import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
-import { ensureProjectSettings, projectSettingsPath, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
+import { ensureProjectSettings, projectSettingsExists, projectSettingsPath, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
 import { fireHook, HookContext, runHook } from "./hooks";
 import { detectArmaDirectory, findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers, resetArmaDetection } from "./arma";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
-import { cleanupSnapshots, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
+import { cleanupSnapshots, deletedFunctionVariable, findDuplicateFunctionFiles, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
 import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, startRptMonitor, stopDedicatedServer, stopRptMonitor } from "./launcher";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
@@ -32,6 +32,29 @@ let wasServerConnected = false;
 let wasServerRunning = false;
 let serverStopRequested = false;
 
+function hasConfiguredProjectRoot(document: vscode.TextDocument): boolean {
+    return hasConfiguredProjectUri(document.uri);
+}
+
+function hasConfiguredProjectUri(uri: vscode.Uri): boolean {
+    if (uri.scheme !== "file") {
+        return false;
+    }
+
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    return workspaceFolder !== undefined && projectSettingsExists(workspaceFolder);
+}
+
+function cleanupArmaLinks(armaDirectory: string, reason: string): void {
+    const removedLinks = removeAllLinks(armaDirectory);
+    const removedLegacy = workspaceMods().filter(mod => removeModInZLink(armaDirectory, mod)).length;
+    const failures = removedLinks.failed.length;
+    log(`Removed ${removedLinks.removed.length + removedLegacy} Arma mod link(s) after ${reason}${failures ? `; ${failures} could not be removed` : ""}.`);
+    if (failures > 0) {
+        vscode.window.showWarningMessage(`Arma 3 closed, but ${failures} mod link(s) could not be removed. See the SqfReloader output.`);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
     const version = context.extension.packageJSON.version;
     getOutput();
@@ -47,8 +70,61 @@ export function activate(context: vscode.ExtensionContext): void {
     }));
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
-    context.subscriptions.push(rptDiagnostics, { dispose: stopRptMonitor });
+    const duplicateFunctionDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader-functions");
+    context.subscriptions.push(rptDiagnostics, duplicateFunctionDiagnostics, { dispose: stopRptMonitor });
     setRptDiagnosticCollection(rptDiagnostics);
+    const duplicateFunctionGroups = new Map<string, Map<string, string>>();
+    const updateDuplicateFunctionDiagnostics = async (filePaths: string[], showWarning: boolean): Promise<Set<string>> => {
+        const variables = new Map<string, string>();
+        for (const filePath of filePaths) {
+            const variable = deletedFunctionVariable(filePath);
+            if (variable) variables.set(variable.toLowerCase(), filePath);
+        }
+
+        const conflicts = new Set<string>();
+        for (const [key, filePath] of variables) {
+            const previousFiles = duplicateFunctionGroups.get(key);
+            for (const previousFile of previousFiles?.values() ?? []) {
+                duplicateFunctionDiagnostics.delete(vscode.Uri.file(previousFile));
+            }
+            duplicateFunctionGroups.delete(key);
+
+            const duplicate = findDuplicateFunctionFiles(filePath);
+            if (!duplicate) continue;
+
+            conflicts.add(key);
+            const files = new Map(duplicate.files.map(file => [path.resolve(file).toLowerCase(), file]));
+            duplicateFunctionGroups.set(key, files);
+            for (const duplicateFile of duplicate.files) {
+                try {
+                    const uri = vscode.Uri.file(duplicateFile);
+                    const document = vscode.workspace.textDocuments.find(open =>
+                        path.resolve(open.uri.fsPath).toLowerCase() === path.resolve(duplicateFile).toLowerCase()
+                    ) ?? await vscode.workspace.openTextDocument(uri);
+                    const lastLine = Math.max(0, document.lineCount - 1);
+                    const diagnostic = new vscode.Diagnostic(
+                        new vscode.Range(new vscode.Position(0, 0), new vscode.Position(lastLine, document.lineAt(lastLine).text.length)),
+                        `Function variable '${duplicate.variable}' is defined by multiple files. Rename or remove one definition; reload is blocked.`,
+                        vscode.DiagnosticSeverity.Error
+                    );
+                    diagnostic.source = "SqfReloader";
+                    duplicateFunctionDiagnostics.set(uri, [diagnostic]);
+                } catch (error) {
+                    logError(`could not mark duplicate function file ${duplicateFile}`, error);
+                }
+            }
+
+            const changed = !previousFiles || previousFiles.size !== files.size
+                || [...files.keys()].some(file => !previousFiles.has(file));
+            if (showWarning && changed) {
+                vscode.window.showWarningMessage(
+                    `Function variable '${duplicate.variable}' is defined by multiple files. Arma reload is blocked; see the Problems panel.`
+                );
+            }
+        }
+
+        return conflicts;
+    };
     startRptMonitor();
 
     if (!runtime) {
@@ -67,7 +143,10 @@ export function activate(context: vscode.ExtensionContext): void {
                 const settings = readSettings();
                 fireHook("onClientExit", settings, { apiUrl: settings.apiUrl });
                 void findArmaDirectory(settings).then(armaDirectory => {
-                    if (armaDirectory) cleanupSnapshots(armaDirectory);
+                    if (armaDirectory) {
+                        cleanupSnapshots(armaDirectory);
+                        cleanupArmaLinks(armaDirectory, "Arma exit");
+                    }
                 });
             }
             wasArmaRunning = running;
@@ -97,16 +176,80 @@ export function activate(context: vscode.ExtensionContext): void {
         { dispose: () => clearInterval(connectionTimer) }
     );
 
-    // --- Save -> reload ---------------------------------------------------
-    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
+    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(event => {
+        void updateDuplicateFunctionDiagnostics(event.files.map(uri => uri.fsPath), false)
+            .catch(error => logError("could not update duplicate function diagnostics after deletion", error));
+    }));
+    context.subscriptions.push(vscode.workspace.onDidCreateFiles(event => {
+        const files = event.files.filter(uri => hasConfiguredProjectUri(uri)).map(uri => uri.fsPath);
+        void updateDuplicateFunctionDiagnostics(files, true).catch(error => logError("could not check newly created SQF functions", error));
+    }));
+    context.subscriptions.push(vscode.workspace.onDidRenameFiles(event => {
+        const files = event.files.flatMap(file => [file.oldUri, file.newUri])
+            .filter(uri => hasConfiguredProjectUri(uri))
+            .map(uri => uri.fsPath);
+        void updateDuplicateFunctionDiagnostics(files, true).catch(error => logError("could not check renamed SQF functions", error));
+    }));
+    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(async event => {
         const settings = readSettings();
+        if (settings.deletedFunctionBehavior === "keep") return;
 
-        if (!settings.enabled || !isReloadable(document)) {
+        const variables = [...new Set(event.files
+            .filter(uri => hasConfiguredProjectUri(uri))
+            .map(uri => deletedFunctionVariable(uri.fsPath))
+            .filter((variable): variable is string => !!variable))];
+        if (variables.length === 0) return;
+
+        if (!await refreshRunningStatus()) {
+            log(`Skipped Arma function cleanup for deleted files; Arma is not running (${variables.join(", ")}).`);
             return;
         }
 
-        // Offline saves are normal while editing; avoid sending a request or showing an API
-        // warning until an Arma process is actually running.
+        if (settings.deletedFunctionBehavior === "ask") {
+            const listed = variables.slice(0, 8).join(", ");
+            const remaining = variables.length > 8 ? `, and ${variables.length - 8} more` : "";
+            const choice = await vscode.window.showWarningMessage(
+                `Clear ${variables.length} deleted function variable(s) from Arma?`,
+                { modal: true, detail: `${listed}${remaining}` },
+                "Clear from Arma",
+                "Keep in Arma"
+            );
+            if (choice !== "Clear from Arma") return;
+        }
+
+        const code = `[${variables.map(sqfString).join(", ")}] apply { missionNamespace setVariable [_x, nil]; };`;
+        try {
+            const result = await evalCode(settings, code);
+            if (!result.success) {
+                throw new Error(result.error ?? "Arma rejected the variable cleanup command.");
+            }
+            log(`Cleared deleted function variable(s) from Arma: ${variables.join(", ")}`);
+        } catch (error) {
+            logError(`could not clear deleted function variable(s) from Arma (${variables.join(", ")})`, error);
+            vscode.window.showWarningMessage(`Could not clear deleted function variables from Arma: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }));
+
+    // --- Save -> reload ---------------------------------------------------
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
+        if (!hasConfiguredProjectRoot(document)) {
+            return;
+        }
+
+        if (!isReloadable(document)) {
+            return;
+        }
+        const duplicateFunctions = await updateDuplicateFunctionDiagnostics([document.fileName], true);
+        if (duplicateFunctions.size > 0) {
+            log(`Blocked reload of ${document.fileName}; its Arma function variable is defined by multiple files.`);
+            return;
+        }
+
+        const settings = readSettings();
+        if (!settings.enabled) {
+            return;
+        }
+
         if (!await refreshRunningStatus()) {
             return;
         }
@@ -121,12 +264,10 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
-        // A save supersedes the previous Arma compile diagnostic; a new RPT block will add it back.
         rptDiagnostics.delete(document.uri);
 
         try {
             const outcome = await reloadDocument(document, settings);
-
             if (outcome.ok) {
                 fireHook("postReload", settings, hookContext);
                 if (/^(Reloaded|Reload queued|Recompile|Compiled)/.test(outcome.message)) {
@@ -300,15 +441,7 @@ export function activate(context: vscode.ExtensionContext): void {
             fireHook("postClientStop", settings, hookContext);
             const armaDirectory = await findArmaDirectory(settings);
             if (armaDirectory) {
-                // Remove only this extension's registered mod/addon links and any old
-                // z\@Mod alias it created. Empty z mount folders are pruned by cleanup.
-                const removedLinks = removeAllLinks(armaDirectory);
-                const removedLegacy = workspaceMods().filter(mod => removeModInZLink(armaDirectory, mod)).length;
-                const failures = removedLinks.failed.length;
-                log(`Removed ${removedLinks.removed.length + removedLegacy} Arma mod link(s) after Stop Arma 3${failures ? `; ${failures} could not be removed` : ""}.`);
-                if (failures > 0) {
-                    vscode.window.showWarningMessage(`Arma 3 stopped, but ${failures} mod link(s) could not be removed. See the SqfReloader output.`);
-                }
+                cleanupArmaLinks(armaDirectory, "Stop Arma 3");
             }
             setStatus("$(play) Play Arma 3", "ok");
             log("Arma 3 closed.");

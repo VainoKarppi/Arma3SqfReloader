@@ -103,6 +103,17 @@ Workspace missions are junctioned into both the selected profile and the Arma in
 `Missions` / `MPMissions` folders, so dedicated servers can resolve mission directories without
 copying them.
 
+Before each client or dedicated-server launch, the extension uses Arma 3 Tools AddonBuilder to
+create a PBO beside every addon folder under the active mods' `addons` directories. The staged PBO
+omits `.sqf` files and removes `CfgFunctions` declarations from `.cpp` / `.hpp` files, while
+preserving the original source files for live reloading and other config declarations. If
+AddonBuilder is not found in the Arma 3 Tools registry, the extension explains that Arma 3 Tools
+must be installed and launched once, and lets you continue without creating PBOs or cancel launch.
+Registry discovery checks the Steam App 233800 uninstall entry. If needed, set the VS Code
+user-level `sqfReloader.arma3ToolsDirectory` setting to the Arma 3 Tools installation directory
+(or directly to `AddonBuilder.exe`); when set, this path is validated and takes precedence over
+registry discovery.
+
 The role is a launch choice, not an automatic analysis of `config.cpp`. Mod folders should
 normally contain a root `addons` directory. Missing `mod.cpp` is not an error; if no PBO is found
 under `addons`, the folder may still be an unpacked development mod and the extension asks before
@@ -282,11 +293,18 @@ server-side timeout.
 Project settings live in the workspace's `.vscode/sqfReloader-settings.json`. Keys missing from
 that file use the built-in defaults below; VS Code `settings.json` is not read or written. The
 file is validated against a JSON schema, so the editor completes and documents its keys.
+Automatic reload on save only runs for supported source files inside a VS Code workspace root that
+contains `.vscode/sqfReloader-settings.json`. Saves outside that configured project are ignored and
+do not send commands or reload requests to Arma. Use the explicit SqfReloader reload commands when
+you want to send changes manually.
+If multiple `fn_*.sqf` files resolve to the same Arma function variable, SqfReloader marks each
+definition as an error and blocks reloads until the duplicate is renamed or removed.
 
 | Setting | Purpose |
 | --- | --- |
 | `armaDirectory` | Arma 3 install folder. Leave empty for automatic detection: the folder is read once from the registry / Steam libraries when the extension loads and kept in memory for the session, so nothing is written back to this setting. Set it only to pin a specific install. |
-| `enabled` | Enable or disable reload on save. |
+| `enabled` | Enable or disable automatic reload for supported files in a configured project. |
+| `deletedFunctionBehavior` | When a `fn_*.sqf` file is deleted, `clear` removes its missionNamespace variable from running Arma, `ask` prompts before removing it, and `keep` leaves the variable intact (default). |
 | `apiUrl` | SqfReloader API host address. The extension adds the API path and uses `apiPort`. Default: `http://127.0.0.1`. |
 | `apiPort` | SqfReloader API port, used by every Arma instance (client, editor, hosted mission, dedicated server). Default: `8764`. |
 | `runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |

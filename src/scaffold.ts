@@ -529,6 +529,14 @@ class CfgFunctions {
         };
     };
 };
+
+class Cfg3DEN {
+    class EventHandlers {
+        class ${TEMPLATE_TAG} {
+			init = "diag_log 'SQFR: 3DEN init';";
+        };
+    };
+};
 `;
 }
 
@@ -1183,20 +1191,11 @@ systemChat format ["OnPlayerRespawn.sqf ran for %1", name _newUnit];
 
 function projectSettingsTemplate(): string {
     return `{
-    // Arma 3 is detected automatically from the registry / Steam libraries on load; set
-    // "armaDirectory" here only to pin a specific installation.
-    // Set a profile name to choose it; leave empty to use the most recently updated profile.
     "armaProfile": "",
-    // API host. The extension adds /api and uses the port below for every Arma instance
-    // (client, editor, hosted mission and dedicated server).
     "apiUrl": "http://127.0.0.1",
-    // SqfReloader API port.
     "apiPort": 8764,
-    // Timeout in milliseconds for a request to Arma.
     "requestTimeout": 3000,
-    // Maximum seconds to wait for Run in Arma to return an SQF value.
     "runTimeout": 30,
-    // Remove Arma-generated ~Mission.World preview folders from the active profile.
     "clearArmaMissionArtifacts": true,
     "enabled": true,
     "autoJunction": true,
@@ -1206,6 +1205,7 @@ function projectSettingsTemplate(): string {
     "logLevel": "info",
     "reloadOnSave": "reload",
     "modTypes": {
+		"@ExampleMod": "client",
         "server-example/@ExampleServerMod": "server"
     },
     "extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
@@ -1213,15 +1213,7 @@ function projectSettingsTemplate(): string {
     "watchInterval": 1000,
     "watchExpressions": [],
     "externalMods": [],
-    // Commands run in a VS Code terminal at lifecycle events. Event names are listed in the
-    // project settings panel; \${workspaceFolder} expands to this project folder. Example:
-    // "preClientLaunch": {
-    //     "commands": ["\${workspaceFolder}\\Tools\\BuildExtension.ps1"],
-    //     "blocking": true,
-    //     "continueOnError": false
-    // }
     "hooks": {},
-    // VS Code task presentation options for every hook terminal.
     "hookPresentation": {
         "echo": true,
         "reveal": "always",
