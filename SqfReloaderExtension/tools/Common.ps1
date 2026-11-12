@@ -166,8 +166,8 @@ function Get-VscodeVersion {
 }
 
 function Add-KeyToHashtable {
-    # Replaces the first "version" value in a JSON file in place so the surrounding
-    # formatting (and the lock file's indentation) stays as it was.
+    # Replaces the manifest's own "version" value in place so the surrounding formatting (and
+    # the lock file's indentation) stays as it was.
     param(
         [string]$Version,
         [string[]]$Files
@@ -178,7 +178,7 @@ function Add-KeyToHashtable {
         if (!(Test-Path $file)) { Write-Warn "Version bump skipped, file not found: $relative"; continue }
 
         $content = Get-Content $file -Raw
-        $updated = [regex]::Replace($content, '("version"\s*:\s*")[^"]*(")', '${1}' + $Version + '${2}', 1)
+        $updated = Set-JsonRootVersion -Content $content -Version $Version
 
         if ($updated -eq $content) {
             Write-Warn "Version bump skipped, no version field: $relative"
@@ -189,6 +189,24 @@ function Add-KeyToHashtable {
         [System.IO.File]::WriteAllText($file, $updated, (New-Object System.Text.UTF8Encoding($false)))
         Write-Ok "Version $Version -> $relative"
     }
+}
+
+function Set-JsonRootVersion {
+    # Rewrites only the version of the manifest itself, never a dependency's version. A plain
+    # "first version in the file" replace corrupted package-lock.json: dependency entries
+    # (yauzl, @types/vscode, ...) ended up carrying the project version, which broke `npm ci`.
+    param(
+        [Parameter(Mandatory)] [string]$Content,
+        [Parameter(Mandatory)] [string]$Version
+    )
+
+    # package.json and the top-level lock version: `{ "name": ..., "version": ... }`.
+    $top = '(?s)^(\{\s*"name"\s*:\s*"[^"]*",\s*"version"\s*:\s*")[^"\\]*(")'
+    # package-lock.json: the "" entry of "packages" repeats the root version.
+    $lockPackage = '(?s)("packages"\s*:\s*\{\s*"":\s*\{\s*"name"\s*:\s*"[^"]*",\s*"version"\s*:\s*")[^"\\]*(")'
+
+    $result = [regex]::Replace($Content, $top, '${1}' + $Version + '${2}', 1)
+    return [regex]::Replace($result, $lockPackage, '${1}' + $Version + '${2}', 1)
 }
 
 function Write-BuildStamp([string]$Version) {

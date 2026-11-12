@@ -128,6 +128,11 @@ async function copyAddonFiles(source: string, destination: string): Promise<numb
             await fs.promises.mkdir(to, { recursive: true });
             copied += await copyAddonFiles(from, to);
         } else if (entry.isFile() && path.extname(entry.name).toLowerCase() !== ".sqf") {
+            // $PBOPREFIX$ belongs to the developer's release build (HEMTT/AddonBuilder) and
+            // would override the -prefix=<addon> used for the staged launch PBO, making the PBO
+            // collide with the z-mount the reloader patches. Arma reads SQF from the mount, so
+            // the staged PBO only carries the addon config.
+            if (entry.name.toLowerCase() === "$pboprefix$") continue;
             let content: Buffer | undefined;
             if ([".cpp", ".hpp"].includes(path.extname(entry.name).toLowerCase())) {
                 content = Buffer.from(stripCfgFunctions((await fs.promises.readFile(from)).toString("utf8")), "utf8");

@@ -6,5 +6,5 @@
 namespace SqfReloader;
 
 internal static class BuildStamp {
-    public const string Version = "3.8.1";
+    public const string Version = "3.8.2";
 }

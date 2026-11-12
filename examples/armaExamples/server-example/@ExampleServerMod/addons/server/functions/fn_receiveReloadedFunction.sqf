@@ -1,3 +1,21 @@
+/*
+    Author: Arma 3 SQF Reloader
+
+    Description:
+        Installs a function that the server recompiled after a workspace save.
+        The server broadcasts the new code through remoteExec and the mission's
+        CfgRemoteExec permits this receiver on clients.
+
+    Parameter(s):
+        0: STRING - name of the global function variable to replace
+        1: CODE - the recompiled function
+
+    Returns:
+        Nothing
+
+    Example:
+        // Called by SqfReloader on the server; no manual call needed.
+*/
 params [
     ["_name", "", [""]],
     ["_function", {}, [{}]]

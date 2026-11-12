@@ -23,6 +23,8 @@ type TargetState = "offline" | "waiting" | "connected";
 
 const CONNECTED_POLL_MS = 3000;
 const DISCONNECTED_POLL_MS = 1000;
+/** Nothing can connect while Arma is closed; stop probing every second. */
+const IDLE_POLL_MS = 15000;
 /** Status errors that mean "nothing listens on this port" rather than "the API rejected us". */
 const OFFLINE_CODES = ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "ECONNRESET"];
 
@@ -61,7 +63,7 @@ export class GameConnectionMonitor {
     private polling = false;
     private readonly states = new Map<string, TargetState>();
 
-    constructor(private readonly describe: ConnectionDescriber) { }
+    constructor(private readonly describe: ConnectionDescriber, private readonly isActive: () => boolean = () => true) { }
 
     start(): void {
         if (this.timer || this.polling) return;
@@ -71,6 +73,14 @@ export class GameConnectionMonitor {
     stop(): void {
         if (this.timer) clearTimeout(this.timer);
         this.timer = undefined;
+    }
+
+    /** Polls immediately; called after a launch so an idle backoff does not delay the first log line. */
+    wake(): void {
+        if (!this.timer) return;
+        clearTimeout(this.timer);
+        this.timer = undefined;
+        void this.poll();
     }
 
     private async poll(): Promise<void> {
@@ -97,7 +107,9 @@ export class GameConnectionMonitor {
                     if (message) getOutput().appendLine(message);
                 }
 
-                if (next !== "connected") delay = Math.min(delay, DISCONNECTED_POLL_MS);
+                if (next !== "connected") {
+                    delay = Math.min(delay, this.isActive() ? DISCONNECTED_POLL_MS : IDLE_POLL_MS);
+                }
             }
         } finally {
             this.polling = false;

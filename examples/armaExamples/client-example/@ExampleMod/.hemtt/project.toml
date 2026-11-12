@@ -1,0 +1,18 @@
+# HEMTT project for the example client mod.
+#
+# `hemtt check` works out of the box in this folder (the extension runs it automatically when
+# the `hemtt` command is installed). `prefix` + `mainprefix` match the path SqfReloader mounts
+# the addon at: z\example\addons\scripts.
+name = "@ExampleMod"
+author = "Arma 3 SQF Reloader"
+prefix = "example"
+mainprefix = "z"
+
+[version]
+major = 1
+minor = 0
+patch = 0
+build = 0
+# 0 keeps the version usable outside a git repository: a freshly created example workspace has
+# no commit, and HEMTT fails on a missing git history when this is not set.
+git_hash = 0

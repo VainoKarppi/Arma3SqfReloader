@@ -12,6 +12,8 @@
     "outDir": "out",
     "rootDir": "src",
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "sourceMap": true,
     "esModuleInterop": true,
     "moduleResolution": "Node16"

@@ -30,9 +30,27 @@ export interface LinkResult {
 interface Registration {
     linkPath: string;
     target: string;
+    /** Addon mounts are reconciled on every launch; mission links are only removed on cleanup. */
+    kind?: "addon" | "mission";
 }
 
 const REGISTRY_FILE = ".sqfreloader-links.json";
+
+/**
+ * Existence check that also sees a broken link.
+ *
+ * `fs.existsSync` follows the link, so a junction whose target was deleted reports "missing".
+ * `mklink /J` then fails with "Cannot create a file when that file already exists" and the whole
+ * launch aborted. `lstatSync` describes the reparse point itself.
+ */
+export function pathEntryExists(target: string): boolean {
+    try {
+        fs.lstatSync(target);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 /**
  * Links the mod into the Arma folder so both Arma and the reloader read the files from the
@@ -173,32 +191,44 @@ function ensureDirectoryLink(
 ): Link | undefined {
     const resolvedTarget = path.resolve(target);
 
-    if (fs.existsSync(linkPath)) {
+    if (pathEntryExists(linkPath)) {
         const currentTarget = readLinkTarget(linkPath);
-
         // Windows paths are case-insensitive and mklink stores the target as typed.
-        if (currentTarget && path.resolve(currentTarget).toLowerCase() === resolvedTarget.toLowerCase()) {
+        const pointsHere = !!currentTarget && path.resolve(currentTarget).toLowerCase() === resolvedTarget.toLowerCase();
+
+        if (pointsHere && fs.existsSync(linkPath)) {
             log(`Link already in place: ${linkPath} -> ${currentTarget}`);
             return { linkPath, target: resolvedTarget, kind: "existing" };
         }
 
-        // A link that points at an older copy is refreshed; a real folder is never touched,
-        // because it is user data. The real folder is reported so the setup flow can offer to
-        // move it aside instead of silently leaving Arma on the stale copy.
-        if (replace && currentTarget) {
-            try {
-                fs.rmdirSync(linkPath);
-                log(`Refreshed link: ${linkPath} (${currentTarget} -> ${resolvedTarget})`);
-            } catch (error) {
-                warnings.push(`Could not refresh ${linkPath}: ${error instanceof Error ? error.message : String(error)}`);
-                return undefined;
+        if (!currentTarget) {
+            // A real folder or file is user data and is never deleted. Reported so the setup flow
+            // can offer to move it aside instead of silently leaving Arma on the stale copy.
+            if (conflicts && armaDirectory) {
+                conflicts.push({ armaDirectory, linkPath, target: resolvedTarget });
+                warnings.push(`${linkPath} is a real folder, not a link to ${resolvedTarget}. The workspace sources are not mounted there.`);
+            } else {
+                warnings.push(`${linkPath} already exists and is not a link; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
             }
-        } else if (!currentTarget && conflicts && armaDirectory) {
-            conflicts.push({ armaDirectory, linkPath, target: resolvedTarget });
-            warnings.push(`${linkPath} is a real folder, not a link to ${resolvedTarget}. The workspace sources are not mounted there.`);
             return undefined;
-        } else {
-            warnings.push(`${linkPath} already exists and points to ${currentTarget ?? "a real folder"}; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
+        }
+
+        // A link to an older copy, or a broken junction whose target is gone, is replaced when
+        // the caller allows it. The broken case used to reach `mklink` and abort the launch with
+        // "Cannot create a file when that file already exists".
+        if (!replace) {
+            const state = pointsHere ? "its target is missing" : `it points to ${currentTarget}`;
+            warnings.push(`${linkPath} already exists and ${state}; it was left untouched. Remove it if it should be linked to ${resolvedTarget}.`);
+            return undefined;
+        }
+
+        try {
+            fs.rmdirSync(linkPath);
+            log(pointsHere
+                ? `Replaced broken link: ${linkPath} (${currentTarget} is missing)`
+                : `Refreshed link: ${linkPath} (${currentTarget} -> ${resolvedTarget})`);
+        } catch (error) {
+            warnings.push(`Could not replace the link ${linkPath}: ${error instanceof Error ? error.message : String(error)}`);
             return undefined;
         }
     }
@@ -287,6 +317,14 @@ export function reconcileLinks(armaDirectory: string, mods: Mod[], mode: Junctio
 
     for (const entry of readRegistry(armaDirectory)) {
         if (typeof entry.target !== "string") continue;
+
+        // Mission links are re-created per launch and are not part of the mod layout, so this
+        // reconciliation must not touch them.
+        if (entry.kind === "mission") {
+            retained.push(entry);
+            continue;
+        }
+
         const key = path.resolve(entry.linkPath).toLowerCase();
         const recordedTarget = path.resolve(entry.target).toLowerCase();
         const desiredTarget = desired.get(key);
@@ -315,12 +353,11 @@ export function reconcileLinks(armaDirectory: string, mods: Mod[], mode: Junctio
     writeRegistry(armaDirectory, retained);
 }
 
-function registerLinks(armaDirectory: string, links: Link[]): void {
-    const file = registryPath(armaDirectory);
+function registerLinks(armaDirectory: string, links: Link[], kind: Registration["kind"] = "addon"): void {
     const existing = readRegistry(armaDirectory);
     const merged = new Map<string, Registration>();
 
-    for (const entry of [...existing, ...links.map(link => ({ linkPath: link.linkPath, target: link.target }))]) {
+    for (const entry of [...existing, ...links.map(link => ({ linkPath: link.linkPath, target: link.target, kind }))]) {
         merged.set(entry.linkPath.toLowerCase(), entry);
     }
 
@@ -390,6 +427,12 @@ export function linkMissions(armaDirectory: string, profileDirectory: string, mi
         }
     }
 
+    // Registered so the cleanup paths ("Stop Arma 3", Arma exit, deactivate/uninstall) remove
+    // them too; previously they stayed behind in the profile and the Arma root.
+    if (links.length > 0) {
+        registerLinks(armaDirectory, links, "mission");
+    }
+
     return { links, warnings, conflicts: [] };
 }
 
@@ -413,8 +456,7 @@ export function readRegistry(armaDirectory: string): Registration[] {
 }
 
 /** Removes every link previously created by the extension. */
-export function removeAllLinks(armaDirectory: string): { removed: string[]; failed: string[] } {
-    const removed: string[] = [];
+export function removeAllLinks(armaDirectory: string): { removed: string[]; failed: string[] } {    const removed: string[] = [];
     const failed: string[] = [];
     const retained: Registration[] = [];
 
@@ -448,6 +490,40 @@ export function removeAllLinks(armaDirectory: string): { removed: string[]; fail
 
     writeRegistry(armaDirectory, retained);
 
+    return { removed, failed };
+}
+
+/**
+ * Removes registered links whose target folder is gone, e.g. after a workspace was deleted,
+ * moved, or left behind by an extension version that closed while Arma was running.
+ *
+ * Only links recorded by this extension are considered, and only when their target no longer
+ * exists, so a user folder or a working link is never touched.
+ */
+export function removeOrphanLinks(armaDirectory: string): { removed: string[]; failed: string[] } {
+    const removed: string[] = [];
+    const failed: string[] = [];
+    const retained: Registration[] = [];
+
+    for (const entry of readRegistry(armaDirectory)) {
+        if (fs.existsSync(entry.target)) {
+            retained.push(entry);
+            continue;
+        }
+
+        // A dangling junction still reports its recorded target, so removeLink can delete it.
+        if (!pathEntryExists(entry.linkPath)) continue;
+
+        if (removeLink(entry.linkPath)) {
+            removed.push(entry.linkPath);
+            pruneEmptyMountDirectories(armaDirectory, entry.linkPath);
+        } else {
+            failed.push(entry.linkPath);
+            retained.push(entry);
+        }
+    }
+
+    writeRegistry(armaDirectory, retained);
     return { removed, failed };
 }
 

@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
 import { log, logError, logInfo } from "./settings";
+import { findMissingAddonPrefixes, writeAddonPrefixes } from "./addonPrefixes";
 
 /** Read from VS Code settings.json, so both the user and the workspace can configure it. */
 const SECTION = "sqfReloader.hemtt";
@@ -62,6 +63,12 @@ let storageDirectory: string | undefined;
 let previousUris = new Set<string>();
 /** Last HEMTT abort message per project, so a repeating failure is logged once. */
 const lastFailure = new Map<string, string>();
+/** Projects the `$PBOPREFIX$` prompt was already shown for in this session. */
+const prefixPrompted = new Set<string>();
+/** Last reported `errors/warnings` signature per project, so a repeating result is logged once. */
+const lastReported = new Map<string, string>();
+/** Projects announced in the output channel, so the "checking …" line is not repeated. */
+let announcedProjects = "";
 
 export function readHemttConfig(scope?: vscode.Uri): HemttConfig {
     const config = vscode.workspace.getConfiguration(SECTION, scope);
@@ -91,11 +98,26 @@ export function configureHemttCheck(): void {
     if (!config.enabled) {
         diagnostics?.clear();
         previousUris.clear();
+        lastReported.clear();
+        announcedProjects = "";
         return;
     }
 
+    // One line per configuration, not per run: the timer would otherwise repeat it every interval.
+    logInfo(`HEMTT checks started: ${describeHemttConfig(config)}.`);
     timer = setInterval(() => void runHemttCheck(), config.intervalSeconds * 1000);
     void runHemttCheck();
+}
+
+/** Human-readable summary of the options the checks run with. */
+function describeHemttConfig(config: HemttConfig): string {
+    return [
+        `every ${config.intervalSeconds}s`,
+        config.onSave ? "on save" : "not on save",
+        config.unsaved ? "including unsaved edits" : "saved files only",
+        config.lints.length > 0 ? `lints ${config.lints.join(", ")}` : "project lints",
+        config.executable ? `executable ${config.executable}` : "executable from PATH"
+    ].join(", ");
 }
 
 export function stopHemttCheck(): void {
@@ -196,6 +218,14 @@ async function executeCheck(): Promise<HemttRunResult> {
         return { projects: 0, errors: 0, warnings: 0, reason: "no .hemtt/project.toml was found in this workspace." };
     }
 
+    // Announced once (and again only when the set of projects changes), so a timer run does not
+    // repeat the same line every interval.
+    const projectList = projects.map(project => path.basename(project)).join(", ");
+    if (announcedProjects !== projectList) {
+        announcedProjects = projectList;
+        logInfo(`HEMTT: checking ${projects.length} project(s): ${projectList}.`);
+    }
+
     const collection = diagnosticCollection();
     const seen = new Set<string>();
     const unsaved = config.unsaved ? unsavedFilesByProject() : new Map<string, Map<string, string>>();
@@ -204,12 +234,12 @@ async function executeCheck(): Promise<HemttRunResult> {
 
     for (const project of projects) {
         try {
+            await offerMissingPboPrefixes(project);
             const dirty = unsaved.get(project);
             const counts = await checkProject(collection, command, project, config, seen, dirty);
             errors += counts.errors;
             warnings += counts.warnings;
-            const source = dirty && dirty.size > 0 ? ` (${dirty.size} unsaved file(s))` : "";
-            logInfo(`HEMTT check ${path.basename(project)}${source}: ${counts.errors} error(s), ${counts.warnings} warning(s).`);
+            reportProjectResult(project, counts, dirty);
         } catch (error) {
             logError(`HEMTT check failed for ${project}`, error);
         }
@@ -223,8 +253,68 @@ async function executeCheck(): Promise<HemttRunResult> {
     return { projects: projects.length, errors, warnings };
 }
 
-async function checkProject(
-    collection: vscode.DiagnosticCollection,
+/**
+ * Writes a project's result to the output channel only when it changed.
+ *
+ * The check runs on a timer, so logging every result would repeat "0 error(s), 0 warning(s)" for
+ * every project every interval. A clean first result is silent; a changed result (or a recovery
+ * back to clean) is logged once, and the Problems panel always has the current state.
+ */
+function reportProjectResult(project: string, counts: { errors: number; warnings: number }, dirty?: Map<string, string>): void {
+    const signature = `${counts.errors}/${counts.warnings}`;
+    const previous = lastReported.get(project);
+    if (previous === signature) return;
+    lastReported.set(project, signature);
+
+    const name = path.basename(project);
+    const source = dirty && dirty.size > 0 ? ` (${dirty.size} unsaved file(s))` : "";
+
+    if (counts.errors === 0 && counts.warnings === 0) {
+        // A clean first run is not worth a line; recovering from problems is.
+        if (previous !== undefined) logInfo(`HEMTT: ${name} is clean again${source}.`);
+        return;
+    }
+
+    logInfo(`HEMTT: ${name}${source} has ${counts.errors} error(s), ${counts.warnings} warning(s).`);
+}
+
+/**
+ * Offers to create the `$PBOPREFIX$` files HEMTT needs. HEMTT aborts with "Addon prefix not found"
+ * when one is missing, and it never generates them itself, so a HEMTT project that was just
+ * created or copied usually needs this once per addon.
+ *
+ * Asked at most once per project in a session (the check runs on a timer), and only while HEMTT is
+ * enabled and installed, because the files are only useful to HEMTT.
+ */
+async function offerMissingPboPrefixes(project: string): Promise<void> {
+    if (prefixPrompted.has(project)) return;
+
+    const missing = findMissingAddonPrefixes(project);
+    if (missing.length === 0) return;
+
+    prefixPrompted.add(project);
+    const listed = missing.slice(0, 5).map(addon => addon.addonName).join(", ");
+    const remaining = missing.length > 5 ? ` and ${missing.length - 5} more` : "";
+    const choice = await vscode.window.showWarningMessage(
+        `HEMTT needs a $PBOPREFIX$ for ${missing.length} addon(s) in ${path.basename(project)}: ${listed}${remaining}. Generate them?`,
+        "Generate",
+        "Not Now"
+    );
+
+    if (choice !== "Generate") {
+        log(`HEMTT: skipped generating $PBOPREFIX$ for ${project} (${missing.length} addon(s)).`);
+        return;
+    }
+
+    try {
+        writeAddonPrefixes(missing);
+        logInfo(`HEMTT: generated $PBOPREFIX$ for ${missing.map(addon => addon.addonName).join(", ")} in ${project}.`);
+    } catch (error) {
+        logError(`could not create $PBOPREFIX$ files in ${project}`, error);
+    }
+}
+
+async function checkProject(    collection: vscode.DiagnosticCollection,
     command: string,
     project: string,
     config: HemttConfig,
@@ -565,7 +655,20 @@ function runProcess(target: string, args: string[], cwd: string | undefined): Pr
 
         let child: ReturnType<typeof spawn>;
         try {
-            child = spawn(target, args, { cwd, windowsHide: true });
+            // scoop/Chocolatey install HEMTT as a .cmd/.bat shim. Node refuses to spawn those
+            // directly (EINVAL), so they are executed through cmd.exe with quoting that survives
+            // the /s /c rules.
+            const shim = resolveShim(target);
+            if (shim) {
+                const commandLine = [`"${shim}"`, ...args.map(quoteForCmd)].join(" ");
+                child = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${commandLine}"`], {
+                    cwd,
+                    windowsHide: true,
+                    windowsVerbatimArguments: true
+                });
+            } else {
+                child = spawn(target, args, { cwd, windowsHide: true });
+            }
         } catch (error) {
             resolve({ code: -1, output: String(error) });
             return;
@@ -588,6 +691,38 @@ function runProcess(target: string, args: string[], cwd: string | undefined): Pr
         });
         child.on("close", code => finish(code ?? -1));
     });
+}
+
+/** Path of a `.cmd`/`.bat` wrapper for `target`, or undefined when it can be spawned directly. */
+const shimCache = new Map<string, string | undefined>();
+export function resolveShim(target: string): string | undefined {
+    if (shimCache.has(target)) return shimCache.get(target);
+    const shim = findShim(target);
+    shimCache.set(target, shim);
+    return shim;
+}
+
+function findShim(target: string): string | undefined {
+    if (process.platform !== "win32") return undefined;
+    if (/\.(cmd|bat)$/i.test(target)) return fs.existsSync(target) ? target : undefined;
+    if (path.extname(target)) return undefined;
+
+    // A bare command name: walk PATH in Windows order (directory, then PATHEXT) and decide on
+    // the first hit, so a real .exe in the same folder wins over an accompanying shim.
+    const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    for (const directory of (process.env.PATH ?? "").split(";").filter(Boolean)) {
+        for (const extension of extensions) {
+            const candidate = path.join(directory, target + extension.toLowerCase());
+            if (!fs.existsSync(candidate)) continue;
+            return /\.(cmd|bat)$/i.test(candidate) ? candidate : undefined;
+        }
+    }
+
+    return undefined;
+}
+
+function quoteForCmd(value: string): string {
+    return /[\s"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 function positiveInteger(value: string | undefined): number {

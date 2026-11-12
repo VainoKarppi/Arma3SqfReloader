@@ -2,7 +2,11 @@
 // Node scripts (used by scripts/verify-extension.js). Only what the tested code touches.
 "use strict";
 
+// UI calls recorded so scripts can assert what the extension opened (see verify-template.js).
+const calls = { showTextDocument: [], executeCommand: [] };
+
 module.exports = {
+    calls,
     window: {
         createOutputChannel: () => ({
             appendLine: () => undefined,
@@ -13,7 +17,10 @@ module.exports = {
         showErrorMessage: () => Promise.resolve(undefined),
         showInformationMessage: () => Promise.resolve(undefined),
         showOpenDialog: () => Promise.resolve(undefined),
-        showTextDocument: () => Promise.resolve({}),
+        showTextDocument: (document, options) => {
+            calls.showTextDocument.push({ document, options });
+            return Promise.resolve({});
+        },
         activeTextEditor: undefined,
         createStatusBarItem: () => ({
             show: () => undefined,
@@ -40,7 +47,10 @@ module.exports = {
     },
     commands: {
         registerCommand: () => ({ dispose: () => undefined }),
-        executeCommand: () => Promise.resolve(undefined)
+        executeCommand: (command, ...args) => {
+            calls.executeCommand.push({ command, args });
+            return Promise.resolve(undefined);
+        }
     },
     Uri: {
         file: fsPath => ({ fsPath })

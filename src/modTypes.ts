@@ -5,13 +5,16 @@ import { ensureProjectSettings, readProjectSettings, setProjectSetting, PROJECT_
 import { log, readSettings } from "./settings";
 import { fireHook } from "./hooks";
 
-export type ModType = "client" | "server" | "both" | "off";
+export type ModType = "client" | "server" | "off";
 
 const MOD_TYPES_SETTING = "modTypes";
 
 /**
- * Launch role of a workspace mod: undefined when unclassified (the default, launched with -mod),
- * "off" when the folder was discovered but must not be passed to Arma at all.
+ * Launch role of a workspace mod: undefined when unclassified (the default, launched with -mod
+ * like a client mod), "off" when the folder was discovered but must not be passed to Arma at all.
+ *
+ * The removed "both" (Shared Mod) role is read as unclassified, so an older settings file keeps
+ * launching that folder as a client mod.
  */
 export function modTypeForDirectory(directory: string): ModType | undefined {
     const workspace = workspaceForDirectory(directory);
@@ -91,5 +94,5 @@ function relativeModPath(workspaceDirectory: string, directory: string): string 
 }
 
 function isModType(value: unknown): value is ModType {
-    return value === "client" || value === "server" || value === "both" || value === "off";
+    return value === "client" || value === "server" || value === "off";
 }

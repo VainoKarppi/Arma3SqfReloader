@@ -143,6 +143,12 @@ try { $version = (Get-Content $packageJson -Raw | ConvertFrom-Json).version } ca
 
 if ($version -eq "?") { throw "Could not read the version from $packageJson." }
 
+# A hand-edited version file must fail the build here instead of producing a mixed vsix
+# (DLL / package.json / CfgPatches disagreeing). See scripts/verify-version.js.
+Write-Step "Checking that every version file agrees"
+Invoke-Native -FilePath "node" -Arguments @((Join-Path $solutionRoot "scripts\verify-version.js"))
+Write-Ok "Version $version is consistent"
+
 # ---------------------------------------------------------------------------
 # 1. SqfReloader extension + mod (PBO via Arma 3 Tools AddonBuilder)
 # ---------------------------------------------------------------------------
@@ -197,8 +203,10 @@ if (!(Test-Path (Join-Path $solutionRoot "node_modules"))) {
     Invoke-Native -FilePath $npm -Arguments @("install")
 }
 
+# out\ is rebuilt from scratch so a deleted source module can never linger in the .vsix.
+Invoke-Native -FilePath $npm -Arguments @("run", "clean")
 Invoke-Native -FilePath $npm -Arguments @("run", "compile")
-Write-Ok "TypeScript compiled to out\"
+Write-Ok "TypeScript compiled to out\ (clean build)"
 
 $vsix = $null
 
@@ -206,6 +214,8 @@ if ($SkipVsce) {
     Write-Host "    -SkipVsce: no .vsix was created" -ForegroundColor Yellow
 }
 else {
+    # `npm run package` runs vscode:prepublish (clean + compile) again, which keeps the packaged
+    # output identical to a clean checkout even when only vsce is run by hand.
     Invoke-Native -FilePath $npm -Arguments @("run", "package", "--", "--allow-missing-repository")
 
     # The build knows the version, so the exact file is checked (an older .vsix can never be

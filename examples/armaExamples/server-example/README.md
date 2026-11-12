@@ -9,7 +9,7 @@ any server that can be reached by other people. In VS Code right-click this file
 
 The workspace settings classify `@ExampleServerMod` as a server-only mod. It is passed using
 `-serverMod` on dedicated-server launches and omitted from normal client launches. Right-click
-another mod folder to choose its Client, Server, or Shared role.
+another mod folder to choose its Client or Server role.
 
 Functions in the addon use the `Example` tag and can be recompiled by SqfReloader. While a
 multiplayer mission is active, changes made on the server are sent to clients with

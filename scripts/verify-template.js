@@ -20,7 +20,7 @@ Module._resolveFilename = function (request, ...rest) {
     return originalResolve.call(this, request, ...rest);
 };
 
-const { writeTemplate, exampleMod, TEMPLATE_MOD_NAME } = require(path.join(repoRoot, "out", "scaffold.js"));
+const { writeTemplate, exampleMod, TEMPLATE_MOD_NAME, ensureGitIgnore, ignoresHemttOutput, shouldOfferExample } = require(path.join(repoRoot, "out", "scaffold.js"));
 const { findMods, findModForFile, findAddonForFile, toArmaPath, toFunctionVariable } = require(path.join(repoRoot, "out", "arma.js"));
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-"));
@@ -54,38 +54,58 @@ function sameTemplateTree(source, destination, includeFile = () => true) {
 }
 
 try {
-    // --- first run: empty folder, mod + mission ------------------------------
+    // --- first run: empty folder, client mod + server mod + missions ---------
     const result = writeTemplate(sandbox, true, false);
-    check("mod folder created", result.modDirectory === path.join(sandbox, TEMPLATE_MOD_NAME), result.modDirectory);
+    const clientRoot = path.join(sandbox, "ClientMod");
+    check("mod folder created below ClientMod", result.modDirectory === path.join(clientRoot, TEMPLATE_MOD_NAME), result.modDirectory);
+    check("client example folder created", result.clientExampleDirectory === clientRoot, result.clientExampleDirectory);
     check("files written", result.files.length > 0, `${result.files.length} files`);
     check("nothing skipped in an empty folder", result.skipped.length === 0, result.skipped.join(", "));
     check("client mod copied from editable source",
         sameTemplateTree(
             path.join(repoRoot, "examples", "armaExamples", "client-example"),
-            sandbox,
+            clientRoot,
             file => file.split(path.sep)[0] === "@ExampleMod"
                 || file.split(path.sep)[0] === "missions"
                 || file.split(path.sep)[0] === "mpmissions"
         ));
-    check("project settings copied from editable source",
-        sameTemplateTree(
-            path.join(repoRoot, "examples", "armaExamples", "client-example", ".vscode"),
-            path.join(sandbox, ".vscode")
-        ));
+    check("project settings copied from the workspace template",
+        fs.readFileSync(path.join(repoRoot, "examples", "armaExamples", "workspace-settings.json"), "utf8").replace(/\r\n/g, "\n")
+        === fs.readFileSync(path.join(sandbox, ".vscode", "sqfReloader-settings.json"), "utf8").replace(/\r\n/g, "\n"));
     const generatedSettings = fs.readFileSync(path.join(sandbox, ".vscode", "sqfReloader-settings.json"), "utf8");
-    check("server example mod is configured as server-only", /"server-example\/@ExampleServerMod"\s*:\s*"server"/.test(generatedSettings));
+    check("client example mod is configured as client", /"ClientMod\/@ExampleMod"\s*:\s*"client"/.test(generatedSettings));
+    check("server example mod is configured as server-only", /"ServerMod\/@ExampleServerMod"\s*:\s*"server"/.test(generatedSettings));
     check("generated project includes the one-second watcher default", /"watchInterval"\s*:\s*1000/.test(generatedSettings));
     check("generated project has no hooks by default", /"hooks"\s*:\s*\{\s*\}/.test(generatedSettings));
     check("generated project has the default hook presentation", /"reveal"\s*:\s*"always"/.test(generatedSettings) && /"panel"\s*:\s*"shared"/.test(generatedSettings));
+    check("client example readme is copied", fs.existsSync(path.join(clientRoot, "README.md")));
     check("mission written", !!result.missionDirectory && fs.existsSync(result.missionDirectory));
     check("MP mission written", !!result.mpMissionDirectory && fs.existsSync(result.mpMissionDirectory));
-    check("no $PBOPREFIX$ in the template", !fs.existsSync(path.join(result.modDirectory, "addons", "scripts", "$PBOPREFIX$")));
+
+    // HEMTT support: both example mods carry a project and the prefix file HEMTT requires.
+    const clientPrefix = path.join(result.modDirectory, "addons", "scripts", "$PBOPREFIX$");
+    const clientHemtt = path.join(result.modDirectory, ".hemtt", "project.toml");
+    check("client example ships a .hemtt project", fs.existsSync(clientHemtt));
+    check("client $PBOPREFIX$ matches the SqfReloader mount path",
+        fs.readFileSync(clientPrefix, "utf8").trim() === "z\\example\\addons\\scripts",
+        fs.readFileSync(clientPrefix, "utf8").trim());
+    const serverPrefix = path.join(result.serverExampleDirectory, "@ExampleServerMod", "addons", "server", "$PBOPREFIX$");
+    check("server example ships a .hemtt project",
+        fs.existsSync(path.join(result.serverExampleDirectory, "@ExampleServerMod", ".hemtt", "project.toml")));
+    check("server $PBOPREFIX$ matches the SqfReloader mount path",
+        fs.readFileSync(serverPrefix, "utf8").trim() === "z\\Example\\addons\\server",
+        fs.readFileSync(serverPrefix, "utf8").trim());
     check("missions have a mission.sqm", fs.existsSync(path.join(result.missionDirectory, "mission.sqm")) && fs.existsSync(path.join(result.mpMissionDirectory, "mission.sqm")));
+    const generatedIgnore = fs.readFileSync(path.join(sandbox, ".gitignore"), "utf8");
+    check("workspace .gitignore is created", /^\*\*\/\.hemttout\/$/m.test(generatedIgnore), JSON.stringify(generatedIgnore));
+    check(".gitignore explains why the rule is there", /# HEMTT build output/.test(generatedIgnore));
+    check("nested HEMTT projects are covered by the ignore rule", ignoresHemttOutput("**/.hemttout/"));
     check("single-player mission copied from editable source",
-        sameTemplateTree(path.join(repoRoot, "examples", "armaExamples", "client-example", "missions"), path.join(sandbox, "missions")));
+        sameTemplateTree(path.join(repoRoot, "examples", "armaExamples", "client-example", "missions"), path.join(clientRoot, "missions")));
     check("multiplayer mission copied from editable source",
-        sameTemplateTree(path.join(repoRoot, "examples", "armaExamples", "client-example", "mpmissions"), path.join(sandbox, "mpmissions")));
+        sameTemplateTree(path.join(repoRoot, "examples", "armaExamples", "client-example", "mpmissions"), path.join(clientRoot, "mpmissions")));
     check("server example is created", !!result.serverExampleDirectory && fs.existsSync(path.join(result.serverExampleDirectory, "server.cfg")));
+    check("server example folder is ServerMod", result.serverExampleDirectory === path.join(sandbox, "ServerMod"), result.serverExampleDirectory);
     check("server example copied from editable source",
         sameTemplateTree(path.join(repoRoot, "examples", "armaExamples", "server-example"), result.serverExampleDirectory));
     check("server example includes mod and mission files", fs.existsSync(path.join(result.serverExampleDirectory, "@ExampleServerMod", "addons", "server", "config.cpp"))
@@ -187,17 +207,37 @@ try {
     // --- mod-only variant ---------------------------------------------------
     const modOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-template-modonly-"));
     const modOnly = writeTemplate(modOnlyRoot, false, false);
-    check("mod-only variant writes no mission", !modOnly.missionDirectory && !modOnly.mpMissionDirectory && !fs.existsSync(path.join(modOnlyRoot, "missions")) && !fs.existsSync(path.join(modOnlyRoot, "mpmissions")));
+    check("mod-only variant writes no mission", !modOnly.missionDirectory && !modOnly.mpMissionDirectory && !fs.existsSync(path.join(modOnlyRoot, "ClientMod", "missions")) && !fs.existsSync(path.join(modOnlyRoot, "ClientMod", "mpmissions")));
     check("mod-only variant copies only the client mod",
         sameTemplateTree(
             path.join(repoRoot, "examples", "armaExamples", "client-example"),
-            modOnlyRoot,
+            path.join(modOnlyRoot, "ClientMod"),
             file => file.split(path.sep)[0] === "@ExampleMod"
         ));
     check("mod-only variant still writes server example (no $PBOPREFIX$)",
         fs.existsSync(path.join(modOnly.serverExampleDirectory, "server.cfg"))
         && fs.existsSync(path.join(modOnly.modDirectory, "mod.cpp")));
     fs.rmSync(modOnlyRoot, { recursive: true, force: true });
+
+    // --- .gitignore handling ------------------------------------------------
+    const ignorePath = path.join(sandbox, ".gitignore");
+    const ignoreAfterSecondRun = fs.readFileSync(ignorePath, "utf8");
+    check(".gitignore rule is not duplicated by a second run",
+        (ignoreAfterSecondRun.match(/^\*\*\/\.hemttout\/$/gm) ?? []).length === 1, JSON.stringify(ignoreAfterSecondRun));
+
+    const ignoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-ignore-"));
+    fs.writeFileSync(path.join(ignoreRoot, ".gitignore"), "node_modules/\n*.log\n", "utf8");
+    const appended = ensureGitIgnore(ignoreRoot);
+    const appendedText = fs.readFileSync(path.join(ignoreRoot, ".gitignore"), "utf8");
+    check("existing .gitignore keeps its rules", appendedText.includes("node_modules/") && appendedText.includes("*.log"));
+    check("existing .gitignore gets the HEMTT rule appended", appended.updated && /\*\*\/\.hemttout\/$/m.test(appendedText), JSON.stringify(appendedText));
+    check("a second ensureGitIgnore() call changes nothing", !ensureGitIgnore(ignoreRoot).updated);
+
+    fs.writeFileSync(path.join(ignoreRoot, ".gitignore"), "node_modules/\n.hemttout/\n", "utf8");
+    check("an equivalent existing rule is not duplicated", !ensureGitIgnore(ignoreRoot).updated);
+    fs.writeFileSync(path.join(ignoreRoot, ".gitignore"), "", "utf8");
+    check("an empty .gitignore is filled in", ensureGitIgnore(ignoreRoot).updated);
+    fs.rmSync(ignoreRoot, { recursive: true, force: true });
 
     // --- .vscode/sqfReloader-settings.json must be valid JSON -------------
     // (whole-line comments are allowed in the template, so strip them before parsing)
@@ -211,14 +251,53 @@ try {
     check("generated project settings omit armaDirectory (auto-detected, never written)", !("armaDirectory" in parsed));
     check("generated project settings have one shared API port", parsed.apiPort > 0 && !("serverApiPort" in parsed));
     check("generated project settings have no watch target (always the local game)", !("watchTarget" in parsed));
+
+    // --- the "create the example mod?" offer -----------------------------
+    const base = { hasWorkspace: true, emptyWorkspace: true, exampleExists: false, declined: false, asked: false };
+    check("an empty workspace offers the example mod", shouldOfferExample(base));
+    check("a second window in the same folder is not asked again", !shouldOfferExample({ ...base, asked: true }));
+    check("a folder with files is not offered the example", !shouldOfferExample({ ...base, emptyWorkspace: false }));
+    check("a folder that already has the example mod is not offered", !shouldOfferExample({ ...base, exampleExists: true }));
+    check("Don't ask again suppresses it everywhere", !shouldOfferExample({ ...base, declined: true }));
+    check("no workspace folder means no offer", !shouldOfferExample({ ...base, hasWorkspace: false }));
 } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
 }
 
-console.log("");
-if (failures.length > 0) {
-    console.log(`TEMPLATE VERIFY FAILED (${failures.length}): ${failures.join(", ")}`);
-    process.exit(1);
+// --- "Create example mod" must leave the editor on the ClientMod README preview ----
+async function checkReveal() {
+    const vscode = require(path.join(__dirname, "vscode-stub.js"));
+    const revealRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-reveal-"));
+    vscode.calls.showTextDocument.length = 0;
+    vscode.calls.executeCommand.length = 0;
+
+    try {
+        const { scaffoldExample } = require(path.join(repoRoot, "out", "scaffold.js"));
+        await scaffoldExample({ target: revealRoot });
+
+        const previews = vscode.calls.executeCommand.filter(call => call.command === "markdown.showPreview");
+        check("create example opens the ClientMod README preview once", previews.length === 1, `${previews.length}`);
+        check("the preview targets ClientMod/README.md",
+            previews.length === 1 && previews[0].args[0].fsPath === path.join(revealRoot, "ClientMod", "README.md"),
+            previews.length === 1 ? previews[0].args[0].fsPath : "no preview");
+        check("create example opens no other editor tabs",
+            vscode.calls.showTextDocument.length === 0
+            && vscode.calls.executeCommand.length === 1,
+            vscode.calls.executeCommand.map(call => call.command).join(", "));
+    } finally {
+        fs.rmSync(revealRoot, { recursive: true, force: true });
+    }
+
+    console.log("");
+    if (failures.length > 0) {
+        console.log(`TEMPLATE VERIFY FAILED (${failures.length}): ${failures.join(", ")}`);
+        process.exit(1);
+    }
+
+    console.log("TEMPLATE VERIFY PASSED");
 }
 
-console.log("TEMPLATE VERIFY PASSED");
+checkReveal().catch(error => {
+    console.error(error);
+    process.exit(1);
+});

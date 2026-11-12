@@ -3,9 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon, toArmaPath, toFunctionVariable } from "./arma";
 import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
-import { DEFAULT_HOST, DEFAULT_PORT, findFreePort } from "./ports";
+import { DEFAULT_HOST, findFreePort } from "./ports";
 import { modFoldersOnce } from "./launchMods";
-import { log, logError, readSettings, Settings } from "./settings";
+import { log, Settings } from "./settings";
 import { ArmaProfileSelection, selectArmaProfile } from "./profile";
 
 /**
@@ -322,23 +322,11 @@ function currentLinkTarget(linkPath: string): string | undefined {
         }
 
         return undefined;
-    } catch {
+    } catch (error) {
+        // "Not linked yet" (ENOENT) is the normal answer; anything else is worth a log line.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code && code !== "ENOENT") log(`could not inspect link ${linkPath}: ${code}`);
         return undefined;
-    }
-}
-
-/** Stops a previous SqfReloader instance so the port is free for the new launch. */
-export function stopStaleArmaProcesses(armaDirectory: string): void {
-    const noTaskLine = "INFO: No tasks";
-
-    try {
-        const output = require("child_process").execSync(`tasklist /FI "IMAGENAME eq arma3_x64.exe" /FO CSV /NH`, { encoding: "utf8" });
-
-        if (output.includes("arma3_x64.exe") && !output.includes(noTaskLine)) {
-            log("An Arma 3 instance is already running; the new launch will report the port as busy.");
-        }
-    } catch {
-        // tasklist is Windows only; other platforms simply proceed.
     }
 }
 

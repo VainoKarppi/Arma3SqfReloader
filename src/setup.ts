@@ -8,7 +8,7 @@ import {
     Mod,
     Addon
 } from "./arma";
-import { Link, removeAllLinks, verifyAddonLink } from "./junctions";
+import { Link, removeAllLinks, removeOrphanLinks, verifyAddonLink } from "./junctions";
 import { createLinksWithRepair } from "./linkRepair";
 import { log, Settings } from "./settings";
 import { fireHook, runHook } from "./hooks";
@@ -147,10 +147,6 @@ export async function setupFromContext(settings: Settings): Promise<void> {
 }
 
 /** Opens the mod folder in the explorer (created by the first setup). */
-export function openArmaFolder(armaDirectory: string): Thenable<unknown> {
-    return vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(armaDirectory), { forceNewWindow: true });
-}
-
 /** Removes every junction this extension created in the Arma folder. */
 export async function removeJunctions(settings: Settings): Promise<void> {
     const armaDirectory = await findArmaDirectory(settings);
@@ -211,6 +207,13 @@ export async function ensureJunctions(settings: Settings): Promise<void> {
     if (!armaDirectory) {
         log("Arma 3 not found; junctions were not created. Use \"SqfReloader: Set up this mod\" to pick the folder.");
         return;
+    }
+
+    // Links whose workspace no longer exists would otherwise stay in the Arma folder and profile
+    // forever (for example after the extension was closed while Arma was running).
+    const orphans = removeOrphanLinks(armaDirectory);
+    if (orphans.removed.length > 0) {
+        log(`Removed ${orphans.removed.length} link(s) whose target no longer exists: ${orphans.removed.join(", ")}`);
     }
 
     if (!await runHook("preJunction", settings, { armaDirectory })) return;

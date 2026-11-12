@@ -29,6 +29,8 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+# HEMTT build output (the example templates are HEMTT projects too)
+**/.hemttout/
 # SqfReloader extension build output
 SqfReloaderExtension/bin/
 SqfReloaderExtension/obj/

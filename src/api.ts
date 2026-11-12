@@ -129,12 +129,6 @@ export async function executeCode(settings: Settings, code: string): Promise<Com
     return toResult(response);
 }
 
-/** Runs SQF on the current game thread and waits for its result. */
-export async function evaluateCode(settings: Settings, code: string, timeoutMs = settings.runTimeout * 1000): Promise<CommandResult> {
-    const response = await request(settings, "POST", "/eval", { code, timeoutMs }, timeoutMs + 5000);
-    return toResult(response);
-}
-
 export async function recompileCommand(settings: Settings, armaPath: string, code: string): Promise<CommandResult> {
     const response = await request(settings, "POST", "/command", {
         type: "recompile",

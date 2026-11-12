@@ -1,11 +1,14 @@
 ﻿# The VS Code extension ships only what it needs at runtime:
 #   out/                compiled JavaScript
+#   examples/armaExamples/   templates copied by "Create example mod" (src/scaffold.ts)
+#   schemas/            JSON schema for .vscode/sqfReloader-settings.json
 #   vscode-runtime/     SqfReloader_x64.dll + the unpacked @SqfReloader mod (deployed to the Arma folder
 #                       on "Arma API: Play", see src/runtime.ts)
 SqfReloaderExtension/**
 arma3-sqf-reloader-*.vsix
 arma3-sqf-reloader-*.zip
 README.md
+README-FULL.md
 *.bak
 build-all.ps1
 node_modules/**
@@ -13,11 +16,20 @@ out/**/*.map
 src/**
 scripts/**
 tsconfig.json
+package-lock.json
 .gitignore
 .vscodeignore
 .SqfReloader-links.json
 .vscode/**
 **/*.tsbuildinfo
+
+# Not used at runtime (documentation and GitHub-only API examples).
+examples/*.ps1
+examples/README.md
+PLAN.md
+AGENTS.md
+TESTING.md
+**/.hemttout/**
 
 media/sqfReloader_logo.xcf
 media/sqfReloader_logo.png

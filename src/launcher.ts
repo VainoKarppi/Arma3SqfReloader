@@ -3,9 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { execFile, spawn } from "child_process";
-import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirectory, toArmaPath } from "./arma";
-import { getOutput, log, logError, readSettings, Settings } from "./settings";
-import { projectSetting } from "./projectSettings";
+import { findArmaDirectory, findMissions, findMods, pickArmaDirectory, toArmaPath } from "./arma";
+import { getOutput, log, logError, Settings } from "./settings";
 import { PreparedLaunch, prepareRuntime, Runtime, verifyWorkspaceAddons, workspaceAddons, workspaceMods, writeApiConfig } from "./runtime";
 import { createLinks, linkMissions, reconcileLinks } from "./junctions";
 import { createLinksWithRepair } from "./linkRepair";
@@ -16,30 +15,16 @@ import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./laun
 import { fireHook, HookContext, runHook } from "./hooks";
 import { buildWorkspaceAddonPbos } from "./pbo";
 import { armaLogDirectory } from "./rpt";
+import { formatLaunchArgument, launchArguments } from "./launchArgs";
+import type { LaunchOptions } from "./launchArgs";
+
+// Re-exported because scripts/verify-launch-args.js requires them from this module.
+export { launchArguments } from "./launchArgs";
+export type { LaunchOptions } from "./launchArgs";
 
 /** Port the resolved project API URL requests, before any fallback is applied. */
 function requestedApiPort(settings: Settings): number {
     return parseApiUrl(settings.apiUrl).port;
-}
-
-export interface LaunchOptions {
-    /** Extra launch parameters, e.g. "-window -noSplash". */
-    extraArguments?: string[];
-    /** Existing game mission launch arguments, if any. */
-    mission?: string;
-    /** Absolute mission.sqm path; Arma opens this scenario directly in Eden at startup. */
-    scenarioFile?: string;
-    /** Mission to ensure is linked into the selected profile's Missions/MPMissions folder. */
-    missionFolder?: MissionFolder;
-    /** Host the selected mission in a listen-server session. */
-    hostMission?: boolean;
-    /** Start arma3server_x64.exe with the selected server config and mission. */
-    dedicatedServer?: boolean;
-    serverConfig?: string;
-    /** Extra mod roots to include in the Arma launch (for generated server examples). */
-    additionalModDirectories?: string[];
-    /** Show the exact dedicated-server command and ask before starting. */
-    confirmLaunch?: boolean;
 }
 
 let armaProcess: ReturnType<typeof spawn> | undefined;
@@ -132,7 +117,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             log(`Not passing these workspace mods to Arma (mod type "off"): ${disabledMods.map(mod => mod.directory).join(", ")}`);
         }
         const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
-        const clientAndSharedMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
+        const clientMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
         const additionalServerMods = (options.additionalModDirectories ?? []).flatMap(directory => findMods(directory));
         if (!await buildWorkspaceAddonPbos([...workspaceModsFound, ...additionalServerMods])) return false;
         // Link the sources before Arma starts. A real folder sitting on a mount path would
@@ -141,15 +126,15 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         await createLinksWithRepair(armaDirectory, workspaceModsFound, settings, { silent });
 
         const serverMods = [...classifiedServerMods, ...additionalServerMods];
-        const launch = prepareRuntime(runtime, armaDirectory, settings, clientAndSharedMods, serverMods);
+        const launch = prepareRuntime(runtime, armaDirectory, settings, clientMods, serverMods);
         launch.executable = executable;
 
         // -mod= is the workspace mod folders plus the configured external mods. A folder that is
         // both (very common: the workspace folder is a copy of the one in the Arma directory)
         // used to be listed twice, e.g. "@APMS;...\@APMS", and Arma then loaded it twice.
-        const clientAndSharedDirectories = clientAndSharedMods.map(mod => mod.directory);
+        const clientDirectories = clientMods.map(mod => mod.directory);
         launch.mods = modFoldersOnce([
-            ...clientAndSharedDirectories,
+            ...clientDirectories,
             ...launchModFolders(),
             launch.modPath
         ]);
@@ -162,11 +147,18 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             if (!await runHook("preMissionLink", settings, hookContext)) return false;
             const missionLinks = linkMissions(armaDirectory, launch.profile.directory, [options.missionFolder]);
             launch.warnings.push(...missionLinks.warnings);
-            if (missionLinks.links.length === 0 && missionLinks.warnings.length > 0) {
-                throw new Error(missionLinks.warnings[0]);
-            }
             if (missionLinks.links.length > 0) {
                 log(`Mission linked to Arma profile and installation: ${missionLinks.links.map(link => link.linkPath).join(", ")}`);
+            } else if (missionLinks.warnings.length > 0) {
+                // A mission that cannot be linked is a warning, not a reason to keep the game
+                // closed: the mod still launches and the mission can be opened from the editor.
+                log(`Warning: the mission folder could not be linked: ${missionLinks.warnings[0]}`);
+                if (!silent) {
+                    void vscode.window.showWarningMessage(
+                        `Arma 3 will start, but the mission folder could not be linked into the Arma profile: ${missionLinks.warnings[0]}`,
+                        "Show output"
+                    ).then(choice => { if (choice === "Show output") getOutput().show(true); });
+                }
             }
             fireHook("postMissionLink", settings, hookContext);
         }
@@ -180,7 +172,10 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         if (options.dedicatedServer && options.missionFolder) {
             const serverMissionPath = path.join(armaDirectory, "MPMissions", path.basename(options.missionFolder.directory));
             if (!fs.existsSync(path.join(serverMissionPath, "mission.sqm"))) {
-                throw new Error(`Dedicated-server mission folder was not prepared at ${serverMissionPath}.`);
+                // Same rule as the client mission link: report and keep going.
+                const message = `Dedicated-server mission folder was not prepared at ${serverMissionPath}; the server starts without it.`;
+                launch.warnings.push(message);
+                log(`Warning: ${message}`);
             }
         }
 
@@ -328,29 +323,6 @@ async function waitForSteam(): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
     return false;
-}
-
-function formatLaunchArgument(argument: string): string[] {
-    const unwrapped = argument.startsWith('"') && argument.endsWith('"')
-        ? argument.slice(1, -1)
-        : argument;
-    const modMatch = /^(-(?:server)?mod)=(.*)$/i.exec(unwrapped);
-    if (modMatch) {
-        return [
-            `${modMatch[1]}=`,
-            ...modMatch[2].split(";").map(directory => `\t\t${pathToFileURL(directory).href}`)
-        ];
-    }
-
-    const profileMatch = /^(-name)=(.*)$/i.exec(argument);
-    if (profileMatch) {
-        const name = profileMatch[2].startsWith('"') && profileMatch[2].endsWith('"')
-            ? profileMatch[2]
-            : `"${profileMatch[2]}"`;
-        return [`${profileMatch[1]}=${name}`];
-    }
-
-    return [argument];
 }
 
 /**
@@ -578,121 +550,6 @@ function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {
 }
 
 /** Command line handed to arma3_x64.exe (also used by scripts/verify-launch-args.js). */
-export function launchArguments(launch: PreparedLaunch, settings: Settings, options: LaunchOptions): string[] {
-    // File patching is required twice: user mods are junctions to the working copy, and
-    // @SqfReloader's replacement config must override the config inside scripts.pbo.
-    const args: string[] = ["-filePatching"];
-
-    if (options.dedicatedServer) {
-        args.push("-autoInit");
-    }
-
-    if (options.hostMission) {
-        args.push("-host");
-    }
-
-    if (options.dedicatedServer && options.serverConfig) {
-        const config = options.serverConfig.replace(/"/g, "\\\"");
-        args.push(`-config="${config}"`);
-    }
-
-    const serverExtraArguments = options.dedicatedServer
-        ? parseExtraArguments(projectSetting("serverLaunchArguments", ""))
-        : [];
-    const extra = [...(options.extraArguments ?? parseExtraArguments(settings.extraLaunchArguments)), ...serverExtraArguments];
-    const launchExtras = settings.armaProfile?.trim() ? withoutProfileName(extra) : extra;
-
-    // BattlEye cannot load unsigned extensions, so it is off unless the user asks for it.
-    if (!launchExtras.some(argument => /^-(no)?be$/i.test(argument))) {
-        args.push("-noBattlEye");
-    }
-
-    if (launchExtras.length > 0) {
-        args.push(...launchExtras);
-    }
-
-    // When profile auto-detection picked a named profile, explicitly launch that same profile.
-    // Otherwise Arma would default to Documents\Arma 3 while the mission junction targets the
-    // detected Documents\Arma 3 - Other Profiles\<name> folder.
-    if (launch.profile.launchName && !launchExtras.some(argument => /^-name(?:=|$)/i.test(argument))) {
-        const profileName = launch.profile.launchName.replace(/"/g, "\\\"");
-        args.push(/\s/.test(profileName) ? `-name="${profileName}"` : `-name=${profileName}`);
-    }
-
-    // Arma parses a bare mission.sqm argument as the editor startup scenario. Keep it after
-    // profile and gameplay options, matching the working launcher command line; add its
-    // memory-load switch after the path, then put -mod last as in the known-good invocation.
-    if (options.scenarioFile) {
-        const scenarioFile = options.scenarioFile.replace(/"/g, "\\\"");
-        args.push(/\s/.test(scenarioFile) ? `"${scenarioFile}"` : scenarioFile);
-        args.push("-loadMissionToMemory");
-    }
-
-    if (options.hostMission && options.missionFolder) {
-        args.push(`-mission=${path.basename(options.missionFolder.directory)}.pbo`);
-    }
-
-    // Arma expects the whole -mod value quoted as one argument, with semicolons separating
-    // paths inside it. Quoting each path separately makes Arma ignore the startup scenario.
-    const mods = launch.mods;
-    if (mods.length > 0) {
-        args.push(`"-mod=${mods.map(uppercaseDriveLetter).join(";")}"`);
-    }
-
-    const serverMods = launch.serverMods;
-    if (options.dedicatedServer && serverMods.length > 0) {
-        args.push(`"-serverMod=${serverMods.map(uppercaseDriveLetter).join(";")}"`);
-    }
-
-    if (options.mission) {
-        args.push(`-mission=${options.mission}`);
-    }
-
-    return args;
-}
-
-function uppercaseDriveLetter(value: string): string {
-    return value.replace(/^([a-z]):/i, (_match, drive: string) => `${drive.toUpperCase()}:`);
-}
-
-
-function withoutProfileName(argumentsList: string[]): string[] {
-    const result: string[] = [];
-    for (let index = 0; index < argumentsList.length; index++) {
-        const argument = argumentsList[index];
-        if (/^-name$/i.test(argument)) {
-            if (index + 1 < argumentsList.length) index++;
-            continue;
-        }
-        if (/^-name=/i.test(argument)) continue;
-        result.push(argument);
-    }
-    return result;
-}
-
-function parseExtraArguments(value: string): string[] {
-    const argumentsList: string[] = [];
-    let current = "";
-    let quote: "\"" | "'" | undefined;
-
-    for (const character of value) {
-        if (quote) {
-            current += character;
-            if (character === quote) quote = undefined;
-        } else if (character === "\"" || character === "'") {
-            quote = character;
-            current += character;
-        } else if (/\s/.test(character)) {
-            if (current) argumentsList.push(current);
-            current = "";
-        } else {
-            current += character;
-        }
-    }
-
-    if (current) argumentsList.push(current);
-    return argumentsList;
-}
 
 export function isRunning(): boolean {
     if (armaProcess && !armaProcess.killed) {
@@ -700,6 +557,90 @@ export function isRunning(): boolean {
     }
 
     return externalArmaRunning;
+}
+
+/** PID of the Arma 3 process this VS Code window started, if it is still running. */
+export function trackedArmaPid(): number | undefined {
+    if (!armaProcess || armaProcess.killed || armaProcess.exitCode !== null) return undefined;
+    return armaProcess.pid;
+}
+
+export interface StopArmaResult {
+    ok: boolean;
+    /** `tracked`: our own process tree was terminated; `external`: an outside session was closed. */
+    method: "tracked" | "external" | "none";
+    error?: string;
+}
+
+/**
+ * Closes Arma 3 without touching sessions the user started elsewhere.
+ *
+ * The process started by `launchArma` is targeted by PID (`/T` closes its children too). The
+ * image-name kill is only used when the caller explicitly allows it, which the command does after
+ * telling the user that the instance was not started by VS Code.
+ */
+export async function stopArma(options: { allowExternal?: boolean } = {}): Promise<StopArmaResult> {
+    const pid = trackedArmaPid();
+
+    if (pid !== undefined) {
+        const stopped = await killProcessTree(armaProcess, pid);
+        if (stopped) {
+            armaProcess = undefined;
+            externalArmaRunning = false;
+            return { ok: true, method: "tracked" };
+        }
+
+        const error = `taskkill /PID ${pid} /T /F failed.`;
+        logError("could not close Arma 3", new Error(error));
+        return { ok: false, method: "tracked", error };
+    }
+
+    if (process.platform !== "win32") return { ok: false, method: "none", error: "Windows only." };
+    if (!externalArmaRunning) return { ok: false, method: "none", error: "No Arma 3 process was found." };
+
+    if (!options.allowExternal) {
+        return { ok: false, method: "none", error: "Arma 3 was not started by VS Code." };
+    }
+
+    try {
+        await execFileAsync("taskkill", ["/IM", "arma3_x64.exe", "/F"]);
+        externalArmaRunning = false;
+        return { ok: true, method: "external" };
+    } catch (error) {
+        logError("could not close Arma 3", error);
+        return { ok: false, method: "external", error: error instanceof Error ? error.message : String(error) };
+    }
+}
+
+/** Terminates one process and its children, resolving true once it is gone. */
+async function killProcessTree(handle: ReturnType<typeof spawn> | undefined, pid: number | undefined): Promise<boolean> {
+    if (pid !== undefined && process.platform === "win32") {
+        try {
+            await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+            return true;
+        } catch {
+            // The process may have exited between the check and the call; the handle decides.
+        }
+    }
+
+    if (handle && !handle.killed) {
+        handle.kill();
+        return true;
+    }
+
+    return false;
+}
+
+function execFileAsync(file: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        execFile(file, args, { timeout: 5000 }, (error, stdout, stderr) => {
+            if (error && (error as NodeJS.ErrnoException).code !== "ESRCH") {
+                reject(new Error([error.message, stderr?.trim()].filter(Boolean).join("\n")));
+                return;
+            }
+            resolve(stdout);
+        });
+    });
 }
 
 export function refreshRunningStatus(): Promise<boolean> {
@@ -782,15 +723,7 @@ export async function stopDedicatedServer(): Promise<boolean> {
 
     if (dedicatedServerProcess && !dedicatedServerProcess.killed) {
         const processHandle = dedicatedServerProcess;
-        const stopped = await new Promise<boolean>(resolve => {
-            const timeout = setTimeout(() => resolve(false), 2000);
-            processHandle.once("exit", () => {
-                clearTimeout(timeout);
-                resolve(true);
-            });
-            processHandle.kill();
-            timeout.unref();
-        });
+        const stopped = await killProcessTree(processHandle, processHandle.pid);
         if (stopped) {
             dedicatedServerProcess = undefined;
             externalDedicatedServerRunning = false;

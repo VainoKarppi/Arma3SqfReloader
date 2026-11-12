@@ -176,7 +176,6 @@
                 "enum": [
                     "client",
                     "server",
-                    "both",
                     "off"
                 ]
             },
@@ -195,7 +194,6 @@
                         "enum": [
                             "client",
                             "server",
-                            "both",
                             "off"
                         ]
                     }

@@ -48,17 +48,72 @@ export function projectSettingsExists(workspace: vscode.WorkspaceFolder | undefi
     return !!file && fs.existsSync(file);
 }
 
+interface SettingsCacheEntry {
+    file: string;
+    mtimeMs: number;
+    size: number;
+    checkedAt: number;
+    values: Record<string, unknown>;
+}
+
+/** How long a `stat` result is reused before the file is checked again; the watcher also invalidates. */
+const STAT_TTL_MS = 250;
+
+let cache: SettingsCacheEntry | undefined;
+
+/** Drops the cached settings for one file (or all of them) so the next read hits the disk. */
+export function invalidateProjectSettings(file?: string): void {
+    if (!file) {
+        cache = undefined;
+        return;
+    }
+
+    if (cache && sameFile(cache.file, file)) cache = undefined;
+}
+
+/**
+ * Parsed project settings.
+ *
+ * The file is re-read only when its mtime/size changed, so the synchronous parse behind
+ * `readSettings()` (and therefore every `log()` line) costs a cached lookup instead of disk I/O.
+ * The value is shared between callers: writers clone it before mutating.
+ */
 export function readProjectSettings(workspace: vscode.WorkspaceFolder | undefined = currentWorkspace()): Record<string, unknown> {
     const file = projectSettingsPath(workspace);
     if (!file) return {};
 
+    const now = Date.now();
+    if (cache && sameFile(cache.file, file) && now - cache.checkedAt < STAT_TTL_MS) {
+        return cache.values;
+    }
+
+    let stats: fs.Stats;
     try {
-        const parsed = parseJsonc(fs.readFileSync(file, "utf8"));
-        return isRecord(parsed) ? parsed : {};
+        stats = fs.statSync(file);
     } catch {
-        // A malformed file is treated as empty so the defaults keep the extension usable.
+        if (cache && sameFile(cache.file, file)) cache = undefined;
         return {};
     }
+
+    if (cache && sameFile(cache.file, file) && cache.mtimeMs === stats.mtimeMs && cache.size === stats.size) {
+        cache.checkedAt = now;
+        return cache.values;
+    }
+
+    try {
+        const parsed = parseJsonc(fs.readFileSync(file, "utf8"));
+        const values = isRecord(parsed) ? parsed : {};
+        cache = { file, mtimeMs: stats.mtimeMs, size: stats.size, checkedAt: now, values };
+        return values;
+    } catch {
+        // A malformed file is treated as empty so the defaults keep the extension usable.
+        cache = undefined;
+        return {};
+    }
+}
+
+function sameFile(left: string, right: string): boolean {
+    return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
 }
 
 export function projectSetting<T>(key: string, fallback: T, workspace: vscode.WorkspaceFolder | undefined = currentWorkspace()): T {
@@ -74,17 +129,19 @@ export async function writeProjectSettings(values: Record<string, unknown>, work
     if (!file) throw new Error("Open an Arma project folder first.");
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     await fs.promises.writeFile(file, `${JSON.stringify(values, null, 4)}\n`, "utf8");
+    invalidateProjectSettings(file);
 }
 
 export async function setProjectSetting(key: string, value: unknown, workspace: vscode.WorkspaceFolder | undefined = currentWorkspace()): Promise<void> {
-    const values = readProjectSettings(workspace);
+    // Clone: readProjectSettings may return the cached object, which must stay immutable.
+    const values = { ...readProjectSettings(workspace) };
     values[key] = value;
     await writeProjectSettings(values, workspace);
 }
 
 /** Adds keys the file does not contain yet, leaving every existing value untouched. */
 export async function ensureProjectSettings(defaults: Record<string, unknown>, workspace: vscode.WorkspaceFolder | undefined = currentWorkspace()): Promise<void> {
-    const values = readProjectSettings(workspace);
+    const values = { ...readProjectSettings(workspace) };
     let changed = !projectSettingsExists(workspace);
 
     for (const [key, value] of Object.entries(defaults)) {

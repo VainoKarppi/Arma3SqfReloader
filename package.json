@@ -2,7 +2,7 @@
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
   "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader plugin. Also provides ability to run SQF code from the vscode editor.",
-  "version": "3.8.1",
+  "version": "3.8.2",
   "publisher": "VainoKarppi",
   "icon": "./media/sqfReloader_logo_transparent.png",
   "repository": {
@@ -21,13 +21,34 @@
     "vscode": "^1.99.0"
   },
   "categories": [
-    "Debuggers",
-    "Programming Languages",
-    "Linters",
     "AI",
-    "Testing",
     "Other"
   ],
+  "keywords": [
+    "arma",
+    "arma3",
+    "sqf",
+    "sqfReloader",
+    "hot-reload",
+    "hemtt"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "SqfReloader launches Arma 3, writes into the Arma installation and executes SQF in the running game, so it requires a trusted workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "SqfReloader links real folders into the Arma installation and needs file system paths."
+    }
+  },
+  "galleryBanner": {
+    "color": "#1b2b34",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onStartupFinished",
     "workspaceContains:**/*.sqf",
@@ -75,7 +96,15 @@
       },
       {
         "command": "sqfReloader.createExample",
-        "title": "SqfReloader: Create example mod (try the reloader)"
+        "title": "SqfReloader: Create example mod"
+      },
+      {
+        "command": "sqfReloader.startTutorial",
+        "title": "SqfReloader: Start the guided tour"
+      },
+      {
+        "command": "sqfReloader.showExampleOffer",
+        "title": "SqfReloader: Show the create-example offer again"
       },
       {
         "command": "sqfReloader.connect",
@@ -378,14 +407,17 @@
     }
   },
   "scripts": {
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run clean && npm run compile",
+    "verify:version": "node scripts/verify-version.js",
+    "verify": "npm run compile && npm run verify:version && node scripts/verify-links.js && node scripts/verify-tutorial.js && node scripts/verify-hemtt-shim.js && node scripts/verify-template.js && node scripts/verify-tags.js",
     "package": "vsce package --readme-path README-MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "~1.99.0",
     "@vscode/vsce": "^4.1.0",
     "typescript": "^5.5.0"
   }

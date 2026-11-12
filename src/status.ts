@@ -26,22 +26,35 @@ export interface StatusPresentation {
 /** A cold Arma start loads mods and opens the API within seconds; allow for slow machines. */
 const STARTUP_GRACE_MS = 180_000;
 
-/** First moment a game/server process was reported while it had no API connection. */
-let processSeenAt: number | undefined;
+/**
+ * Startup-grace state. Kept in an explicit object (instead of module state) so the status text
+ * does not depend on activation history when several workspaces share one extension host.
+ */
+export interface StatusTracker {
+    /** First moment a game/server process was reported while it had no API connection. */
+    processSeenAt?: number;
+}
+
+export function createStatusTracker(): StatusTracker {
+    return {};
+}
+
+/** Tracker used when a caller does not pass one. */
+export const defaultStatusTracker: StatusTracker = createStatusTracker();
 
 /**
  * Milliseconds the current process has been running without the API answering, or undefined
  * when no game/server runs. Cleared when the process disappears, so the next launch starts a
  * fresh grace period.
  */
-function processAge(snapshot: StatusSnapshot, now: number): number | undefined {
+function processAge(snapshot: StatusSnapshot, now: number, tracker: StatusTracker): number | undefined {
     if (!snapshot.game && !snapshot.dedicatedServer) {
-        processSeenAt = undefined;
+        tracker.processSeenAt = undefined;
         return undefined;
     }
 
-    processSeenAt ??= now;
-    return now - processSeenAt;
+    tracker.processSeenAt ??= now;
+    return now - tracker.processSeenAt;
 }
 
 function port(url: string): string {
@@ -73,12 +86,12 @@ export function statusSummary(snapshot: StatusSnapshot): string {
  * still booting shows a spinner, and only a missing API after the startup grace period is red
  * (reloads cannot work then). With nothing running the neutral "Play" action is shown.
  */
-export function statusPresentation(snapshot: StatusSnapshot, settings: Settings, now = Date.now()): StatusPresentation {
+export function statusPresentation(snapshot: StatusSnapshot, settings: Settings, now = Date.now(), tracker: StatusTracker = defaultStatusTracker): StatusPresentation {
     const detail = [
         statusSummary(snapshot),
         `SqfReloader API: ${settings.apiUrl} (port ${port(settings.apiUrl)})`
     ];
-    const age = processAge(snapshot, now);
+    const age = processAge(snapshot, now, tracker);
 
     if (age !== undefined && !snapshot.api.api) {
         if (age < STARTUP_GRACE_MS) {

@@ -3,31 +3,44 @@ import * as fs from "fs";
 import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, logInfo, readSettings, Settings, updateSetting } from "./settings";
-import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
-import { ensureProjectSettings, projectSettingsExists, projectSettingsPath, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
+import { ensureJunctions, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
+import { projectSettingsExists } from "./projectSettings";
 import { fireHook, HookContext, runHook } from "./hooks";
 import { detectArmaDirectory, findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers, resetArmaDetection } from "./arma";
+import { cachedArmaDirectory } from "./armaDetect";
 import { linkMissions, removeAllLinks, removeModInZLink } from "./junctions";
-import { cleanupSnapshots, deletedFunctionVariable, findDuplicateFunctionFiles, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
-import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, startRptMonitor, stopDedicatedServer, stopRptMonitor } from "./launcher";
+import { cleanupSnapshots, deletedFunctionVariable, isReloadable, registerWorkspaceFunctions, reloadAll, reloadAndRestartMission, reloadDocument, reloadFileNow, runSqfFile } from "./reload";
+import { DuplicateFunctionDiagnostics } from "./duplicateFunctions";
+import { apiPort, findCurrentMission, findMissionForCurrentEditor, hasArmaWorkspace, openProjectSettingsFile, workspaceHasNoFiles } from "./workspaceHelpers";
+import { confirmMissionFunctionRecompile } from "./missionRecompile";
+import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, startRptMonitor, stopArma, stopDedicatedServer, stopRptMonitor, trackedArmaPid } from "./launcher";
+import { parseLaunchArguments } from "./launchArgs";
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
-import { scaffoldExample } from "./scaffold";
+import { scaffoldExample, shouldOfferExample, exampleMod } from "./scaffold";
 import { SqfSymbolLookup, seeReferences } from "./links";
 import { selectArmaProfile } from "./profile";
 import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./missionArtifacts";
 import { ModType, setModTypeForDirectory } from "./modTypes";
 import { hasHostnameAssignment, hostnameValue } from "./serverConfig";
-import { apiTargets, GameConnectionMonitor, readApiTarget, setRemoteLogLevel } from "./connectionMonitor";
+import { GameConnectionMonitor, readApiTarget, setRemoteLogLevel } from "./connectionMonitor";
 import { statusPresentation, StatusSnapshot, StatusTone, toneColor } from "./status";
 import { ProjectViewProvider } from "./projectView";
 import { ArmaAiTool, ARMA_AI_TOOL_NAME } from "./armaAiTool";
 import { activateHemttCheck, configureHemttCheck, disposeHemttCheck, onHemttDocumentChanged, onHemttDocumentSaved, runHemttCheck } from "./hemtt";
-
+import { initTutorialStore, completeTutorialStep, dismissTutorial, markExampleWorkspace, noteTutorialEvent, readTutorial, startTutorial } from "./tutorial";
+import { markExampleReady, clearExampleReady } from "./exampleBanner";
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
 let workspaceInjectionLoop: Promise<void> | undefined;
 let workspaceInjectionGeneration = 0;
+/** Set while the status poll loop runs; it receives the "anything active?" flag after each refresh. */
+let statusPollDriver: ((active: boolean) => void) | undefined;
+
+/** "Don't ask again" for the example-mod offer (global, so it stops asking everywhere). */
+const DECLINE_EXAMPLE_KEY = "sqfReloader.setupExampleDeclined";
+/** Per-workspace record of the example-mod offer, keyed by the extension version. */
+const EXAMPLE_PROMPT_VERSION_KEY = "sqfReloader.setupExamplePromptVersion";
 
 // Transition tracking for lifecycle hooks (connected, crashed, exited).
 let wasClientConnected = false;
@@ -48,22 +61,67 @@ function hasConfiguredProjectUri(uri: vscode.Uri): boolean {
     return workspaceFolder !== undefined && projectSettingsExists(workspaceFolder);
 }
 
-function cleanupArmaLinks(armaDirectory: string, reason: string): void {
+function cleanupArmaLinks(armaDirectory: string, reason: string, notify = true): void {
     const removedLinks = removeAllLinks(armaDirectory);
     const removedLegacy = workspaceMods().filter(mod => removeModInZLink(armaDirectory, mod)).length;
     const failures = removedLinks.failed.length;
     log(`Removed ${removedLinks.removed.length + removedLegacy} Arma mod link(s) after ${reason}${failures ? `; ${failures} could not be removed` : ""}.`);
-    if (failures > 0) {
+    if (failures > 0 && notify) {
         vscode.window.showWarningMessage(`Arma 3 closed, but ${failures} mod link(s) could not be removed. See the SqfReloader output.`);
+    }
+}
+
+/**
+ * Removes this extension's links when VS Code closes, the extension is disabled or it is
+ * uninstalled, so no junctions are left behind in the Arma folder or the profile.
+ *
+ * Skipped while an Arma process is running: removing the mount would break the live session's
+ * file reads. The links are removed when that game exits instead.
+ */
+async function removeLinksOnShutdown(): Promise<void> {
+    try {
+        if (isRunning()) {
+            log("Arma 3 is running, so the mod links are kept (they are removed when the game exits).");
+            return;
+        }
+
+        const settings = readSettings();
+        // No fresh registry/Steam detection here: that would spawn a process while VS Code closes.
+        const armaDirectory = isArmaDirectory(settings.armaDirectory) ? settings.armaDirectory : cachedArmaDirectory();
+        if (!armaDirectory) return;
+
+        cleanupArmaLinks(armaDirectory, "VS Code closing", false);
+    } catch (error) {
+        logError("could not remove the mod links while deactivating", error);
     }
 }
 
 export function activate(context: vscode.ExtensionContext): void {
     const version = context.extension.packageJSON.version;
     getOutput();
+
+    // The extension drives a local Windows Arma 3 installation: junctions, tasklist/taskkill and
+    // the bundled SqfReloader_x64.dll are Windows-only. Report the limitation once instead of
+    // starting timers, watchers and HEMTT checks that cannot work on this platform.
+    if (process.platform !== "win32") {
+        const message = "Arma 3 SQF Reloader requires Windows and a local Arma 3 installation. "
+            + "This platform is not supported, so the extension is inactive.";
+        getOutput().appendLine(message);
+        void vscode.window.showErrorMessage(message);
+        return;
+    }
+
+    if (process.arch !== "x64") {
+        // The bundled DLL is x64; Arm64 Windows runs it under emulation, which is untested.
+        vscode.window.showWarningMessage(
+            `Arma 3 SQF Reloader bundles an x64 SqfReloader_x64.dll; on ${process.arch} Windows it runs under emulation and is not tested.`
+        );
+    }
+
     log(`Arma 3 SQF Reloader ${version} activated.`);
 
     runtime = loadRuntime(context);
+    initTutorialStore(context.workspaceState);
     // Resolve the Arma folder once on load (registry / Steam) and keep it in memory; the
     // setting stays empty unless the user pins a folder.
     void detectArmaDirectory();
@@ -89,61 +147,10 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
-    const duplicateFunctionDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader-functions");
-    context.subscriptions.push(rptDiagnostics, duplicateFunctionDiagnostics, { dispose: stopRptMonitor });
+    const duplicateDiagnostics = new DuplicateFunctionDiagnostics();
+    context.subscriptions.push(rptDiagnostics, duplicateDiagnostics, { dispose: stopRptMonitor });
     setRptDiagnosticCollection(rptDiagnostics);
-    const duplicateFunctionGroups = new Map<string, Map<string, string>>();
-    const updateDuplicateFunctionDiagnostics = async (filePaths: string[], showWarning: boolean): Promise<Set<string>> => {
-        const variables = new Map<string, string>();
-        for (const filePath of filePaths) {
-            const variable = deletedFunctionVariable(filePath);
-            if (variable) variables.set(variable.toLowerCase(), filePath);
-        }
-
-        const conflicts = new Set<string>();
-        for (const [key, filePath] of variables) {
-            const previousFiles = duplicateFunctionGroups.get(key);
-            for (const previousFile of previousFiles?.values() ?? []) {
-                duplicateFunctionDiagnostics.delete(vscode.Uri.file(previousFile));
-            }
-            duplicateFunctionGroups.delete(key);
-
-            const duplicate = findDuplicateFunctionFiles(filePath);
-            if (!duplicate) continue;
-
-            conflicts.add(key);
-            const files = new Map(duplicate.files.map(file => [path.resolve(file).toLowerCase(), file]));
-            duplicateFunctionGroups.set(key, files);
-            for (const duplicateFile of duplicate.files) {
-                try {
-                    const uri = vscode.Uri.file(duplicateFile);
-                    const document = vscode.workspace.textDocuments.find(open =>
-                        path.resolve(open.uri.fsPath).toLowerCase() === path.resolve(duplicateFile).toLowerCase()
-                    ) ?? await vscode.workspace.openTextDocument(uri);
-                    const lastLine = Math.max(0, document.lineCount - 1);
-                    const diagnostic = new vscode.Diagnostic(
-                        new vscode.Range(new vscode.Position(0, 0), new vscode.Position(lastLine, document.lineAt(lastLine).text.length)),
-                        `Function variable '${duplicate.variable}' is defined by multiple files. Rename or remove one definition; reload is blocked.`,
-                        vscode.DiagnosticSeverity.Error
-                    );
-                    diagnostic.source = "SqfReloader";
-                    duplicateFunctionDiagnostics.set(uri, [diagnostic]);
-                } catch (error) {
-                    logError(`could not mark duplicate function file ${duplicateFile}`, error);
-                }
-            }
-
-            const changed = !previousFiles || previousFiles.size !== files.size
-                || [...files.keys()].some(file => !previousFiles.has(file));
-            if (showWarning && changed) {
-                vscode.window.showWarningMessage(
-                    `Function variable '${duplicate.variable}' is defined by multiple files. Arma reload is blocked; see the Problems panel.`
-                );
-            }
-        }
-
-        return conflicts;
-    };
+    const updateDuplicateFunctionDiagnostics = duplicateDiagnostics.update.bind(duplicateDiagnostics);
     startRptMonitor();
     activateHemttCheck(context.globalStorageUri.fsPath);
     context.subscriptions.push({ dispose: disposeHemttCheck });
@@ -162,9 +169,26 @@ export function activate(context: vscode.ExtensionContext): void {
     setStatus("$(sync~spin) Checking Arma 3...", "ok", "Checking the Arma process and project status");
     statusBar.show();
     let wasArmaRunning = false;
-    void refreshStatus();
-    const statusTimer = setInterval(() => {
-        void refreshRunningStatus().then(running => {
+
+    // Poll fast while Arma runs or its API answers, and back off when nothing can change, so an
+    // idle VS Code window stops spawning `tasklist` every two seconds.
+    const FAST_POLL_MS = 2000;
+    const IDLE_POLL_MS = 15000;
+    let statusPollActive = false;
+    let statusPollTimer: ReturnType<typeof setTimeout> | undefined;
+    let statusLoopRunning = true;
+    const statusPollDelay = (): number => (statusPollActive ? FAST_POLL_MS : IDLE_POLL_MS);
+    const scheduleStatusPoll = (delay = statusPollDelay()): void => {
+        if (!statusLoopRunning) return;
+        if (statusPollTimer) clearTimeout(statusPollTimer);
+        statusPollTimer = setTimeout(() => {
+            statusPollTimer = undefined;
+            void statusPoll();
+        }, delay);
+    };
+    const statusPoll = async (): Promise<void> => {
+        try {
+            const running = await refreshRunningStatus();
             if (wasArmaRunning && !running) {
                 const settings = readSettings();
                 fireHook("onClientExit", settings, { apiUrl: settings.apiUrl });
@@ -176,14 +200,34 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
             }
             wasArmaRunning = running;
-            void refreshStatus(running);
-        });
-    }, 2000);
-    context.subscriptions.push({ dispose: () => clearInterval(statusTimer) });
+            await refreshStatus(running);
+        } catch (error) {
+            logError("status refresh failed", error);
+            scheduleStatusPoll();
+        }
+    };
+    // refreshStatus reports whether anything is running so the next poll can pick its delay;
+    // commands also call it, which wakes an idle loop immediately.
+    statusPollDriver = (active: boolean): void => {
+        statusPollActive = active;
+        scheduleStatusPoll();
+    };
+    context.subscriptions.push({
+        dispose: () => {
+            statusLoopRunning = false;
+            statusPollDriver = undefined;
+            if (statusPollTimer) clearTimeout(statusPollTimer);
+            statusPollTimer = undefined;
+        }
+    });
+    void statusPoll();
 
     // The status bar shows the API, so it is refreshed for connection changes too, and the
     // first Arma 3 (or dedicated server) connection is written to the output channel.
     const connectionMonitor = new GameConnectionMonitor((target, state) => {
+        // A connection change is rare and must reach the status bar at once; the regular poll
+        // covers the rest, so no separate 3 s timer is needed any more.
+        void refreshStatus();
         if (state.game) {
             // Match the SQF log level as soon as the game callback is there, so the RPT carries
             // the same diagnostics as the extension output.
@@ -194,13 +238,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!state.api) return undefined;
         return `SqfReloader API is up on ${target.apiUrl} (port ${apiPort(target.apiUrl)}), waiting for Arma's callback.`;
-    });
+    }, () => isRunning());
     connectionMonitor.start();
-    const connectionTimer = setInterval(() => void refreshStatus(), 3000);
-    context.subscriptions.push(
-        { dispose: () => connectionMonitor.stop() },
-        { dispose: () => clearInterval(connectionTimer) }
-    );
+    context.subscriptions.push({ dispose: () => connectionMonitor.stop() });
 
     context.subscriptions.push(vscode.workspace.onDidDeleteFiles(event => {
         void updateDuplicateFunctionDiagnostics(event.files.map(uri => uri.fsPath), false)
@@ -311,12 +351,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
         rptDiagnostics.delete(document.uri);
 
+        void noteTutorialEvent("edit");
+
         try {
             const outcome = await reloadDocument(document, settings);
             if (outcome.ok) {
                 fireHook("postReload", settings, hookContext);
                 if (/^(Reloaded|Reload queued|Recompile|Compiled)/.test(outcome.message)) {
                     setStatus(`$(check) ${shorten(outcome.message)}`, "ok");
+                    void noteTutorialEvent("reload");
                 }
             } else {
                 setStatus("$(warning) SqfReloader: reload failed", "error");
@@ -333,10 +376,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // --- Workspace / settings changes -------------------------------------
     const onWorkspaceChange = async () => {
         try {
+            clearExampleReady();
             await configureMissionArtifactCleanup(readSettings());
             await ensureJunctions(readSettings());
             await refreshStatus();
+            if (projectSettingsExists()) void completeTutorialStep("settings");
             void promptForExampleIfNeeded(context, version);
+            void offerTutorial();
         } catch (error) {
             logError("workspace change handling failed", error);
         }
@@ -452,6 +498,8 @@ export function activate(context: vscode.ExtensionContext): void {
             // Keep waiting for the game callback so functions are injected even when Eden
             // is opened well after the launcher timeout.
             void injectWorkspaceFunctionsWhenReady(settings);
+            void noteTutorialEvent("play");
+            connectionMonitor.wake();
             await refreshStatus();
         } else {
             await refreshStatus();
@@ -481,7 +529,14 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
         }
 
-        const choice = await vscode.window.showWarningMessage("Close the running Arma 3 instance?", { modal: true }, "Close Arma 3");
+        // Only an instance launched from this window is closed silently; anything else gets an
+        // explicit warning first, because another mod or profile may be running in it.
+        const startedHere = trackedArmaPid() !== undefined;
+        const trackedPid = startedHere ? trackedArmaPid() : undefined;
+        const message = startedHere
+            ? "Close the Arma 3 instance started from VS Code?"
+            : "This will close an Arma 3 instance that VS Code did not start (another mod or profile may be open). Close it anyway?";
+        const choice = await vscode.window.showWarningMessage(message, { modal: true }, "Close Arma 3");
 
         if (choice !== "Close Arma 3") {
             return;
@@ -494,18 +549,25 @@ export function activate(context: vscode.ExtensionContext): void {
         };
         if (!await runHook("preClientStop", settings, hookContext)) return;
 
-        try {
-            require("child_process").execSync('taskkill /IM arma3_x64.exe /F');
-            fireHook("postClientStop", settings, hookContext);
-            const armaDirectory = await findArmaDirectory(settings);
-            if (armaDirectory) {
-                cleanupArmaLinks(armaDirectory, "Stop Arma 3");
-            }
-            setStatus("$(play) Play Arma 3", "ok");
-            log("Arma 3 closed.");
-        } catch (error) {
-            logError("could not close Arma 3", error);
+        const stopped = await stopArma({ allowExternal: !startedHere });
+        if (!stopped.ok) {
+            logError("could not close Arma 3", new Error(stopped.error ?? "unknown error"));
+            vscode.window.showWarningMessage(`Could not close Arma 3: ${stopped.error ?? "unknown error"}`);
+            return;
         }
+
+        if (stopped.method === "tracked") {
+            log(`Arma 3 (pid ${trackedPid ?? "?"}) closed.`);
+        } else {
+            log("Arma 3 closed (instance started outside VS Code).");
+        }
+        fireHook("postClientStop", settings, hookContext);
+        const armaDirectory = await findArmaDirectory(settings);
+        if (armaDirectory) {
+            cleanupArmaLinks(armaDirectory, "Stop Arma 3");
+        }
+        setStatus("$(play) Play Arma 3", "ok");
+        await refreshStatus();
     });
 
     register(context, "sqfReloader.stopDedicatedServer", async () => {
@@ -571,17 +633,38 @@ export function activate(context: vscode.ExtensionContext): void {
             // Discover the new addon sources right away and create the runtime links eagerly.
             await ensureJunctions(settings);
             await refreshStatus();
-            const action = await vscode.window.showInformationMessage(
-                "Example mod, missions, and dedicated server files are ready.",
-                "Play Arma 3",
-                "Start dedicated server"
-            );
-            if (action === "Start dedicated server") {
-                await vscode.commands.executeCommand("sqfReloader.startDedicatedServer");
-            } else if (action === "Play Arma 3") {
-                await vscode.commands.executeCommand("sqfReloader.play");
-            }
+            await markExampleWorkspace();
+            // The scaffold writes .vscode/sqfReloader-settings.json, so the first tour step is
+            // already done before the tour is even offered.
+            if (projectSettingsExists()) await completeTutorialStep("settings");
+
+            // The follow-up actions live in the Arma Project view (both are real blue buttons;
+            // a notification can only style its first action). The tour offer stays a toast and
+            // is not awaited, so the two never replace each other.
+            markExampleReady("Example mod is ready");
+            await vscode.commands.executeCommand("sqfReloader.projectView.focus");
+            void offerTutorial({ force: true }).catch(error => logError("could not offer the guided tour", error));
         }
+    });
+
+    register(context, "sqfReloader.showExampleOffer", async () => {
+        // Clears both the per-workspace record and "Don't ask again", then shows the offer again.
+        await context.globalState.update(DECLINE_EXAMPLE_KEY, false);
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        for (const folder of folders) {
+            const key = `${EXAMPLE_PROMPT_VERSION_KEY}:${version}:${folder.uri.fsPath.toLowerCase()}`;
+            await context.workspaceState.update(key, false);
+        }
+        // Drop the short-lived view cache so the banner reflects an empty folder immediately.
+        await vscode.commands.executeCommand("sqfReloader.projectView.focus");
+        await promptForExampleIfNeeded(context, version);
+    });
+
+    register(context, "sqfReloader.startTutorial", async () => {        if (!readTutorial().sampleWorkspace) {
+            vscode.window.showInformationMessage("The guided tour is only available in workspaces created with \"SqfReloader: Create example mod\".");
+            return;
+        }
+        await beginTutorial();
     });
 
     register(context, "sqfReloader.connect", async () => {
@@ -957,7 +1040,6 @@ export function activate(context: vscode.ExtensionContext): void {
     };
     register(context, "sqfReloader.setClientMod", assignModType("client"));
     register(context, "sqfReloader.setServerMod", assignModType("server"));
-    register(context, "sqfReloader.setSharedMod", assignModType("both"));
     register(context, "sqfReloader.clearModType", assignModType(undefined));
 
     register(context, "sqfReloader.removeJunctions", async () => {
@@ -1006,24 +1088,91 @@ export function activate(context: vscode.ExtensionContext): void {
     void refreshStatus();
 }
 
+/**
+ * Starts the tour and opens the view. The project settings of an example workspace already exist,
+ * so that step is ticked before the first render (otherwise the tour would start at 0/7).
+ */
+async function beginTutorial(): Promise<void> {
+    if (projectSettingsExists()) await completeTutorialStep("settings");
+    await startTutorial();
+    await vscode.commands.executeCommand("sqfReloader.projectView.focus");
+}
+
+/**
+ * One-time offer of the guided tour. Only workspaces created by "SqfReloader: Create example
+ * mod" (or that still contain the scaffold layout) are eligible; answering anything but
+ * "Start tour" records the refusal so the offer is not repeated.
+ *
+ * `force` is used when the user explicitly runs "Create example mod" again: that is a deliberate
+ * action, so an earlier "Not now" does not hide the offer.
+ *
+ * Returns what happened so callers can decide whether another toast is still useful.
+ */
+/** Set while the tour toast is on screen, so two activation paths cannot stack it. */
+let tutorialOfferVisible = false;
+
+async function offerTutorial(options: { force?: boolean } = {}): Promise<"started" | "declined" | "not-offered"> {
+    const progress = readTutorial();
+    if (!progress.sampleWorkspace || progress.started) return "not-offered";
+    if (progress.dismissed && !options.force) return "not-offered";
+    if (tutorialOfferVisible) return "not-offered";
+
+    let answer: string | undefined;
+    tutorialOfferVisible = true;
+    try {
+        answer = await vscode.window.showInformationMessage(
+            "Start the SqfReloader guided tour? It walks through Play Arma 3, live reload and the debug console.",
+            "Start tour",
+            "Not now"
+        );
+    } finally {
+        tutorialOfferVisible = false;
+    }
+
+    if (answer === "Start tour") {
+        await beginTutorial();
+        return "started";
+    }
+
+    await dismissTutorial();
+    return "declined";
+}
+
+/**
+ * One-time-per-workspace offer to create the example mod.
+ *
+ * "Completed installing extension" here used to be recorded in globalState keyed by the version,
+ * so after the first window the offer never came back anywhere. The state is now per workspace
+ * (workspaceState) and only "Don't ask again" is global.
+ */
 async function promptForExampleIfNeeded(context: vscode.ExtensionContext, version: string): Promise<void> {
-    if (!(vscode.workspace.workspaceFolders?.length)) return;
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length === 0) return;
 
-    const stateKey = "setupExamplePromptVersion";
-    if (context.globalState.get<string>(stateKey) === version) return;
+    const declined = context.globalState.get<boolean>(DECLINE_EXAMPLE_KEY) === true;
+    const stateKey = `${EXAMPLE_PROMPT_VERSION_KEY}:${version}:${folders[0].uri.fsPath.toLowerCase()}`;
+    const asked = context.workspaceState.get<boolean>(stateKey) === true;
 
-    const workspaceFiles = await vscode.workspace.findFiles("**/*", "**/{.git,.vscode,node_modules}/**", 1);
-    if (workspaceFiles.length > 0) return;
+    const emptyWorkspace = await workspaceHasNoFiles();
+    const existing = folders.map(folder => exampleMod(folder.uri.fsPath)).find(mod => mod !== undefined);
 
-    // Record before showing the prompt so workspace/settings changes cannot stack notices.
-    await context.globalState.update(stateKey, version);
+    if (!shouldOfferExample({ hasWorkspace: true, emptyWorkspace, exampleExists: !!existing, declined, asked })) {
+        log(`Example mod offer skipped (empty=${emptyWorkspace}, example=${!!existing}, declined=${declined}, asked=${asked}).`);
+        return;
+    }
+
+    // Recorded before showing the toast so two activation paths cannot stack notices.
+    await context.workspaceState.update(stateKey, true);
     const choice = await vscode.window.showInformationMessage(
-        "Completed installing extension. This workspace has no Arma mod yet. Set up an example mod?",
-        "Setup Example"
+        "This workspace has no Arma mod yet. Create an example mod to try live reload?",
+        "Create example mod",
+        "Don't ask again"
     );
 
-    if (choice === "Setup Example") {
+    if (choice === "Create example mod") {
         await vscode.commands.executeCommand("sqfReloader.createExample");
+    } else if (choice === "Don't ask again") {
+        await context.globalState.update(DECLINE_EXAMPLE_KEY, true);
     }
 }
 
@@ -1089,12 +1238,13 @@ async function runWorkspaceInjectionLoop(settings: Settings, generation: number)
     }
 }
 
-export function deactivate(): void {
+export function deactivate(): Promise<void> {
     log("Arma 3 SQF Reloader deactivated.");
     workspaceInjectionGeneration++;
     workspaceInjectionLoop = undefined;
     statusBar?.dispose();
-    disposeOutput();
+    // VS Code waits (briefly) for this promise, so the links are gone before the window closes.
+    return removeLinksOnShutdown().finally(() => disposeOutput());
 }
 
 function register(context: vscode.ExtensionContext, command: string, handler: (...args: unknown[]) => unknown): void {
@@ -1177,159 +1327,14 @@ function setStatus(text: string, warning: boolean | StatusTone, tooltip?: string
 }
 
 /** "8764" for http://127.0.0.1:8764/api. */
-function apiPort(apiUrl: string): string {
-    try {
-        return new URL(apiUrl).port || "?";
-    } catch {
-        return "?";
-    }
-}
-
-function findCurrentMission(): { directory: string } | undefined {
-    const document = vscode.window.activeTextEditor?.document;
-    if (!document?.uri.fsPath) return undefined;
-
-    let directory = fs.existsSync(document.uri.fsPath) && fs.statSync(document.uri.fsPath).isDirectory()
-        ? document.uri.fsPath : path.dirname(document.uri.fsPath);
-    const roots = [
-        ...(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath),
-        directory
-    ];
-    while (true) {
-        const match = findMissions(roots).find(mission => path.resolve(mission.directory).toLowerCase() === path.resolve(directory).toLowerCase());
-        if (match) return match;
-        const parent = path.dirname(directory);
-        if (parent === directory) return undefined;
-        directory = parent;
-    }
-}
-
-function hasArmaWorkspace(): boolean {
-    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
-    return roots.length > 0 && (workspaceMods().length > 0 || findMissions(roots).length > 0);
-}
-
-async function workspaceHasNoFiles(): Promise<boolean> {
-    const files = await vscode.workspace.findFiles("**/*", "**/{.git,.vscode,node_modules}/**", 1);
-    return files.length === 0;
-}
-
-function findMissionForCurrentEditor(): MissionFolder | undefined {
-    const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
-    const active = vscode.window.activeTextEditor?.document;
-    const activePath = active?.uri.scheme === "file" ? active.fileName : undefined;
-    const scanRoots = activePath ? [...roots, path.dirname(activePath)] : roots;
-    const missions = findMissions(scanRoots);
-
-    if (activePath) {
-        const containing = missions
-            .filter(mission => {
-                const relative = path.relative(mission.directory, activePath);
-                return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-            })
-            .sort((left, right) => left.directory.length - right.directory.length);
-        if (containing.length > 0) return containing[0];
-    }
-
-    return missions.find(mission => roots.some(root => path.resolve(root).toLowerCase() === path.resolve(mission.directory).toLowerCase()))
-        ?? missions[0];
-}
 
 /** Ask before launch/switch and update only the selected mission's description.ext. */
-async function confirmMissionFunctionRecompile(missionDirectory: string): Promise<boolean> {
-    const descriptionPath = path.join(missionDirectory, "description.ext");
-    const descriptionUri = vscode.Uri.file(descriptionPath);
-    let descriptionDocument: vscode.TextDocument | undefined;
-
-    try {
-        if (fs.existsSync(descriptionPath)) {
-            descriptionDocument = await vscode.workspace.openTextDocument(descriptionUri);
-        }
-        const source = descriptionDocument?.getText() ?? "";
-        const masked = maskConfigComments(source);
-        const setting = /^[ \t]*allowFunctionsRecompile\s*=\s*([^;]+);/im.exec(masked);
-        if (setting && Number(setting[1].trim()) === 1) return true;
-
-        const answer = await vscode.window.showWarningMessage(
-            `Live function reload requires allowFunctionsRecompile = 1 in ${path.basename(missionDirectory)}\\description.ext. Enable it now?`,
-            { modal: true },
-            "Yes, enable",
-            "No, continue"
-        );
-        if (answer === "No, continue") return true;
-        if (answer !== "Yes, enable") return false;
-
-        let updated: string;
-        if (setting) {
-            const start = setting.index;
-            const originalMatch = /^[ \t]*allowFunctionsRecompile\s*=\s*[^;]+;/im.exec(source.slice(start));
-            if (!originalMatch) throw new Error("Could not update allowFunctionsRecompile in description.ext.");
-            const leadingSpace = /^[ \t]*/.exec(originalMatch[0])?.[0] ?? "";
-            updated = source.slice(0, start) + `${leadingSpace}allowFunctionsRecompile = 1;` + source.slice(start + originalMatch[0].length);
-        } else {
-            updated = `${source}${source.length > 0 && !/[\r\n]$/.test(source) ? "\r\n" : ""}allowFunctionsRecompile = 1;\r\n`;
-        }
-
-        if (descriptionDocument) {
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(descriptionUri, new vscode.Range(descriptionDocument.positionAt(0), descriptionDocument.positionAt(descriptionDocument.getText().length)), updated);
-            if (!(await vscode.workspace.applyEdit(edit)) || !(await descriptionDocument.save())) {
-                throw new Error("VS Code could not save the updated description.ext.");
-            }
-        } else {
-            await vscode.workspace.fs.writeFile(descriptionUri, Buffer.from(updated, "utf8"));
-        }
-
-        log(`Enabled allowFunctionsRecompile in ${descriptionPath}.`);
-        return true;
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`Could not enable live function reload: ${message}`);
-        return false;
-    }
-}
-
-function maskConfigComments(source: string): string {
-    return source
-        .replace(/\/\*[\s\S]*?\*\//g, match => match.replace(/[^\r\n]/g, " "))
-        .replace(/^\s*\/\/.*$/gm, match => match.replace(/[^\r\n]/g, " "));
-}
-
-function parseLaunchArguments(value: string): string[] {
-    const argumentsList: string[] = [];
-    let current = "";
-    let quote: "\"" | "'" | undefined;
-    for (const character of value) {
-        if (quote) {
-            current += character;
-            if (character === quote) quote = undefined;
-        } else if (character === "\"" || character === "'") {
-            quote = character;
-            current += character;
-        } else if (/\s/.test(character)) {
-            if (current) argumentsList.push(current);
-            current = "";
-        } else {
-            current += character;
-        }
-    }
-    if (current) argumentsList.push(current);
-    return argumentsList;
-}
 
 function shorten(message: string): string {
     return message.length > 40 ? `${message.slice(0, 37)}...` : message;
 }
 
 /** Opens (and creates if needed) the project settings file in the editor. */
-async function openProjectSettingsFile(): Promise<void> {
-    const file = projectSettingsPath();
-    if (!file) return;
-    if (!fs.existsSync(file)) await ensureProjectSettings(PROJECT_SETTING_DEFAULTS);
-    if (!fs.existsSync(file)) return;
-    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
-    await vscode.window.showTextDocument(document, { preview: false });
-}
 
 /**
  * Reflects the game processes and the API in the status bar. Green when everything that should
@@ -1373,6 +1378,7 @@ async function refreshStatus(runningState?: boolean): Promise<void> {
     }
 
     setStatus(presentation.text, presentation.tone, presentation.tooltip);
+    statusPollDriver?.(snapshot.game || snapshot.dedicatedServer || snapshot.api.api);
 }
 
 // Kept exported for scripts/verify-extension.js.

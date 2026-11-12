@@ -6,7 +6,10 @@ names to the game. The SqfReloader Arma mod and native DLL are bundled with the 
 not need to be installed separately.
 
 For complete documentation, advanced launch and server workflows, settings, hooks, and
-troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arma3SqfReloader/blob/main/README.md).
+troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arma3SqfReloader/blob/main/README-FULL.md).
+
+**Supported platforms, known limitations and out-of-scope features:** [LIMITATIONS.md](./LIMITATIONS.md) ·
+**Release notes:** [CHANGELOG.md](./CHANGELOG.md)
 
 ## Features
 
@@ -14,6 +17,10 @@ troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arm
 - Run `hemtt check` periodically and on save — including unsaved edits — and show its errors and
   warnings in the Problems panel.
 - Run an SQF file in Arma, with or without parameters.
+- Create example mods and missions to try the workflow, with a guided tour that ticks off each
+  step (launch, edit, reload, debug console) as you do it.
+- Stop only the Arma instance VS Code started; sessions you launched yourself are never closed
+  without an explicit warning.
 - Launch Arma, host a mission, or start a dedicated server from VS Code.
 - Configure project-specific settings, mod launch roles, and lifecycle hooks.
 - Create example mods and missions to try the workflow.
@@ -22,16 +29,22 @@ troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arm
 ## Requirements
 
 - VS Code 1.99 or later.
-- Windows x64 (this extension is supported on Windows x64 only).
-- Arma 3 installed.
+- Windows x64 (this extension is supported on Windows x64 only; macOS, Linux, VS Code Web and
+  container/WSL hosts are not supported).
+- Arma 3 installed, with a trusted (non-restricted-mode) workspace.
 - Arma 3 Tools is recommended for building addon PBOs before launch. The extension can continue
   without AddonBuilder if it is unavailable.
+- BattlEye sessions are not supported: BattlEye will not load the unsigned SqfReloader extension.
+
+See [LIMITATIONS.md](./LIMITATIONS.md) for the full support matrix — what works, what should work
+but is untested, what is planned, and what is deliberately out of scope. Release notes are in
+[CHANGELOG.md](./CHANGELOG.md).
 
 ## Quick start
 
 1. Install **Arma 3 SQF Reloader** from the Visual Studio Marketplace.
 2. Open an empty folder in VS Code.
-3. To try it first, run **SqfReloader: Create example mod (try the reloader)** from the Command
+3. To try it first, run **SqfReloader: Create example mod** from the Command
    Palette.
 4. Run **SqfReloader: Play**, then open the Eden Editor or start a mission. Wait for the
    connection status to confirm the game is connected.
@@ -56,16 +69,17 @@ Open the **Arma 3** view in the Activity Bar or use the Command Palette:
 | Command | Purpose |
 | --- | --- |
 | **SqfReloader: Play** | Set up the workspace and launch Arma 3. |
-| **SqfReloader: Stop Arma 3** | Stop Arma and remove extension-created links. |
+| **SqfReloader: Stop Arma 3** | Stop the Arma instance VS Code started and remove extension-created links. |
+| **SqfReloader: Start the guided tour** | Reopen the example workspace tour. |
 | **SqfReloader: Check connection** | Check the local API and game callback. |
 | **SqfReloader: Reload all functions** | Reload workspace functions. |
 | **SqfReloader: Reload and restart mission functions** | Reload the active mission's functions and initialization scripts. |
-| **SqfReloader: Create example mod (try the reloader)** | Generate a sample mod and mission. |
+| **SqfReloader: Create example mod** | Generate a sample mod and mission. |
 | **SqfReloader: Show output** | View extension logs and Arma script errors. |
 | **SqfReloader: Run HEMTT check** | Run `hemtt check` now and refresh problems. |
 
 Right-click an `.sqf` file for **Run in Arma** or **Run in Arma With Parameters**. Right-click a mod
-folder to assign its client, server, or shared launch role.
+folder to assign its client or server launch role.
 
 ## Settings and safety
 
@@ -82,10 +96,11 @@ through a temporary shadow copy of the project, so problems appear before you sa
 
 The REST API defaults to `http://127.0.0.1:8764/api`. It can execute SQF in the running game; SQF
 execution can change game state. Keep the API on a trusted local interface and do not expose it to
-an untrusted network.
+an untrusted network. The API has no request authentication, so any page open in your browser on
+the same machine can reach it; see [LIMITATIONS.md](./LIMITATIONS.md) for the current status.
 
 For detailed settings, multiplayer and dedicated-server setup, REST API examples, and
-troubleshooting, see the [full documentation on GitHub](https://github.com/VainoKarppi/Arma3SqfReloader/blob/main/README.md).
+troubleshooting, see the [full documentation on GitHub](https://github.com/VainoKarppi/Arma3SqfReloader/blob/main/README-FULL.md).
 
 
 ## Support

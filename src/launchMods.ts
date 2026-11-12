@@ -4,11 +4,12 @@ import { projectSetting } from "./projectSettings";
 
 interface ExternalModSetting {
     path: string;
-    type: "client" | "server" | "both" | "off";
+    type: "client" | "server" | "off";
 }
 
+/** A removed "both" (Shared Mod) role reads as a client mod. */
 function isModType(value: unknown): value is ExternalModSetting["type"] {
-    return value === "client" || value === "server" || value === "both" || value === "off";
+    return value === "client" || value === "server" || value === "off";
 }
 
 /** Unique key for a mod folder: Arma must never receive the same folder twice. */
@@ -42,7 +43,9 @@ export function configuredExternalMods(): ExternalModSetting[] {
         } catch {
             continue;
         }
-        mods.push({ path: item.path, type: isModType(item.type) ? item.type : "client" });
+        // A legacy "both" role is treated as a client mod, which is what it used to mean.
+        const type = item.type === "both" ? "client" : item.type;
+        mods.push({ path: item.path, type: isModType(type) ? type : "client" });
     }
     return mods;
 }
@@ -56,7 +59,7 @@ export function configuredExternalMods(): ExternalModSetting[] {
  */
 export function launchModFolders(): string[] {
     return modFoldersOnce(configuredExternalMods()
-        .filter(mod => mod.type === "client" || mod.type === "both")
+        .filter(mod => mod.type === "client")
         .map(mod => path.resolve(mod.path)));
 }
 

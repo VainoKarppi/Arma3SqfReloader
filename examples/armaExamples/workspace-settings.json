@@ -13,8 +13,8 @@
     "logLevel": "info",
     "reloadOnSave": "reload",
     "modTypes": {
-        "@ExampleMod": "client",
-        "server-example/@ExampleServerMod": "server"
+        "ClientMod/@ExampleMod": "client",
+        "ServerMod/@ExampleServerMod": "server"
     },
     "extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
     "serverLaunchArguments": "",

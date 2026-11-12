@@ -1,0 +1,16 @@
+# HEMTT project for the example server mod.
+#
+# `hemtt check` works out of the box in this folder. `prefix` + `mainprefix` match the path
+# SqfReloader mounts the addon at: z\Example\addons\server.
+name = "@ExampleServerMod"
+author = "SqfReloader"
+prefix = "Example"
+mainprefix = "z"
+
+[version]
+major = 1
+minor = 0
+patch = 0
+build = 0
+# 0 keeps the version usable outside a git repository (see the client example).
+git_hash = 0

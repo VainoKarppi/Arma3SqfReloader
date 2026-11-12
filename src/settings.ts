@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { currentApiPort } from "./runtime";
-import { DEFAULT_PORT, makeApiUrl, normalizeApiHost } from "./ports";
+import { DEFAULT_PORT, makeApiUrl } from "./ports";
 import { DEFAULT_HOOK_PRESENTATION, readProjectSettings, setProjectSetting } from "./projectSettings";
 import { HOOK_EVENTS } from "./hookEvents";
 
@@ -209,7 +209,8 @@ export async function updateSetting<T>(key: string, value: T): Promise<void> {
 }
 
 export function configuredLogLevel(): LogLevel {
-    return readSettings().logLevel;
+    // Uses the cached project settings, so one log line never re-parses the settings file.
+    return normalizeLogLevel(stringValue(readProjectSettings(), "logLevel", "info"));
 }
 
 function trimSlash(value: string): string {
@@ -274,10 +275,8 @@ export function logInfo(message: string): void {
 
 export function logError(message: string, error: unknown): void {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    if (configuredLogLevel() !== "error") {
-        getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`);
-        mirrorToTestOutput(`LOG ERROR: ${message} - ${detail}`);
-    }
+    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`);
+    mirrorToTestOutput(`LOG ERROR: ${message} - ${detail}`);
 }
 
 /** Dev aid: scripts/verify-launch.js points ARMA_API_TEST_OUTPUT at a file and reads the log from there. */
