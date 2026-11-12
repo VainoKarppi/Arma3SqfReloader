@@ -333,7 +333,7 @@ so they can be set for the user or for the workspace:
 | Setting | Default | Description |
 | --- | --- | --- |
 | `sqfReloader.hemtt.enabled` | `true` | Run `hemtt check` in the background. |
-| `sqfReloader.hemtt.interval` | `5` | Seconds between automatic runs. |
+| `sqfReloader.hemtt.interval` | `30` | Seconds between automatic runs. |
 | `sqfReloader.hemtt.onSave` | `true` | Re-run the check for the project that contains a saved `.sqf`, `.cpp`, `.hpp`, `.cfg`, `.sqm` or `.toml` file. |
 | `sqfReloader.hemtt.lints` | `[]` | Extra lints, each passed as `-L <lint>` (e.g. `s01-invalid-command`). |
 | `sqfReloader.hemtt.executable` | `""` | Path to `hemtt`/`hemtt.exe` when it is not on `PATH`. |
