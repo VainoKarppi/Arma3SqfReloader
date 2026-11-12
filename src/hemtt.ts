@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "child_process";
@@ -10,8 +11,11 @@ const PROJECT_CONFIG = path.join(".hemtt", "project.toml");
 const ANNOTATIONS_FILE = path.join(".hemttout", "ci_annotations.txt");
 const RUN_TIMEOUT_MS = 5 * 60 * 1000;
 const SAVE_DEBOUNCE_MS = 500;
+const CHANGE_DEBOUNCE_MS = 1500;
 const MAX_SCAN_DEPTH = 8;
 const MAX_SCANNED_DIRECTORIES = 5000;
+/** Where shadow copies of the project are built so unsaved buffers can be checked. */
+const SHADOW_DIRECTORY = "hemtt-shadow";
 /** Files HEMTT compiles or checks; saving anything else cannot change the result. */
 const CHECKED_FILE = /\.(sqf|cpp|hpp|h|cfg|sqm|toml|inc|ext|rvmat|fsm)$/i;
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "out", "build", "obj", "bin", "target"]);
@@ -21,6 +25,8 @@ export interface HemttConfig {
     /** Seconds between automatic runs. */
     intervalSeconds: number;
     onSave: boolean;
+    /** Also check unsaved edits, through a shadow copy of the project. */
+    unsaved: boolean;
     lints: string[];
     executable: string;
 }
@@ -48,9 +54,14 @@ export interface HemttAnnotation {
 let diagnostics: vscode.DiagnosticCollection | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
 let saveDebounce: ReturnType<typeof setTimeout> | undefined;
+let changeDebounce: ReturnType<typeof setTimeout> | undefined;
 let activeRun: Promise<HemttRunResult> | undefined;
+let rerunRequested = false;
 let executable: string | undefined;
+let storageDirectory: string | undefined;
 let previousUris = new Set<string>();
+/** Last HEMTT abort message per project, so a repeating failure is logged once. */
+const lastFailure = new Map<string, string>();
 
 export function readHemttConfig(scope?: vscode.Uri): HemttConfig {
     const config = vscode.workspace.getConfiguration(SECTION, scope);
@@ -60,9 +71,16 @@ export function readHemttConfig(scope?: vscode.Uri): HemttConfig {
         enabled: config.get<boolean>("enabled", true),
         intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 30,
         onSave: config.get<boolean>("onSave", true),
+        unsaved: config.get<boolean>("unsaved", true),
         lints: (Array.isArray(lints) ? lints : []).map(lint => lint.trim()).filter(Boolean),
         executable: (config.get<string>("executable", "") ?? "").trim()
     };
+}
+
+/** Enables the checks and remembers where shadow copies of unsaved projects may be built. */
+export function activateHemttCheck(storage: string): void {
+    storageDirectory = storage;
+    configureHemttCheck();
 }
 
 /** Starts (or restarts) the periodic check from the current settings. */
@@ -85,6 +103,8 @@ export function stopHemttCheck(): void {
     timer = undefined;
     if (saveDebounce) clearTimeout(saveDebounce);
     saveDebounce = undefined;
+    if (changeDebounce) clearTimeout(changeDebounce);
+    changeDebounce = undefined;
 }
 
 export function disposeHemttCheck(): void {
@@ -92,6 +112,10 @@ export function disposeHemttCheck(): void {
     diagnostics?.dispose();
     diagnostics = undefined;
     previousUris.clear();
+    if (storageDirectory) {
+        const root = path.join(storageDirectory, SHADOW_DIRECTORY);
+        void removeShadowTree(root);
+    }
 }
 
 /** Debounced check after saving a file that belongs to a HEMTT project. */
@@ -108,13 +132,46 @@ export function onHemttDocumentSaved(document: vscode.TextDocument): void {
     }, SAVE_DEBOUNCE_MS);
 }
 
+/**
+ * Debounced check while a file is edited but not saved.
+ *
+ * `hemtt check` only reads files from disk, so the unsaved buffers of the project are written into
+ * a shadow copy of it (see `buildShadow`) and HEMTT runs there. The real project is never modified.
+ */
+export function onHemttDocumentChanged(document: vscode.TextDocument): void {
+    if (document.uri.scheme !== "file" || !CHECKED_FILE.test(document.uri.fsPath)) return;
+
+    const config = readHemttConfig(document.uri);
+    if (!config.enabled || !config.unsaved || !storageDirectory) return;
+    if (!isHemttProjectFile(document.uri)) return;
+
+    if (changeDebounce) clearTimeout(changeDebounce);
+    changeDebounce = setTimeout(() => {
+        changeDebounce = undefined;
+        void runHemttCheck();
+    }, CHANGE_DEBOUNCE_MS);
+}
+
 /** Runs `hemtt check` for every project in the workspace and mirrors the results into diagnostics. */
 export function runHemttCheck(): Promise<HemttRunResult> {
-    if (!activeRun) {
-        activeRun = executeCheck().finally(() => {
-            activeRun = undefined;
-        });
+    if (activeRun) {
+        // Edits that arrive during a run would otherwise wait for the next timer tick.
+        rerunRequested = true;
+        return activeRun;
     }
+
+    activeRun = (async () => {
+        let result = await executeCheck();
+        while (rerunRequested) {
+            rerunRequested = false;
+            result = await executeCheck();
+        }
+        return result;
+    })().finally(() => {
+        activeRun = undefined;
+        rerunRequested = false;
+    });
+
     return activeRun;
 }
 
@@ -141,15 +198,18 @@ async function executeCheck(): Promise<HemttRunResult> {
 
     const collection = diagnosticCollection();
     const seen = new Set<string>();
+    const unsaved = config.unsaved ? unsavedFilesByProject() : new Map<string, Map<string, string>>();
     let errors = 0;
     let warnings = 0;
 
     for (const project of projects) {
         try {
-            const counts = await checkProject(collection, command, project, config, seen);
+            const dirty = unsaved.get(project);
+            const counts = await checkProject(collection, command, project, config, seen, dirty);
             errors += counts.errors;
             warnings += counts.warnings;
-            logInfo(`HEMTT check ${path.basename(project)}: ${counts.errors} error(s), ${counts.warnings} warning(s).`);
+            const source = dirty && dirty.size > 0 ? ` (${dirty.size} unsaved file(s))` : "";
+            logInfo(`HEMTT check ${path.basename(project)}${source}: ${counts.errors} error(s), ${counts.warnings} warning(s).`);
         } catch (error) {
             logError(`HEMTT check failed for ${project}`, error);
         }
@@ -168,15 +228,42 @@ async function checkProject(
     command: string,
     project: string,
     config: HemttConfig,
+    seen: Set<string>,
+    dirty?: Map<string, string>
+): Promise<{ errors: number; warnings: number }> {
+    let runRoot = project;
+    if (dirty && dirty.size > 0 && storageDirectory) {
+        try {
+            runRoot = await buildShadow(project, dirty);
+            log(`HEMTT: checking unsaved edits of ${project} through ${runRoot}.`);
+        } catch (error) {
+            logError(`could not build a shadow copy of ${project}; checking the saved files instead`, error);
+            runRoot = project;
+        }
+    }
+
+    try {
+        return await checkInRoot(collection, command, project, runRoot, config, seen);
+    } finally {
+        if (runRoot !== project) await removeShadowTree(runRoot);
+    }
+}
+
+async function checkInRoot(
+    collection: vscode.DiagnosticCollection,
+    command: string,
+    project: string,
+    runRoot: string,
+    config: HemttConfig,
     seen: Set<string>
 ): Promise<{ errors: number; warnings: number }> {
-    const annotationsFile = path.join(project, ANNOTATIONS_FILE);
+    const annotationsFile = path.join(runRoot, ANNOTATIONS_FILE);
     // HEMTT appends to this file, so a stale copy from an earlier run must not leak in.
     await fs.promises.rm(annotationsFile, { force: true }).catch(() => undefined);
 
     const args = ["check", "--no-color"];
     for (const lint of config.lints) args.push("--lints", lint);
-    const result = await runProcess(command, args, project);
+    const result = await runProcess(command, args, runRoot);
 
     const byFile = new Map<string, vscode.Diagnostic[]>();
     let errors = 0;
@@ -185,6 +272,7 @@ async function checkProject(
     try {
         const text = await fs.promises.readFile(annotationsFile, "utf8");
         for (const annotation of parseAnnotations(text)) {
+            // Annotations are relative to the project, so a shadow run still maps onto real files.
             const file = path.resolve(project, annotation.file.replace(/^[\\/]+/, ""));
             const list = byFile.get(file) ?? [];
             list.push(toDiagnostic(annotation));
@@ -197,8 +285,17 @@ async function checkProject(
         // No annotations file: HEMTT stopped before reporting diagnostics (e.g. a project config error).
     }
 
+    // HEMTT aborts before reporting anything for some project errors (a broken project.toml, a
+    // missing $PBOPREFIX$); those have no annotation, so they are surfaced in the output instead.
+    // The same failure repeats every run, so only a changed message is logged.
     if (result.code !== 0 && byFile.size === 0) {
-        log(`HEMTT check exited with code ${result.code} in ${project}:\n${lastLines(result.output, 12)}`);
+        const failure = lastLines(result.output, 12);
+        if (lastFailure.get(project) !== failure) {
+            lastFailure.set(project, failure);
+            logInfo(`HEMTT check exited with code ${result.code} in ${project}:\n${failure}`);
+        }
+    } else {
+        lastFailure.delete(project);
     }
 
     for (const [file, list] of byFile) {
@@ -301,20 +398,140 @@ export async function findHemttProjects(): Promise<string[]> {
     return [...projects];
 }
 
-function isHemttProjectFile(uri: vscode.Uri): boolean {
+/** The HEMTT project (folder with `.hemtt/project.toml`) that contains `uri`. */
+function hemttProjectFor(uri: vscode.Uri): string | undefined {
     const folder = vscode.workspace.getWorkspaceFolder(uri);
-    if (!folder) return false;
+    if (!folder) return undefined;
 
     const root = path.resolve(folder.uri.fsPath);
     let directory = path.resolve(path.dirname(uri.fsPath));
 
     while (true) {
-        if (fs.existsSync(path.join(directory, PROJECT_CONFIG))) return true;
-        if (directory === root) return false;
+        if (fs.existsSync(path.join(directory, PROJECT_CONFIG))) return directory;
+        if (directory === root) return undefined;
         const parent = path.dirname(directory);
-        if (parent === directory) return false;
+        if (parent === directory) return undefined;
         directory = parent;
     }
+}
+
+function isHemttProjectFile(uri: vscode.Uri): boolean {
+    return hemttProjectFor(uri) !== undefined;
+}
+
+/** Unsaved buffers of each HEMTT project, keyed by absolute project path, then by lowercased file path. */
+function unsavedFilesByProject(): Map<string, Map<string, string>> {
+    const byProject = new Map<string, Map<string, string>>();
+
+    for (const document of vscode.workspace.textDocuments) {
+        if (!document.isDirty || document.uri.scheme !== "file") continue;
+        const file = path.resolve(document.uri.fsPath);
+        if (!CHECKED_FILE.test(file)) continue;
+
+        const project = hemttProjectFor(document.uri);
+        if (!project) continue;
+
+        const files = byProject.get(project) ?? new Map<string, string>();
+        files.set(file.toLowerCase(), document.getText());
+        byProject.set(project, files);
+    }
+
+    return byProject;
+}
+
+/**
+ * Builds a directory that mirrors `project`, with the unsaved buffers written over their files.
+ *
+ * Directories that hold no unsaved file are junctions to the real ones, so only the folders along
+ * an edited file are materialized. HEMTT then runs in the shadow, and the real project is never
+ * written to; annotations still map back onto the real paths because the layout is identical.
+ */
+async function buildShadow(project: string, dirty: Map<string, string>): Promise<string> {
+    const root = path.join(storageDirectory!, SHADOW_DIRECTORY, crypto.createHash("sha1").update(project).digest("hex").slice(0, 16));
+    await removeShadowTree(root);
+    await materializeShadow(project, root, dirty, 0);
+    return root;
+}
+
+async function materializeShadow(realDirectory: string, shadowDirectory: string, dirty: Map<string, string>, depth: number): Promise<void> {
+    await fs.promises.mkdir(shadowDirectory, { recursive: true });
+
+    for (const entry of await fs.promises.readdir(realDirectory, { withFileTypes: true })) {
+        const real = path.join(realDirectory, entry.name);
+        const shadow = path.join(shadowDirectory, entry.name);
+
+        // HEMTT appends to .hemttout/ci_annotations.txt; the shadow gets its own fresh copy.
+        if (entry.name === ".hemttout") continue;
+
+        if (entry.isSymbolicLink()) {
+            // Point at the same target instead of copying whatever it holds.
+            const stats = await fs.promises.stat(real).catch(() => undefined);
+            if (stats?.isDirectory()) await linkDirectory(await fs.promises.realpath(real), shadow);
+            else await copyEntry(real, shadow);
+        } else if (entry.isDirectory()) {
+            if (depth < MAX_SCAN_DEPTH && containsUnsavedFile(real, dirty)) {
+                await materializeShadow(real, shadow, dirty, depth + 1);
+            } else {
+                await linkDirectory(real, shadow);
+            }
+        } else if (entry.isFile()) {
+            const content = dirty.get(path.resolve(real).toLowerCase());
+            if (content !== undefined) await fs.promises.writeFile(shadow, content, "utf8");
+            else await copyEntry(real, shadow);
+        }
+    }
+}
+
+function containsUnsavedFile(directory: string, dirty: Map<string, string>): boolean {
+    const prefix = (directory.toLowerCase().endsWith(path.sep) ? directory : directory + path.sep).toLowerCase();
+    for (const file of dirty.keys()) {
+        if (file.startsWith(prefix)) return true;
+    }
+    return false;
+}
+
+async function linkDirectory(target: string, link: string): Promise<void> {
+    try {
+        await fs.promises.symlink(target, link, "junction");
+    } catch {
+        // Junctions need the same volume family and NTFS; a copy keeps the check working elsewhere.
+        await copyEntry(target, link);
+    }
+}
+
+async function copyEntry(source: string, destination: string): Promise<void> {
+    const stats = await fs.promises.stat(source);
+    if (!stats.isDirectory()) {
+        await fs.promises.copyFile(source, destination);
+        return;
+    }
+
+    await fs.promises.mkdir(destination, { recursive: true });
+    for (const name of await fs.promises.readdir(source)) {
+        await copyEntry(path.join(source, name), path.join(destination, name));
+    }
+}
+
+/** Removes a shadow tree without following its junctions into the real project. */
+async function removeShadowTree(directory: string): Promise<void> {
+    let entries: fs.Dirent[];
+    try {
+        entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    } catch {
+        return;
+    }
+
+    for (const entry of entries) {
+        const target = path.join(directory, entry.name);
+        // Junctions report as symlinks, and unlinking them never touches their target.
+        if (entry.isSymbolicLink() || entry.isFile()) {
+            await fs.promises.unlink(target).catch(() => undefined);
+            continue;
+        }
+        if (entry.isDirectory()) await removeShadowTree(target);
+    }
+
+    await fs.promises.rmdir(directory).catch(() => undefined);
 }
 
 async function findHemtt(config: HemttConfig): Promise<string | undefined> {

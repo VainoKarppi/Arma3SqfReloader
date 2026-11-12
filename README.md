@@ -335,10 +335,22 @@ so they can be set for the user or for the workspace:
 | `sqfReloader.hemtt.enabled` | `true` | Run `hemtt check` in the background. |
 | `sqfReloader.hemtt.interval` | `30` | Seconds between automatic runs. |
 | `sqfReloader.hemtt.onSave` | `true` | Re-run the check for the project that contains a saved `.sqf`, `.cpp`, `.hpp`, `.cfg`, `.sqm` or `.toml` file. |
+| `sqfReloader.hemtt.unsaved` | `true` | Also check unsaved edits (see below). |
 | `sqfReloader.hemtt.lints` | `[]` | Extra lints, each passed as `-L <lint>` (e.g. `s01-invalid-command`). |
 | `sqfReloader.hemtt.executable` | `""` | Path to `hemtt`/`hemtt.exe` when it is not on `PATH`. |
 
 **SqfReloader: Run HEMTT check** runs it immediately.
+
+`hemtt check` only reads files from disk, so unsaved edits are checked through a **shadow copy** of
+the project: the unsaved buffers are written into a temporary folder in the extension's global
+storage, next to junctions to the real folders (only the folders along an edited file are copied),
+and HEMTT runs there. Problems are still reported against the real files, so a fix in the editor
+clears the diagnostic before the file is saved. The project's own files, including `.hemttout`, are
+never written to. Set `sqfReloader.hemtt.unsaved` to `false` to check only what is on disk.
+
+A HEMTT project that stops before reporting diagnostics — a malformed `project.toml`, a missing
+`$PBOPREFIX$`, an addon prefix mismatch — has nothing to annotate, so the reason is written to the
+SqfReloader output channel instead.
 
 `sqfReloader.functionLinks` resolves `TAG_fnc_name` in `.sqf` files: Ctrl+click opens the matching
 `fn_name.sqf`, and hovering shows the function's header documentation (description, parameters,

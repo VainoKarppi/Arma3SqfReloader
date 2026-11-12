@@ -353,6 +353,12 @@
           "scope": "window",
           "markdownDescription": "Run `hemtt check` for the project that contains a saved `.sqf`, `.cpp`, `.hpp`, `.cfg`, `.sqm` or `.toml` file."
         },
+        "sqfReloader.hemtt.unsaved": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "markdownDescription": "Also check files that are edited but not saved yet. `hemtt check` reads from disk, so the unsaved buffers of the project are written into a temporary shadow copy of it and HEMTT runs there; the project's real files are never changed."
+        },
         "sqfReloader.hemtt.lints": {
           "type": "array",
           "items": {

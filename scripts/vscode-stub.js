@@ -34,6 +34,7 @@ module.exports = {
             dispose: () => undefined
         }),
         onDidSaveTextDocument: () => ({ dispose: () => undefined }),
+        onDidChangeTextDocument: () => ({ dispose: () => undefined }),
         onDidChangeWorkspaceFolders: () => ({ dispose: () => undefined }),
         onDidChangeConfiguration: () => ({ dispose: () => undefined })
     },

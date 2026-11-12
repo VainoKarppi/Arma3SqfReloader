@@ -11,7 +11,8 @@ troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arm
 ## Features
 
 - Reload `fn_*.sqf` functions on save and show Arma compile errors in VS Code.
-- Run `hemtt check` periodically and show its errors and warnings in the Problems panel.
+- Run `hemtt check` periodically and on save — including unsaved edits — and show its errors and
+  warnings in the Problems panel.
 - Run an SQF file in Arma, with or without parameters.
 - Launch Arma, host a mission, or start a dedicated server from VS Code.
 - Configure project-specific settings, mod launch roles, and lifecycle hooks.
@@ -75,7 +76,9 @@ extension does not write these values to VS Code's user-level `settings.json`.
 If the `hemtt` command is installed, the extension also runs `hemtt check` for every HEMTT project
 in the workspace and shows its errors and warnings in the Problems panel. Configure it with
 `sqfReloader.hemtt.enabled`, `sqfReloader.hemtt.interval`, `sqfReloader.hemtt.onSave`,
-`sqfReloader.hemtt.lints`, and `sqfReloader.hemtt.executable` in user or workspace settings.
+`sqfReloader.hemtt.unsaved`, `sqfReloader.hemtt.lints`, and `sqfReloader.hemtt.executable` in user
+or workspace settings. With `sqfReloader.hemtt.unsaved` (the default) unsaved edits are checked
+through a temporary shadow copy of the project, so problems appear before you save.
 
 The REST API defaults to `http://127.0.0.1:8764/api`. It can execute SQF in the running game; SQF
 execution can change game state. Keep the API on a trusted local interface and do not expose it to

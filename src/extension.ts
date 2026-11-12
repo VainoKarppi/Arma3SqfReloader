@@ -22,7 +22,7 @@ import { apiTargets, GameConnectionMonitor, readApiTarget, setRemoteLogLevel } f
 import { statusPresentation, StatusSnapshot, StatusTone, toneColor } from "./status";
 import { ProjectViewProvider } from "./projectView";
 import { ArmaAiTool, ARMA_AI_TOOL_NAME } from "./armaAiTool";
-import { configureHemttCheck, disposeHemttCheck, onHemttDocumentSaved, runHemttCheck } from "./hemtt";
+import { activateHemttCheck, configureHemttCheck, disposeHemttCheck, onHemttDocumentChanged, onHemttDocumentSaved, runHemttCheck } from "./hemtt";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -145,11 +145,13 @@ export function activate(context: vscode.ExtensionContext): void {
         return conflicts;
     };
     startRptMonitor();
-    configureHemttCheck();
+    activateHemttCheck(context.globalStorageUri.fsPath);
     context.subscriptions.push({ dispose: disposeHemttCheck });
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("sqfReloader.hemtt")) configureHemttCheck();
     }));
+    // Unsaved edits are checked too, so problems show up before a file is saved.
+    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => onHemttDocumentChanged(event.document)));
 
     if (!runtime) {
         log("Bundled runtime is missing: reinstall the extension (or run build-all.ps1 when developing it).");
