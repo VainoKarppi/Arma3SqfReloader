@@ -4,6 +4,8 @@
 #                       on "Arma API: Play", see src/runtime.ts)
 SqfReloaderExtension/**
 arma3-sqf-reloader-*.vsix
+arma3-sqf-reloader-*.zip
+README.md
 *.bak
 build-all.ps1
 node_modules/**
@@ -16,3 +18,6 @@ tsconfig.json
 .SqfReloader-links.json
 .vscode/**
 **/*.tsbuildinfo
+
+media/sqfReloader_logo.xcf
+media/sqfReloader_logo.png

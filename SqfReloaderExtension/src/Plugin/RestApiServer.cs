@@ -411,24 +411,8 @@ internal static class RestApiServer {
         var pending = new PendingExecution();
 
         PendingExecutions[requestId] = pending;
-        // The result travels as SQF text (str), exactly as Arma's debug console prints it, so the
-        // client never has to untangle nested JSON/SQF escaping. The literal is parsed back into a
-        // structure on this side for clients that want values instead of text.
-        //
-        // The strings are passed as they are: callExtension already quotes and escapes every string
-        // argument, so wrapping them in str again would add one visible layer of quotes.
-        string sqf = $"[{SimpleSerializer.ToArma(requestId)}, {SimpleSerializer.ToArma(code)}] spawn {{\n" +
-            "    params [\"_requestId\", \"_code\"];\n" +
-            "    private _resultText = \"nil\";\n" +
-            "    private _error = \"\";\n" +
-            "    try {\n" +
-            "        private _value = call compile _code;\n" +
-            "        if !(isNil \"_value\") then { _resultText = str _value; };\n" +
-            "    } catch {\n" +
-            "        _error = if (_exception isEqualType \"\") then {_exception} else {str _exception};\n" +
-            "    };\n" +
-            "    \"SqfReloader\" callExtension [\"ApiPublishResult\", [_requestId, _resultText, _error]];\n" +
-            "};";
+        const int executionTimeoutSeconds = 3;
+        string sqf = $"[{SimpleSerializer.ToArma(requestId)}, {SimpleSerializer.ToArma(code)}, {executionTimeoutSeconds}] spawn SqfReloader_fnc_apiEval;";
 
         MessageQueue.Enqueue("COMMAND", SimpleSerializer.ToArma(new object?[] { "code", string.Empty, sqf }));
         ArmaLog.Log($"REST execution accepted: request={requestId}, timeout={timeoutMs}ms");

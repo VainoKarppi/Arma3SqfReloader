@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import { execFile, spawn } from "child_process";
 import { findArmaDirectory, findMissions, findMods, MissionFolder, pickArmaDirectory, toArmaPath } from "./arma";
 import { getOutput, log, logError, readSettings, Settings } from "./settings";
@@ -53,6 +54,8 @@ let rptFile = "";
 let rptOffset = 0;
 let rptPartial = "";
 let rptErrorBlock: string[] = [];
+let rptLaunchStartedAt = 0;
+let rptPathLoggedForLaunch = false;
 let rptDiagnostics: vscode.DiagnosticCollection | undefined;
 let rptReadInProgress = false;
 
@@ -213,6 +216,10 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             if (choice !== "Start Dedicated Server") return false;
         }
 
+        if (!options.dedicatedServer && !await ensureSteamReady(silent)) {
+            return false;
+        }
+
         startProcess(launch, settings, options, args);
 
         fireHook(options.dedicatedServer ? "postServerLaunch" : "postClientLaunch", settings, hookContext);
@@ -227,6 +234,125 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
     }
 }
 
+async function ensureSteamReady(silent: boolean): Promise<boolean> {
+    if (await queryProcessImage("steam.exe")) {
+        log("Steam is running.");
+        return true;
+    }
+
+    log("Steam is not running.");
+    if (silent) return false;
+
+    const choice = await vscode.window.showInformationMessage(
+        "Steam is not running. Start Steam before launching Arma 3?",
+        "Start Steam",
+        "Cancel"
+    );
+    if (choice !== "Start Steam") return false;
+
+    void vscode.window.showInformationMessage("Steam is starting... Please wait.");
+
+    const executable = await findSteamExecutable();
+    if (!executable) {
+        throw new Error("Steam.exe was not found. Start Steam manually, then launch Arma 3 again.");
+    }
+
+    await startSteam(executable);
+    if (!await waitForSteam()) {
+        throw new Error("Steam did not start within 2 minutes. Start Steam manually, then launch Arma 3 again.");
+    }
+
+    log("Steam is running. Waiting for the user to confirm sign-in before launching Arma.");
+    const ready = await vscode.window.showInformationMessage(
+        "Steam is running. Sign in to Steam if needed, then continue to launch Arma 3.",
+        "Continue",
+        "Cancel"
+    );
+    if (ready !== "Continue") return false;
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    if (!await queryProcessImage("steam.exe")) {
+        throw new Error("Steam closed before Arma 3 could be launched. Start Steam and try again.");
+    }
+    return true;
+}
+
+async function findSteamExecutable(): Promise<string | undefined> {
+    if (process.platform !== "win32") return undefined;
+
+    let installPath: string | undefined;
+    try {
+        const output = await new Promise<string>((resolve, reject) => {
+            execFile("reg", ["query", "HKCU\\SOFTWARE\\Valve\\Steam", "/v", "SteamPath"], {
+                encoding: "utf8",
+                timeout: 1500
+            }, (error, stdout) => error ? reject(error) : resolve(stdout));
+        });
+        installPath = /REG_SZ\s+(.+)$/m.exec(output)?.[1].trim().replace(/\//g, "\\");
+    } catch {
+        // Steam's per-user registry key may be absent.
+    }
+
+    const candidates = [
+        ...(installPath ? [path.join(installPath, "steam.exe")] : []),
+        "C:\\Program Files (x86)\\Steam\\steam.exe",
+        "C:\\Program Files\\Steam\\steam.exe"
+    ];
+    return candidates.find(candidate => fs.existsSync(candidate));
+}
+
+function startSteam(executable: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let started = false;
+        const processHandle = spawn(executable, [], {
+            detached: true,
+            stdio: "ignore"
+        });
+        processHandle.on("error", error => {
+            logError("Steam could not be started", error);
+            if (!started) reject(error);
+        });
+        processHandle.once("spawn", () => {
+            started = true;
+            processHandle.unref();
+            log(`Started Steam from ${executable}.`);
+            resolve();
+        });
+    });
+}
+
+async function waitForSteam(): Promise<boolean> {
+    const deadline = Date.now() + 2 * 60 * 1000;
+    while (Date.now() < deadline) {
+        if (await queryProcessImage("steam.exe")) return true;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return false;
+}
+
+function formatLaunchArgument(argument: string): string[] {
+    const unwrapped = argument.startsWith('"') && argument.endsWith('"')
+        ? argument.slice(1, -1)
+        : argument;
+    const modMatch = /^(-(?:server)?mod)=(.*)$/i.exec(unwrapped);
+    if (modMatch) {
+        return [
+            `${modMatch[1]}=`,
+            ...modMatch[2].split(";").map(directory => `\t\t${pathToFileURL(directory).href}`)
+        ];
+    }
+
+    const profileMatch = /^(-name)=(.*)$/i.exec(argument);
+    if (profileMatch) {
+        const name = profileMatch[2].startsWith('"') && profileMatch[2].endsWith('"')
+            ? profileMatch[2]
+            : `"${profileMatch[2]}"`;
+        return [`${profileMatch[1]}=${name}`];
+    }
+
+    return [argument];
+}
+
 /**
  * Folder Arma writes its .rpt logs to: <c>%LOCALAPPDATA%\Arma 3</c> (single player profile).
  * Resolved at runtime because the output channel does not expand environment variables.
@@ -235,14 +361,21 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
 
     const output = getOutput();
     const rawCommand = `"${launch.executable}" ${args.join(" ")}`;
-    output.appendLine(`Executable: ${launch.executable}`);
+    output.appendLine(`Arma directory: ${pathToFileURL(launch.armaDirectory).href}`);
+    output.appendLine(`Executable: ${pathToFileURL(launch.executable).href}`);
     output.appendLine(`Arguments (${args.length}):`);
-    args.forEach((argument, index) => output.appendLine(`  [${index}] ${JSON.stringify(argument)}`));
+    args.forEach((argument, index) => {
+        const [firstLine, ...continuationLines] = formatLaunchArgument(argument);
+        output.appendLine(`  [${index}] ${firstLine}`);
+        continuationLines.forEach(line => output.appendLine(line));
+    });
     output.show(true);
     log(`Starting: ${rawCommand}`);
 
     // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
     // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
+    rptLaunchStartedAt = Date.now();
+    rptPathLoggedForLaunch = false;
     const processHandle = spawn(launch.executable, args, {
         // Match the quoted argv[0] emitted by the working Arma Launcher command line.
         argv0: `"${launch.executable}"`,
@@ -292,7 +425,7 @@ export function startRptMonitor(): void {
 async function pollRptFile(): Promise<void> {
     const names = await fs.promises.readdir(armaLogDirectory());
     const files = await Promise.all(names
-        .filter(name => /^arma3_x64_.*\.rpt$/i.test(name))
+        .filter(name => /^arma3(?:server)?_x64_.*\.rpt$/i.test(name))
         .map(async name => {
             const file = path.join(armaLogDirectory(), name);
             try {
@@ -311,12 +444,14 @@ async function pollRptFile(): Promise<void> {
         rptFile = latest;
         // Skip existing output so previous-session diagnostics are not replayed on activation.
         const stat = await fs.promises.stat(rptFile);
+        reportRptPath(rptFile, stat.mtimeMs);
         rptOffset = stat.size;
         rptPartial = "";
         rptErrorBlock = [];
         return;
     }
     const stat = await fs.promises.stat(rptFile);
+    reportRptPath(rptFile, stat.mtimeMs);
     if (stat.size < rptOffset) {
         rptOffset = stat.size;
         rptPartial = "";
@@ -336,6 +471,12 @@ async function pollRptFile(): Promise<void> {
     const lines = (rptPartial + buffer.toString("utf8")).split(/\r?\n/);
     rptPartial = lines.pop() ?? "";
     for (const line of lines) consumeRptLine(line);
+}
+
+function reportRptPath(file: string, modified: number): void {
+    if (rptLaunchStartedAt === 0 || rptPathLoggedForLaunch || modified < rptLaunchStartedAt) return;
+    getOutput().appendLine(`\nRPT: ${pathToFileURL(file).href}`);
+    rptPathLoggedForLaunch = true;
 }
 
 export function stopRptMonitor(): void {

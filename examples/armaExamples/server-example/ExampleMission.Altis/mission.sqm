@@ -29,7 +29,7 @@ class EditorData
 class ScenarioData
 {
     author="SqfReloader";
-    overview="Development mission for the server-mod example.";
+    overview="Development mission for the server mod example.";
 };
 class Mission
 {

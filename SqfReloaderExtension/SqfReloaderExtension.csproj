@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>SqfReloader_x64</AssemblyName>
     <RootNamespace>SqfReloader</RootNamespace>
-    <Version>3.8.0</Version>
+    <Version>3.8.1</Version>
 
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -51,9 +51,7 @@
       <_SqfReloaderVsRoot></_SqfReloaderVsRoot>
     </PropertyGroup>
 
-    <Exec Command="&quot;$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"
-          IgnoreExitCode="true"
-          Condition="'$(_SqfReloaderVcVarsAll)' == '' And Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe')">
+    <Exec Command="&quot;$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath" IgnoreExitCode="true" Condition="'$(_SqfReloaderVcVarsAll)' == '' And Exists('$(MSBuildProgramFiles32)\Microsoft Visual Studio\Installer\vswhere.exe')">
       <Output TaskParameter="ConsoleOutput" PropertyName="_SqfReloaderVsRoot" />
     </Exec>
 
@@ -75,10 +73,7 @@
       <_SqfReloaderDefHasFlags Condition="'@(_SqfReloaderDefLine)' != ''">true</_SqfReloaderDefHasFlags>
     </PropertyGroup>
 
-    <WriteLinesToFile File="$(ExportsFile)"
-                      Lines="@(_SqfReloaderDefLine);   RVExtensionFeatureFlags DATA;   RVExtensionGetFeatureFlags"
-                      Overwrite="true"
-                      Condition="'$(_SqfReloaderDefHasFlags)' != 'true'" />
+    <WriteLinesToFile File="$(ExportsFile)" Lines="@(_SqfReloaderDefLine);   RVExtensionFeatureFlags DATA;   RVExtensionGetFeatureFlags" Overwrite="true" Condition="'$(_SqfReloaderDefHasFlags)' != 'true'" />
   </Target>
 
   <!-- Compiles exports.c with the MSVC toolchain that NativeAOT uses and links the object. -->
@@ -91,14 +86,9 @@
 
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_SqfReloaderExportsObject)'))" Condition="'$(_SqfReloaderVcVarsAll)' != ''" />
 
-    <WriteLinesToFile File="$(_SqfReloaderExportsBatch)"
-                      Overwrite="true"
-                      Condition="'$(_SqfReloaderVcVarsAll)' != ''"
-                      Lines="call &quot;$(_SqfReloaderVcVarsAll)&quot;;cl.exe /nologo /c /O2 /GS- &quot;$(_SqfReloaderExportsSource)&quot; /Fo:&quot;$(_SqfReloaderExportsObject)&quot;;exit /b %ERRORLEVEL%" />
+    <WriteLinesToFile File="$(_SqfReloaderExportsBatch)" Overwrite="true" Condition="'$(_SqfReloaderVcVarsAll)' != ''" Lines="call &quot;$(_SqfReloaderVcVarsAll)&quot;;cl.exe /nologo /c /O2 /GS- &quot;$(_SqfReloaderExportsSource)&quot; /Fo:&quot;$(_SqfReloaderExportsObject)&quot;;exit /b %ERRORLEVEL%" />
 
-    <Exec Command="cmd.exe /c &quot;$(_SqfReloaderExportsBatch)&quot;"
-          Condition="'$(_SqfReloaderVcVarsAll)' != ''"
-          StandardOutputImportance="low" />
+    <Exec Command="cmd.exe /c &quot;$(_SqfReloaderExportsBatch)&quot;" Condition="'$(_SqfReloaderVcVarsAll)' != ''" StandardOutputImportance="low" />
   </Target>
 
 </Project>

@@ -4,11 +4,11 @@ import { projectSetting } from "./projectSettings";
 
 interface ExternalModSetting {
     path: string;
-    type: "client" | "server" | "both";
+    type: "client" | "server" | "both" | "off";
 }
 
 function isModType(value: unknown): value is ExternalModSetting["type"] {
-    return value === "client" || value === "server" || value === "both";
+    return value === "client" || value === "server" || value === "both" || value === "off";
 }
 
 /** Unique key for a mod folder: Arma must never receive the same folder twice. */
@@ -56,7 +56,7 @@ export function configuredExternalMods(): ExternalModSetting[] {
  */
 export function launchModFolders(): string[] {
     return modFoldersOnce(configuredExternalMods()
-        .filter(mod => mod.type !== "server")
+        .filter(mod => mod.type === "client" || mod.type === "both")
         .map(mod => path.resolve(mod.path)));
 }
 

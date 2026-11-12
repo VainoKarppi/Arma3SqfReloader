@@ -1,0 +1,40 @@
+class Header {
+    gameType = "Coop";
+    minPlayers = 1;
+    maxPlayers = 8;
+    playerCount = 1;
+    author = "Arma 3 SQF Reloader";
+    onLoadName = "Example counter";
+    onLoadMission = "Minimal mission that runs the example mod functions.";
+};
+
+respawn = 3;
+respawnDelay = 5;
+respawnOnStart = 0;
+respawnTemplates[] = {"MenuPosition"};
+
+// Permit SqfReloader to replace CfgFunctions entries while this mission is open.
+allowFunctionsRecompile = 1;
+
+#include "CfgRemoteExec.hpp"
+
+class CfgFunctions {
+    class ExampleMission {
+        tag = "ExampleMission";
+        class Tests {
+            file = "functions";
+            class liveTest {};
+            class preInit { preInit = 1; };
+            class postInit { postInit = 1; };
+            class broadcastInitMessage {};
+            class receiveReloadedFunction {};
+        };
+    };
+        class ExampleMissionServer {
+        tag = "ExampleMission";
+        class Server {
+            file = "functions";
+            class receiveReloadedFunction {};
+        };
+    };
+};

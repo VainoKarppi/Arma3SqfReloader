@@ -1,0 +1,31 @@
+{
+    "armaProfile": "",
+    "apiUrl": "http://127.0.0.1",
+    "apiPort": 8764,
+    "requestTimeout": 3000,
+    "runTimeout": 30,
+    "clearArmaMissionArtifacts": true,
+    "enabled": true,
+    "autoJunction": true,
+    "junctionMode": "addon",
+    "notifyOnError": true,
+    "createExampleWithMission": true,
+    "logLevel": "info",
+    "reloadOnSave": "reload",
+    "modTypes": {
+        "@ExampleMod": "client",
+        "server-example/@ExampleServerMod": "server"
+    },
+    "extraLaunchArguments": "-noSplash -skipIntro -noPause -showScriptErrors -window",
+    "serverLaunchArguments": "",
+    "watchInterval": 1000,
+    "watchExpressions": [],
+    "externalMods": [],
+    "hooks": {},
+    "hookPresentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+    }
+}

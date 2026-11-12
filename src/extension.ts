@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { evalCode, getStatus, request, sqfString } from "./api";
-import { configuredLogLevel, disposeOutput, getOutput, log, logError, readSettings, Settings, updateSetting } from "./settings";
+import { configuredLogLevel, disposeOutput, getOutput, log, logError, logInfo, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, openArmaFolder, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { ensureProjectSettings, projectSettingsExists, projectSettingsPath, PROJECT_SETTING_DEFAULTS } from "./projectSettings";
 import { fireHook, HookContext, runHook } from "./hooks";
@@ -13,6 +13,7 @@ import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStat
 import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample } from "./scaffold";
+import { SqfSymbolLookup, seeReferences } from "./links";
 import { selectArmaProfile } from "./profile";
 import { configureMissionArtifactCleanup, stopMissionArtifactCleanup } from "./missionArtifacts";
 import { ModType, setModTypeForDirectory } from "./modTypes";
@@ -21,6 +22,7 @@ import { apiTargets, GameConnectionMonitor, readApiTarget, setRemoteLogLevel } f
 import { statusPresentation, StatusSnapshot, StatusTone, toneColor } from "./status";
 import { ProjectViewProvider } from "./projectView";
 import { ArmaAiTool, ARMA_AI_TOOL_NAME } from "./armaAiTool";
+import { configureHemttCheck, disposeHemttCheck, onHemttDocumentSaved, runHemttCheck } from "./hemtt";
 
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
@@ -70,6 +72,21 @@ export function activate(context: vscode.ExtensionContext): void {
         webviewOptions: { retainContextWhenHidden: true }
     }));
     context.subscriptions.push(vscode.lm.registerTool(ARMA_AI_TOOL_NAME, new ArmaAiTool(readSettings)));
+    // Definition (Ctrl+click/F12) + hover instead of document links: document links are always
+    // underlined and VS Code offers no API to style them.
+    const sqfSymbols = new SqfSymbolLookup();
+    // Both a path pattern and the `sqf` language id, so the providers keep working when an SQF
+    // language extension supplies the language.
+    const sqfSelector: vscode.DocumentSelector = [
+        { scheme: "file", pattern: "**/*.sqf" },
+        { language: "sqf" }
+    ];
+    context.subscriptions.push(
+        sqfSymbols,
+        vscode.languages.registerDefinitionProvider(sqfSelector, sqfSymbols),
+        vscode.languages.registerHoverProvider(sqfSelector, sqfSymbols),
+        vscode.languages.registerReferenceProvider(sqfSelector, sqfSymbols)
+    );
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
     const duplicateFunctionDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader-functions");
@@ -128,6 +145,11 @@ export function activate(context: vscode.ExtensionContext): void {
         return conflicts;
     };
     startRptMonitor();
+    configureHemttCheck();
+    context.subscriptions.push({ dispose: disposeHemttCheck });
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration("sqfReloader.hemtt")) configureHemttCheck();
+    }));
 
     if (!runtime) {
         log("Bundled runtime is missing: reinstall the extension (or run build-all.ps1 when developing it).");
@@ -184,9 +206,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }));
     context.subscriptions.push(vscode.workspace.onDidCreateFiles(event => {
         const files = event.files.filter(uri => hasConfiguredProjectUri(uri)).map(uri => uri.fsPath);
+        for (const file of files.filter(filePath => /\.sqf$/i.test(filePath))) {
+            logInfo(`Created SQF file: ${file} (Arma reloads it when saved).`);
+        }
         void updateDuplicateFunctionDiagnostics(files, true).catch(error => logError("could not check newly created SQF functions", error));
     }));
     context.subscriptions.push(vscode.workspace.onDidRenameFiles(event => {
+        const renamedSqfFiles = event.files.filter(file =>
+            (hasConfiguredProjectUri(file.oldUri) || hasConfiguredProjectUri(file.newUri))
+            && (/\.sqf$/i.test(file.oldUri.fsPath) || /\.sqf$/i.test(file.newUri.fsPath))
+        );
+        for (const file of renamedSqfFiles) {
+            logInfo(`Renamed SQF file: ${file.oldUri.fsPath} -> ${file.newUri.fsPath}.`);
+        }
         const files = event.files.flatMap(file => [file.oldUri, file.newUri])
             .filter(uri => hasConfiguredProjectUri(uri))
             .map(uri => uri.fsPath);
@@ -194,6 +226,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }));
     context.subscriptions.push(vscode.workspace.onDidDeleteFiles(async event => {
         const settings = readSettings();
+        const deletedSqfFiles = event.files.filter(uri =>
+            hasConfiguredProjectUri(uri) && /\.sqf$/i.test(uri.fsPath)
+        );
+        for (const file of deletedSqfFiles) {
+            logInfo(`Deleted SQF file: ${file.fsPath}.`);
+        }
         if (settings.deletedFunctionBehavior === "keep") return;
 
         const variables = [...new Set(event.files
@@ -221,11 +259,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
         const code = `[${variables.map(sqfString).join(", ")}] apply { missionNamespace setVariable [_x, nil]; };`;
         try {
+            logInfo(`Sending deleted function cleanup for ${variables.join(", ")} to the Arma API.`);
             const result = await evalCode(settings, code);
             if (!result.success) {
                 throw new Error(result.error ?? "Arma rejected the variable cleanup command.");
             }
-            log(`Cleared deleted function variable(s) from Arma: ${variables.join(", ")}`);
+            logInfo(`Cleared deleted function variable(s) from Arma: ${variables.join(", ")}`);
         } catch (error) {
             logError(`could not clear deleted function variable(s) from Arma (${variables.join(", ")})`, error);
             vscode.window.showWarningMessage(`Could not clear deleted function variables from Arma: ${error instanceof Error ? error.message : String(error)}`);
@@ -234,6 +273,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // --- Save -> reload ---------------------------------------------------
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
+        onHemttDocumentSaved(document);
+
         if (!hasConfiguredProjectRoot(document)) {
             return;
         }
@@ -418,6 +459,19 @@ export function activate(context: vscode.ExtensionContext): void {
     };
 
     register(context, "sqfReloader.play", playCommand);
+
+    register(context, "sqfReloader.hemttCheck", async () => {
+        getOutput().show(true);
+        const result = await runHemttCheck();
+        if (result.reason) {
+            vscode.window.showWarningMessage(`HEMTT check did not run: ${result.reason}`);
+            return;
+        }
+        vscode.window.setStatusBarMessage(
+            `HEMTT check: ${result.errors} error(s), ${result.warnings} warning(s) in ${result.projects} project(s)`,
+            5000
+        );
+    });
 
     register(context, "sqfReloader.stop", async () => {
         if (!await refreshRunningStatus()) {
@@ -869,7 +923,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const started = await launchArma(runtime, settings, {
             dedicatedServer: true,
             serverConfig,
-            confirmLaunch: true
+            confirmLaunch: false
         });
         if (started) {
             vscode.window.showInformationMessage("Dedicated server process started. SqfReloader live reload uses the local Arma client/editor session; the remote server is not automatically attached.");
@@ -917,6 +971,18 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         await vscode.env.openExternal(vscode.Uri.file(armaDirectory));
+    });
+
+    // "See references" for a function file: used by the Explorer and editor context menus, where
+    // the argument is the right-clicked resource (or nothing when right-clicking editor space).
+    register(context, "sqfReloader.seeReferences", async (resource?: unknown) => {
+        const file = resource instanceof vscode.Uri
+            ? resource.fsPath
+            : vscode.window.activeTextEditor?.document.uri.scheme === "file"
+                ? vscode.window.activeTextEditor.document.uri.fsPath
+                : undefined;
+
+        await seeReferences(file, sqfSymbols);
     });
 
     register(context, "sqfReloader.showOutput", async () => {

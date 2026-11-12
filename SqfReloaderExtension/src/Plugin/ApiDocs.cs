@@ -68,7 +68,7 @@ Arma accepted the work.</p>
 <tr><td class="method">GET /api</td><td>&mdash;</td><td>This page in a browser; the status JSON when the request does not accept <code>text/html</code>.</td></tr>
 <tr><td class="method">GET /api/status</td><td>&mdash;</td><td>Version, port, <code>gameConnected</code>, log level and directory, endpoint list.</td></tr>
 <tr><td class="method">GET /api/functions</td><td>&mdash;</td><td><code>functions</code>: <code>[name, family, absolutePath]</code> for every <code>fn_*.sqf</code> the DLL can reload.</td></tr>
-<tr><td class="method">POST /api/eval</td><td><code>{"code":"1 + 1","timeoutMs":30000}</code></td><td><code>result</code> (parsed value) and <code>text</code> (Arma's <code>str</code> output). <code>408</code> on timeout, <code>422</code> on an SQF error.</td></tr>
+<tr><td class="method">POST /api/eval</td><td><code>{"code":"1 + 1","timeoutMs":30000}</code></td><td><code>result</code> (parsed value) and <code>text</code> (Arma's <code>str</code> output). <code>408</code> if the HTTP wait expires, <code>422</code> on an SQF error or the 3-second execution limit.</td></tr>
 <tr><td class="method">POST /api/execute</td><td><code>{"code":"systemChat 'hi'"}</code></td><td><code>202</code> once Arma accepted the code; no result is returned.</td></tr>
 <tr><td class="method">POST /api/command</td><td><code>{"type":"code","code":"..."}</code> or <code>{"type":"recompile","code":"...","method":"..."}</code></td><td>EdenOnline-compatible command queue.</td></tr>
 <tr><td class="method">POST /api/send</td><td><code>{"function":"MyEvent","data":[...]}</code></td><td>Calls a handler registered with <code>SqfReloader_fnc_send</code>.</td></tr>
@@ -97,7 +97,7 @@ literal parsed into arrays, strings, numbers and booleans.</p>
 <h2>Notes</h2>
 <ul>
 <li>Any origin may send requests: responses carry <code>Access-Control-Allow-Origin: *</code>.</li>
-<li><code>timeoutMs</code> defaults to <code>30000</code> and is clamped to <code>1000..300000</code>. A timed-out execution is not cancelled in Arma.</li>
+<li><code>timeoutMs</code> defaults to <code>30000</code> and is clamped to <code>1000..300000</code>; it limits how long HTTP waits for a result. Arma cancels an evaluation that has not finished after 3 seconds.</li>
 <li>Request bodies must be a JSON object; unknown routes answer <code>404</code> with a JSON error.</li>
 <li>Logs: <code>@@LOGDIRECTORY@@</code></li>
 <li>Port and log level live in <code>%LOCALAPPDATA%\SqfReloader\config.json</code>, or can be changed from SQF with <code>SqfReloader_fnc_apiStart</code> and <code>POST /api/log</code>.</li>

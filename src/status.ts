@@ -24,7 +24,7 @@ export interface StatusPresentation {
 }
 
 /** A cold Arma start loads mods and opens the API within seconds; allow for slow machines. */
-const STARTUP_GRACE_MS = 90_000;
+const STARTUP_GRACE_MS = 180_000;
 
 /** First moment a game/server process was reported while it had no API connection. */
 let processSeenAt: number | undefined;
@@ -91,8 +91,12 @@ export function statusPresentation(snapshot: StatusSnapshot, settings: Settings,
 
         return {
             text: `$(error) SqfReloader: API offline`,
-            tone: "error",
-            tooltip: ["Arma 3 is running but its SqfReloader API does not answer.", ...detail].join("\n")
+            tone: "warning",
+            tooltip: [
+                "Arma 3 is running but its SqfReloader API does not answer.",
+                "Open the Eden Editor or start a mission to initialize the API.\n",
+                ...detail
+            ].join("\n")
         };
     }
 

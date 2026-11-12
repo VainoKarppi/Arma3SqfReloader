@@ -22,8 +22,7 @@ import { workspaceMods } from "./runtime";
 import { DEFAULT_PORT, normalizeApiHost } from "./ports";
 import { armaLogDirectory, findLatestRptPath, readRptTail } from "./rpt";
 
-/** External mods are never "off": removing the entry is how you stop loading them. */
-type ExternalModType = "client" | "server" | "both";
+type ExternalModType = "client" | "server" | "both" | "off";
 
 interface ExternalMod {
     path: string;
@@ -53,6 +52,8 @@ interface ViewSettings {
 }
 
 const MOD_TYPES: ModType[] = ["client", "server", "both", "off"];
+/** Watch expressions are refreshed in one SQF batch; keep the batch small. */
+const MAX_WATCHES = 10;
 const SETTING_KEYS = new Set<keyof ViewSettings>([
     "armaDirectory", "armaProfile", "extraLaunchArguments", "serverLaunchArguments", "apiUrl",
     "watchInterval", "junctionMode", "reloadOnSave", "deletedFunctionBehavior", "runTimeout",
@@ -236,8 +237,11 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
             }
         } catch (error) {
             logError(`project view command failed (${message.command ?? "unknown"})`, error);
-            void vscode.window.showErrorMessage(`Arma project: ${error instanceof Error ? error.message : String(error)}`);
-            this.post({ type: "error", message: error instanceof Error ? error.message : String(error) });
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (message.command !== "execute") {
+                void vscode.window.showErrorMessage(`Arma project: ${errorMessage}`);
+            }
+            this.post({ type: "error", message: errorMessage });
         }
     }
 
@@ -584,13 +588,21 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
         const output = result.text !== undefined
             ? formatSqfText(result.text)
             : result.result === undefined ? "nil" : formatSqfText(formatResult(result.result));
-        this.post({ type: "execution", result: result.success ? output : result.error ?? "Execution failed." });
+        this.post({
+            type: "execution",
+            result: result.success ? output : result.error ?? "Execution failed.",
+            isError: !result.success
+        });
     }
 
     private async addWatch(expression: unknown): Promise<void> {
         if (typeof expression !== "string" || !expression.trim()) throw new Error("Enter an SQF expression to watch.");
         const watches = this.watchExpressions();
-        if (!watches.includes(expression.trim())) watches.push(expression.trim());
+        const trimmed = expression.trim();
+        if (!watches.includes(trimmed) && watches.length >= MAX_WATCHES) {
+            throw new Error(`Watch expressions are limited to ${MAX_WATCHES}. Remove one before adding another.`);
+        }
+        if (!watches.includes(trimmed)) watches.push(trimmed);
         await this.saveSetting("watchExpressions", watches);
         this.restartWatchTimer();
         await this.refresh();
@@ -617,7 +629,10 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
             const settings = readSettings();
             const status = await getStatus(settings);
             if (status.gameConnected !== true) {
-                this.post({ type: "watchValues", values: watches.map(expression => ({ expression, value: "Arma is not connected." })) });
+                this.post({
+                    type: "watchValues",
+                    values: watches.map(expression => ({ expression, value: "Arma is not connected.", isError: true }))
+                });
                 return;
             }
             const code = `[${watches.map(sqfString).join(",")}] call SqfReloader_fnc_evalWatch`;
@@ -629,13 +644,16 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
                 ? watches.map((expression, index) => {
                     const entry = entries[index];
                     const value = Array.isArray(entry) && typeof entry[1] === "string" ? formatSqfText(entry[1]) : undefined;
-                    return { expression, value: value ?? "No value returned." };
+                    return { expression, value: value ?? "No value returned.", isError: false };
                 })
-                : watches.map(expression => ({ expression, value: result.error ?? "Watch evaluation failed." }));
+                : watches.map(expression => ({ expression, value: result.error ?? "Watch evaluation failed.", isError: true }));
             this.post({ type: "watchValues", values });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            this.post({ type: "watchValues", values: this.watchExpressions().map(expression => ({ expression, value: message })) });
+            this.post({
+                type: "watchValues",
+                values: this.watchExpressions().map(expression => ({ expression, value: message, isError: true }))
+            });
         } finally {
             this.watchBusy = false;
         }
@@ -644,7 +662,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
     /**
      * Every workspace mod the extension would pass to Arma, with its launch role. A mod without a
      * saved role is reported as "unclassified" (the panel shows it as Client) so a discovered
-     * folder such as an unpacked server source tree is visible and can be set to Not used instead
+     * folder such as an unpacked server source tree is visible and can be set to Not Used instead
      * of being launched invisibly.
      */
     private workspaceModRoles(): Array<{ path: string; type: string }> {
@@ -771,7 +789,12 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);displa
 <style>
 body{font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);padding:8px}
 h2{font-size:1.15em;margin:8px 0 14px}
-button{font:inherit;cursor:pointer;width:100%;text-align:left;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;border-radius:2px;padding:8px;margin:3px 0}
+button{display:flex;align-items:center;gap:8px;font:inherit;cursor:pointer;width:100%;text-align:left;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;border-radius:2px;padding:8px;margin:3px 0}
+button svg{width:16px;height:16px;flex:none}
+/* Same button flips to "Stop Dedicated Server" while the server runs; deep yellow keeps the
+   white label readable (the theme's bright charts yellow washes it out). */
+#dedicatedServer[data-command=stopServer]{background:#8f6b00;color:#fff;font-weight:600}
+#dedicatedServer[data-command=stopServer]:hover{background:#a17a00;filter:none}
 .status{padding:8px;background:var(--vscode-editor-background);margin-top:12px;line-height:1.6}.muted{color:var(--vscode-descriptionForeground);font-size:.9em}
 .status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}
 .dot.ok{background:var(--vscode-testing-iconPassed,#3fb950)}.dot.bad{background:var(--vscode-testing-iconFailed,#f85149)}
@@ -779,10 +802,10 @@ button{font:inherit;cursor:pointer;width:100%;text-align:left;color:var(--vscode
 .dot.idle{background:var(--vscode-descriptionForeground,#8b949e)}
 </style></head><body>
 <h2 id="project">Arma Project</h2>
-<button data-command="openSettings">Create / Edit Project Settings</button>
-<button id="dedicatedServer" data-command="launchServer">Start Dedicated Server</button>
-<button data-command="launchHosted">Host Mission</button>
-<button data-command="debugConsole">Debug Console</button>
+<button data-command="openSettings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h6m4 0h6M4 17h2m4 0h10"/><circle cx="12" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span>Create / Edit Project Settings</span></button>
+<button data-command="debugConsole"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg><span>Debug Console</span></button>
+<button id="dedicatedServer" data-command="launchServer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="8" rx="1"/><rect x="4" y="13" width="16" height="8" rx="1"/><path d="M8 7h.01M11 7h5m-8 10h.01m3 0h5"/></svg><span class="button-label">Start Dedicated Server</span></button>
+<button data-command="launchHosted"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.8M17 14a5 5 0 0 1 3.5 4.8"/></svg><span>Host Mission</span></button>
 <div class="status" id="status">Checking status...</div>
 <script nonce="${nonce}">
 const vscode=acquireVsCodeApi();document.querySelectorAll('[data-command]').forEach(button=>button.addEventListener('click',()=>vscode.postMessage({command:button.dataset.command})));
@@ -790,7 +813,7 @@ function statusItem(label,tone,text){const dot=document.createElement('span');do
 // The .exe exists (process running) but Arma has not reached the SqfReloader API yet: "Starting...".
 function processStatus(running,connected){if(typeof running!=='boolean')return['idle','Unknown'];if(!running)return['bad','Stopped'];return connected?['ok','Running']:['starting','Starting...']}
 function apiStatus(connected,running){if(connected)return['ok','Running'];if(running)return['starting','Starting...'];return['idle','Stopped']}
-window.addEventListener('message',event=>{if(event.data.type==='state'){const state=event.data;document.getElementById('project').textContent=state.project;const status=document.getElementById('status');const anyProcessRunning=state.running===true||state.dedicatedServerRunning===true;const game=processStatus(state.running,state.clientConnected);const api=apiStatus(state.clientConnected,anyProcessRunning);const server=processStatus(state.dedicatedServerRunning,state.clientConnected);status.replaceChildren(statusItem('Game',game[0],game[1]),statusItem('Dedicated Server',server[0],server[1]),statusItem('API',api[0],api[1]));const serverButton=document.getElementById('dedicatedServer');serverButton.textContent=state.dedicatedServerRunning?'Stop Dedicated Server':'Start Dedicated Server';serverButton.dataset.command=state.dedicatedServerRunning?'stopServer':'launchServer'}});
+window.addEventListener('message',event=>{if(event.data.type==='state'){const state=event.data;document.getElementById('project').textContent=state.project;const status=document.getElementById('status');const anyProcessRunning=state.running===true||state.dedicatedServerRunning===true;const game=processStatus(state.running,state.clientConnected);const api=apiStatus(state.clientConnected,anyProcessRunning);const server=processStatus(state.dedicatedServerRunning,state.clientConnected);status.replaceChildren(statusItem('Game',game[0],game[1]),statusItem('Dedicated Server',server[0],server[1]),statusItem('API',api[0],api[1]));const serverButton=document.getElementById('dedicatedServer');serverButton.querySelector('.button-label').textContent=state.dedicatedServerRunning?'Stop Dedicated Server':'Start Dedicated Server';serverButton.dataset.command=state.dedicatedServerRunning?'stopServer':'launchServer'}});
 </script></body></html>`;
     }
 
@@ -913,7 +936,7 @@ select.role{width:200px;min-width:200px;flex:0 0 200px;font-size:.85em;padding:5
 
 <section class="card wide">
 <h2>Mod management</h2>
-<p class="hint">Choose how each workspace mod is loaded. Server-only mods use <code>-serverMod</code> for dedicated server launches. Mods discovered in the workspace start as <strong>Not used</strong>; <strong>Remove</strong> stops launching a mod by setting it back to Not used.</p>
+<p class="hint">Choose how each workspace mod is loaded. Server-only mods use <code>-serverMod</code> for dedicated server launches. Mods discovered in the workspace start as <strong>Not Used</strong>; <strong>Remove</strong> stops launching a mod by setting it back to Not Used.</p>
 <div class="actions"><button id="addWorkspaceMod" class="btn">Add workspace mod role</button></div>
 <div class="list" id="workspaceMods"></div>
 <h3>Additional local / Steam Workshop mods</h3>
@@ -963,14 +986,14 @@ document.getElementById('saveHook').addEventListener('click',()=>{send('setting'
 document.getElementById('clearHook').addEventListener('click',()=>{const value=hookValueFromEditor();value.commands=[];document.getElementById('hookCommands').value='';send('setting',{key:'hook',value});hookDirty=false});
 document.querySelectorAll('[data-hookpresentation]').forEach(select=>select.addEventListener('change',()=>{const value={};document.querySelectorAll('[data-hookpresentation]').forEach(item=>{value[item.dataset.hookpresentation]=item.value==='true'?true:item.value==='false'?false:item.value});send('setting',{key:'hookPresentation',value})}));
 document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListener('change',()=>{let value=input.type==='checkbox'?input.checked:input.value;if(input.type==='number')value=Number(value);send('setting',{key:input.dataset.setting,value})}));
-function addRoleSelect(parent,path,type,command,values){const select=document.createElement('select');const current=roleValue(type,values);select.className='role role-'+current;values.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent=value==='off'?'Not used':value;select.append(option)});select.value=current;select.addEventListener('change',()=>{select.className='role role-'+select.value;send(command,{path,value:select.value})});parent.append(select)}
-// The panel offers Client / Server / Not used only. A stored "both" or "unclassified" role is a
+function addRoleSelect(parent,path,type,command,values){const select=document.createElement('select');const current=roleValue(type,values);select.className='role role-'+current;values.forEach(value=>{const option=document.createElement('option');option.value=value;option.textContent=value==='off'?'Not Used':value==='client'?'Client Mod':value==='server'?'Server Mod':value;select.append(option)});select.value=current;select.addEventListener('change',()=>{select.className='role role-'+select.value;send(command,{path,value:select.value})});parent.append(select)}
+// The panel offers Client / Server / Not Used only. A stored "both" or "unclassified" role is a
 // -mod mod like Client, so it is shown and kept as Client instead of disappearing from the list.
 function roleValue(type,values){const current=type==='server'||type==='off'?type:'client';return values.includes(current)?current:values[0]}
 function modInfo(text){const info=document.createElement('div');info.className='info';const leaf=text.split('/').pop()||text;const name=document.createElement('div');name.className='name';name.textContent=leaf;info.append(name);if(leaf!==text){const file=document.createElement('div');file.className='path';file.textContent=text;info.append(file)}return info}
 function emptyNote(container,text){container.className='empty';container.textContent=text}
-function renderMods(state){const workspace=document.getElementById('workspaceMods');workspace.replaceChildren();const roles=Array.isArray(state.workspaceMods)?state.workspaceMods:(state.modTypes&&typeof state.modTypes==='object'?Object.keys(state.modTypes).sort().map(key=>({path:key,type:state.modTypes[key]})):[]);if(!roles.length){emptyNote(workspace,'No workspace mod found.')}else{workspace.className='';roles.forEach(entry=>{const row=document.createElement('div');row.className='item';row.append(modInfo(entry.path));addRoleSelect(row,entry.path,entry.type,'modType',['client','server','off']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.title='Stop launching this mod (sets it to Not used)';remove.disabled=entry.type==='off';remove.addEventListener('click',()=>send('removeWorkspaceMod',{path:entry.path}));row.append(remove);workspace.append(row)})}
- const external=document.getElementById('externalMods');external.replaceChildren();const entries=Array.isArray(state.externalMods)?state.externalMods:[];if(!entries.length){emptyNote(external,'No external mods configured.')}else{external.className='';entries.forEach(mod=>{const row=document.createElement('div');row.className='item';row.append(modInfo(mod.path));addRoleSelect(row,mod.path,mod.type,'externalModType',['client','server']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.addEventListener('click',()=>send('removeExternalMod',{path:mod.path}));row.append(remove);external.append(row)})}}
+function renderMods(state){const workspace=document.getElementById('workspaceMods');workspace.replaceChildren();const roles=Array.isArray(state.workspaceMods)?state.workspaceMods:(state.modTypes&&typeof state.modTypes==='object'?Object.keys(state.modTypes).sort().map(key=>({path:key,type:state.modTypes[key]})):[]);if(!roles.length){emptyNote(workspace,'No workspace mod found.')}else{workspace.className='';roles.forEach(entry=>{const row=document.createElement('div');row.className='item';row.append(modInfo(entry.path));addRoleSelect(row,entry.path,entry.type,'modType',['client','server','off']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.title='Stop launching this mod (sets it to Not Used)';remove.disabled=entry.type==='off';remove.addEventListener('click',()=>send('removeWorkspaceMod',{path:entry.path}));row.append(remove);workspace.append(row)})}
+ const external=document.getElementById('externalMods');external.replaceChildren();const entries=Array.isArray(state.externalMods)?state.externalMods:[];if(!entries.length){emptyNote(external,'No external mods configured.')}else{external.className='';entries.forEach(mod=>{const row=document.createElement('div');row.className='item';row.append(modInfo(mod.path)); addRoleSelect(row,mod.path,mod.type,'externalModType',['client','server','off']);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.addEventListener('click',()=>send('removeExternalMod',{path:mod.path}));row.append(remove);external.append(row)})}}
 function update(state){latestState=state;document.getElementById('project').textContent=state.projectRoot||'No project folder open';document.querySelectorAll('[data-setting]').forEach(input=>{if(document.activeElement!==input){const value=state.settings[input.dataset.setting];if(value!==undefined){if(input.type==='checkbox')input.checked=value;else input.value=value}}});populateHookEvents(state.hookEvents);if(!hookDirty)loadHook();const presentation=state.settings.hookPresentation||{};document.querySelectorAll('[data-hookpresentation]').forEach(select=>{const value=presentation[select.dataset.hookpresentation];if(value!==undefined&&document.activeElement!==select)select.value=String(value)});renderMods(state)}
 window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='error')setSaved('Error: '+message.message,'error');else if(message.type==='settingSaved')setSaved('Saved','ok');else if(message.type==='armaDirectoryBrowsed'){const input=document.querySelector('[data-setting="armaDirectory"]');if(input)input.value=message.value;setSaved('Arma folder used for this session','ok')}});
 send('refresh');
@@ -1033,15 +1056,16 @@ input::placeholder{color:var(--muted)}
 pre{margin:8px 0 0;padding:10px 11px;border:1px solid var(--line);border-radius:7px;font-family:var(--mono);font-size:.87em;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;background:var(--vscode-textCodeBlock-background);color:var(--vscode-foreground)}
 #result{max-height:260px;min-height:40px}
 #result:empty{display:none}
+#result.error,.watch-value.error{color:var(--vscode-errorForeground,var(--vscode-testing-iconFailed))}
 .result-wrap:has(#result:empty){display:none}
-#rpt{max-height:360px;min-height:140px;margin-top:6px}
+#rpt{max-height:360px;min-height:140px;margin-top:6px;white-space:pre;overflow-wrap:normal;overflow-x:auto}
 .pathline{font-family:var(--mono);font-size:.79em;color:var(--muted);overflow-wrap:anywhere}
 .list{display:flex;flex-direction:column;gap:2px;margin-top:10px}
 .item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid transparent;border-radius:7px}
 .item:hover{background:var(--vscode-list-hoverBackground);border-color:var(--line)}
 .item.watch{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) auto}
 .watch-expr{font-size:.85em;overflow-wrap:anywhere}
-.watch-value{font-size:.85em;color:var(--muted);overflow-wrap:anywhere}
+.watch-value{font-size:.8em;font-family:var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;padding:2px 6px;border-radius:4px;background:var(--vscode-textCodeBlock-background)}
 .empty{padding:14px;border:1px dashed var(--line);border-radius:7px;font-size:.85em;text-align:center;color:var(--muted)}
 .toggle{display:inline-flex;align-items:center;gap:9px;padding:4px 8px;border-radius:6px;font-size:.88em;cursor:pointer}
 .toggle:hover{background:var(--vscode-list-hoverBackground)}
@@ -1075,7 +1099,7 @@ pre{margin:8px 0 0;padding:10px 11px;border:1px solid var(--line);border-radius:
 
 <section class="card watch">
 <h2>Watch expressions</h2>
-<p class="hint">Reevaluated at the interval below while Arma is connected; values are Arma formatted text.</p>
+<p class="hint">Reevaluated at the interval below while Arma is connected; values are Arma formatted text. Up to 10 expressions.</p>
 <div class="inline"><input id="watchInput" placeholder="SQF expression, e.g. count allPlayers"><button id="addWatch" class="btn">Add</button></div>
 <label class="field"><span class="label">Update interval (milliseconds, minimum 100)</span><input data-setting="watchInterval" type="number" min="100" max="60000" step="100"></label>
 <div class="list" id="watches"></div>
@@ -1103,11 +1127,11 @@ document.querySelectorAll('[data-setting]').forEach(input=>input.addEventListene
 document.getElementById('execute').addEventListener('click',()=>send('execute',{code:document.getElementById('code').value}));
 document.getElementById('addWatch').addEventListener('click',()=>{const input=document.getElementById('watchInput');send('addWatch',{expression:input.value});input.value=''});
 document.getElementById('watchInput').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();document.getElementById('addWatch').click()}});
-function renderWatches(items){const container=document.getElementById('watches');const previous=new Map([...container.querySelectorAll('[data-watch]')].map(item=>[item.dataset.watch,item.textContent]));container.replaceChildren();if(!items.length){container.textContent='No watch expressions.';container.className='empty';return}container.className='';items.forEach(expression=>{const row=document.createElement('div');row.className='item watch';const label=document.createElement('div');label.className='watch-expr';label.textContent=expression;row.append(label);const value=document.createElement('div');value.className='watch-value';value.dataset.watch=expression;value.textContent=previous.get(expression)||'Waiting for first update...';row.append(value);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.addEventListener('click',()=>send('removeWatch',{expression}));row.append(remove);container.append(row)})}
+function renderWatches(items){const container=document.getElementById('watches');const existing=[...container.querySelectorAll('[data-watch]')];if(items.length>0&&existing.length===items.length&&items.every((expression,index)=>existing[index].dataset.watch===expression))return;const previous=new Map(existing.map(item=>[item.dataset.watch,{text:item.textContent,isError:item.classList.contains('error')} ]));container.replaceChildren();if(!items.length){container.textContent='No watch expressions.';container.className='empty';return}container.className='';items.forEach(expression=>{const row=document.createElement('div');row.className='item watch';const label=document.createElement('div');label.className='watch-expr';label.textContent=expression;row.append(label);const value=document.createElement('div');value.className='watch-value';value.dataset.watch=expression;const prior=previous.get(expression);value.textContent=prior?.text||'Waiting for first update...';value.classList.toggle('error',prior?.isError===true);row.append(value);const remove=document.createElement('button');remove.className='btn ghost small';remove.textContent='Remove';remove.addEventListener('click',()=>send('removeWatch',{expression}));row.append(remove);container.append(row)})}
 function update(state){if(!state)return;const targets=document.getElementById('targets');targets.textContent='SqfReloader API: '+(state.clientConnected?'ready':'offline');targets.dataset.state=state.clientConnected?'ready':'offline';document.getElementById('rptMonitoring').checked=state.rptMonitoring;document.querySelectorAll('[data-setting]').forEach(input=>{if(document.activeElement!==input){const value=state.settings[input.dataset.setting];if(value!==undefined)input.value=value}});renderWatches(state.watches);
  document.getElementById('rptFile').textContent=state.rptPath||'No RPT file found';document.getElementById('rpt').textContent=state.rptTail||'No RPT output yet';
 }
-window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='watchValues'){message.values.forEach(item=>{const value=[...document.querySelectorAll('[data-watch]')].find(element=>element.dataset.watch===item.expression);if(value)value.textContent=item.value})}else if(message.type==='execution'){document.getElementById('result').textContent=message.result}else if(message.type==='error'){document.getElementById('result').textContent='Error: '+message.message}});
+window.addEventListener('message',event=>{const message=event.data;if(message.type==='state')update(message);else if(message.type==='watchValues'){message.values.forEach(item=>{const value=[...document.querySelectorAll('[data-watch]')].find(element=>element.dataset.watch===item.expression);if(value){if(value.textContent!==item.value)value.textContent=item.value;value.classList.toggle('error',item.isError===true)}})}else if(message.type==='execution'){const result=document.getElementById('result');result.textContent=message.result;result.classList.toggle('error',message.isError===true)}else if(message.type==='error'){const result=document.getElementById('result');result.textContent='Error: '+message.message;result.classList.add('error')}});
 send('refresh');
 </script></body></html>`;
     }
@@ -1123,7 +1147,7 @@ function isModType(value: unknown): value is ModType {
 }
 
 function isExternalModType(value: unknown): value is ExternalModType {
-    return value === "client" || value === "server" || value === "both";
+    return value === "client" || value === "server" || value === "both" || value === "off";
 }
 
 function samePath(left: string, right: string): boolean {

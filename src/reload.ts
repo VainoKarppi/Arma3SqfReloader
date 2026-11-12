@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionTag, toArmaPath, toFunctionVariable } from "./arma";
 import { evalCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
-import { Settings, log, logError } from "./settings";
+import { Settings, log, logError, logInfo } from "./settings";
 import { workspaceAddons } from "./runtime";
 
 export interface ReloadOutcome {
@@ -70,11 +70,10 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
         }
 
         const originalArmaPath = `${path.basename(mission.directory)}\\${path.relative(mission.directory, document.fileName).replace(/[\\/]+/g, "\\")}`;
-        log(`Saved mission function ${document.fileName} -> ${missionFunction.variable}`);
-
         try {
             const snapshot = await writeMissionCompileSnapshot(mission.directory, document.fileName, document.getText(), settings);
             scheduleSnapshotCleanup(snapshot.directory);
+            logInfo(`Sending saved mission function ${document.fileName} -> ${missionFunction.variable} to the Arma API.`);
             const result = await evalCode(settings, missionCompileAssignment(missionFunction.variable, snapshot.armaPath, mission.multiplayer));
             if (mission.multiplayer && result.success && !hasWarnedMultiplayerRemoteExec) {
                 hasWarnedMultiplayerRemoteExec = true;
@@ -105,17 +104,17 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
     if (!variable) {
         // config.cpp / init / helpers are not functions: ask Arma to recompile this addon's
         // functions, which re-runs the cost of the changed file on next call.
-        log(`${path.basename(document.fileName)} is not a fn_*.sqf function; reloading the mod's functions instead.`);
+        logInfo(`${path.basename(document.fileName)} is not a fn_*.sqf function; falling back to a mod-wide reload.`);
         return reloadAll(settings, true);
     }
 
     const armaPath = toArmaPath(addon, document.fileName);
-    log(`Saved ${document.fileName} -> ${variable} (${armaPath})`);
 
     try {
         const snapshot = await writeCompileSnapshot(addon, document.fileName, document.getText(), settings);
         scheduleSnapshotCleanup(snapshot.directory);
         const code = compileAndBroadcastAssignment(variable, snapshot.armaPath);
+        logInfo(`Sending saved ${document.fileName} -> ${variable} (${armaPath}) to the Arma API.`);
         const result = await evalCode(settings, code);
 
         if (result.success && !hasWarnedMultiplayerRemoteExec) {
@@ -360,6 +359,7 @@ async function removeSnapshotRoot(snapshotRoot: string): Promise<void> {
 /** Calls the SQF reloader for every function of the mod (or all known functions with fallback). */
 export async function reloadAll(settings: Settings, silent = false): Promise<ReloadOutcome> {
     try {
+        logInfo("Requesting reload of all registered mod functions from the Arma API.");
         const result = await reloadEverything(settings);
 
         if (result.success) {

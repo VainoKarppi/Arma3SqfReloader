@@ -1,24 +1,35 @@
 {
   "name": "arma3-sqf-reloader",
   "displayName": "Arma 3 SQF Reloader",
-  "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader REST API. Creates mod junctions automatically.",
-  "version": "3.8.0",
-  "publisher": "Razer",
-  "icon": "sqfReloader_logo.png",
+  "description": "Hot-reloads SQF functions in a running Arma 3 (or Eden Editor) through the SqfReloader plugin. Also provides ability to run SQF code from the vscode editor.",
+  "version": "3.8.1",
+  "publisher": "VainoKarppi",
+  "icon": "./media/sqfReloader_logo_transparent.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/VainoKarppi/Arma3SqfReloader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VainoKarppi/Arma3SqfReloader/issues"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/VainoKarppi/Arma3SqfReloader",
+  "sponsor": {
+    "url": "https://buymeacoffee.com/VainoKarppi"
   },
   "engines": {
     "vscode": "^1.99.0"
   },
   "categories": [
+    "Debuggers",
+    "Programming Languages",
+    "Linters",
+    "AI",
+    "Testing",
     "Other"
   ],
   "activationEvents": [
-    "onView:sqfReloader.projectView",
     "onStartupFinished",
-    "onCommand:sqfReloader.createExample",
     "workspaceContains:**/*.sqf",
     "workspaceContains:**/addons/**"
   ],
@@ -28,7 +39,7 @@
       "activitybar": [
         {
           "id": "sqfReloader",
-          "title": "Arma 3",
+          "title": "Arma 3 SqfReloader",
           "icon": "media/arma.svg"
         }
       ]
@@ -38,6 +49,7 @@
         {
           "id": "sqfReloader.projectView",
           "name": "Arma Project",
+          "icon": "media/arma.svg",
           "type": "webview"
         }
       ]
@@ -90,6 +102,10 @@
         "title": "SqfReloader: Run in Arma With Parameters"
       },
       {
+        "command": "sqfReloader.seeReferences",
+        "title": "SqfReloader: See references"
+      },
+      {
         "command": "sqfReloader.openInEden",
         "title": "SqfReloader: Open in Eden"
       },
@@ -114,10 +130,6 @@
         "title": "Arma 3: Set folder as Server Mod"
       },
       {
-        "command": "sqfReloader.setSharedMod",
-        "title": "Arma 3: Set folder as Shared Mod"
-      },
-      {
         "command": "sqfReloader.clearModType",
         "title": "Arma 3: Clear Mod Type"
       },
@@ -136,6 +148,10 @@
       {
         "command": "sqfReloader.toggleAutoReload",
         "title": "SqfReloader: Toggle reload on save"
+      },
+      {
+        "command": "sqfReloader.hemttCheck",
+        "title": "SqfReloader: Run HEMTT check"
       }
     ],
     "languageModelTools": [
@@ -150,7 +166,12 @@
           "properties": {
             "action": {
               "type": "string",
-              "enum": ["context", "status", "eval", "rpt"],
+              "enum": [
+                "context",
+                "status",
+                "eval",
+                "rpt"
+              ],
               "description": "Use context first for live session details, status for connectivity, eval to execute SQF, and rpt to read the current Arma script log."
             },
             "code": {
@@ -159,8 +180,12 @@
               "description": "SQF expression or statements to execute when action is eval."
             }
           },
-          "required": ["action"],
-          "additionalProperties": false
+          "required": [
+            "action"
+          ],
+          "additionalProperties": {
+            "not": {}
+          }
         }
       }
     ],
@@ -187,6 +212,18 @@
         {
           "command": "sqfReloader.runFileWithParameters",
           "when": "resourceExtname == .sqf"
+        },
+        {
+          "command": "sqfReloader.setClientMod",
+          "when": "false"
+        },
+        {
+          "command": "sqfReloader.setServerMod",
+          "when": "false"
+        },
+        {
+          "command": "sqfReloader.clearModType",
+          "when": "false"
         }
       ],
       "editor/context": [
@@ -214,6 +251,11 @@
           "command": "sqfReloader.runFileWithParameters",
           "when": "resourceExtname == .sqf",
           "group": "sqfReloader@2"
+        },
+        {
+          "command": "sqfReloader.seeReferences",
+          "when": "resourceExtname == .sqf",
+          "group": "sqfReloader@3"
         }
       ],
       "explorer/context": [
@@ -238,8 +280,8 @@
           "group": "sqfReloader@1"
         },
         {
-          "command": "sqfReloader.setup",
-          "when": "explorerResourceIsFolder",
+          "command": "sqfReloader.seeReferences",
+          "when": "resourceExtname == .sqf",
           "group": "sqfReloader@1"
         },
         {
@@ -249,11 +291,6 @@
         },
         {
           "command": "sqfReloader.setServerMod",
-          "when": "explorerResourceIsFolder",
-          "group": "sqfReloader@2"
-        },
-        {
-          "command": "sqfReloader.setSharedMod",
           "when": "explorerResourceIsFolder",
           "group": "sqfReloader@2"
         },
@@ -278,6 +315,58 @@
           "default": "",
           "scope": "application",
           "description": "Optional global Arma 3 Tools install directory (or full path to AddonBuilder.exe). When set, this path is used instead of registry discovery."
+        },
+        "sqfReloader.functionLinks": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Resolve Arma function names (e.g. TAG_fnc_myFunction) in .sqf files: Ctrl+click opens the matching fn_myFunction.sqf, and hovering shows its header documentation (description, parameters, returns)."
+        },
+        "sqfReloader.globalVariableLinks": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Resolve global variables in .sqf files (e.g. TAG_myVariable): jump to their definition across the workspace. Hovering lists the definitions with their code."
+        },
+        "sqfReloader.localVariableLinks": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Resolve file-local variables in .sqf files (private _myValue = ..., _myValue2 = ... and params entries): jump to their definition in the open file. Hovering lists the definitions with their code."
+        },
+        "sqfReloader.hemtt.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "markdownDescription": "Run `hemtt check` for every HEMTT project in the workspace (any folder containing `.hemtt/project.toml`) and show its errors and warnings in the Problems panel. Requires the `hemtt` command to be installed."
+        },
+        "sqfReloader.hemtt.interval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "scope": "window",
+          "markdownDescription": "Seconds between automatic `hemtt check` runs."
+        },
+        "sqfReloader.hemtt.onSave": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "markdownDescription": "Run `hemtt check` for the project that contains a saved `.sqf`, `.cpp`, `.hpp`, `.cfg`, `.sqm` or `.toml` file."
+        },
+        "sqfReloader.hemtt.lints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "window",
+          "markdownDescription": "Explicit lints passed to `hemtt check` as `-L <lint>` (for example `s01-invalid-command`). Empty runs only the lints enabled by the project config."
+        },
+        "sqfReloader.hemtt.executable": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "markdownDescription": "Full path to `hemtt`/`hemtt.exe`. Leave empty to use the `hemtt` command from `PATH`."
         }
       }
     }
@@ -286,12 +375,12 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile",
-    "package": "vsce package"
+    "package": "vsce package --readme-path README-MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
-    "@vscode/vsce": "^4.0.0",
+    "@vscode/vsce": "^4.1.0",
     "typescript": "^5.5.0"
   }
 }

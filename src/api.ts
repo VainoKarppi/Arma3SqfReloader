@@ -62,7 +62,7 @@ export function request(settings: Settings, method: "GET" | "POST", route: strin
             if (error instanceof ApiError) {
                 reject(error);
             } else if ((error as NodeJS.ErrnoException).code === "ECONNREFUSED") {
-                reject(new ApiError(`SqfReloader is not listening on ${settings.apiUrl}. Start Arma 3 with the @SqfReloader mod and run [] call SqfReloader_fnc_apiStart;`));
+                reject(new ApiError(`SqfReloader is not listening on ${settings.apiUrl}. Start Arma 3 with the @SqfReloader mod.`));
             } else {
                 reject(new ApiError(error.message, error));
             }

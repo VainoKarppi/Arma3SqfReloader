@@ -4,32 +4,37 @@ Edit SQF in VS Code and reload it in a running Arma 3 session when you save. The
 starts Arma with your mod and SqfReloader, links your addon files for file patching, and sends
 changed function names to the game.
 
+### Support development
+If you find SqfReloader useful, consider supporting its development:
+
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support%20my%20work-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=000000)](https://buymeacoffee.com/vainokarppi)
+
 ## How it works
 
 ```text
   VS CODE                                             ARMA 3
-┌──────────────────┐                      ┌──────────────────────────────┐
-│ Play             │ ── launch game ─────▶│ Arma 3 + your mod +          │
-└──────────────────┘                      │ @SqfReloader                 │
-                                          └──────────────┬───────────────┘
-                                                         │ API starts and
-                                                         │ game callback connects
-                                                         ▼
+┌──────────────────┐                     ┌──────────────────────────────┐
+│ Play             │ ── launch game ────>│ Arma 3 + dev mod(s) +        │
+└──────────────────┘                     │ @SqfReloader                 │
+                                         └──────────────┬───────────────┘
+                                                        │ API starts and
+                                                        │ game callback connects
+                                                        ▼
 ┌──────────────────┐   POST function     ┌──────────────────────────────┐
-│ Save fn_name.sqf │ ── name on save ───▶│ SqfReloader local API         │
-└──────────────────┘                    └──────────────┬───────────────┘
+│ Save fn_name.sqf │ ── name on save ──> │ SqfReloader local API        │
+└──────────────────┘                     └──────────────┬───────────────┘
          ▲                                              │
          │                                              ▼
-         │                                  ┌──────────────────────────────┐
-         │                                  │ Compile from z\tag\addons\  │
-         │                                  │ addon\functions\fn_name.sqf │
-         │                                  └──────────────┬───────────────┘
-         │                                                 │
-         │                                                 ▼
-         │                                  ┌──────────────────────────────┐
-         └──── next call uses new code ────│ missionNamespace             │
-                                            │ TAG_fnc_name                 │
-                                            └──────────────────────────────┘
+         │                                ┌──────────────────────────────┐
+         │                                │ Compile from z\tag\addons\   │
+         │                                │ addon\functions\fn_name.sqf  │
+         │                                └──────────────┬───────────────┘
+         │                                               │
+         │                                               ▼
+         │                                ┌──────────────────────────────┐
+         └─── next call uses new code ─── │ missionNamespace             │
+                                          │ TAG_fnc_name                 │
+                                          └──────────────────────────────┘
 
   At startup, workspace functions are injected when the game callback is ready.
 ```
@@ -54,12 +59,18 @@ those separately.
 5. In Arma’s debug console, run `[] call example_fnc_hello;` to check the updated function.
 
 The example includes `@ExampleMod`, an addon under `addons/scripts` with three example functions
-and the reload receiver, plus optional test missions. It also creates `server-example/` with a
-dedicated server configuration, server-side mod, and multiplayer mission.
+and optional test missions. It also creates `server-example/` with a dedicated server
+configuration, server-side mod, and multiplayer mission. The editable client and server templates
+used by the command are in `examples/armaExamples/client-example` and
+`examples/armaExamples/server-example`.
 
-The generated example mod is located at `@ExampleMod/addons/scripts`. The server mod and related
-configuration and mission files are generated inside `server-example/`.
-The generated test missions in `mpmissions/example.Altis` and `missions/example.Altis` include
+The example mod is located at `@ExampleMod/addons/scripts`; its editable source is in
+`examples/armaExamples/client-example/@ExampleMod`. The server mod and related configuration and
+mission files are copied to `server-example/`. Editable single-player and multiplayer test
+missions are in `examples/armaExamples/client-example/missions/example.Altis` and
+`examples/armaExamples/client-example/mpmissions/example.Altis`, and the default project settings
+are in `examples/armaExamples/client-example/.vscode/sqfReloader-settings.json`. The copied test
+missions include
 their own `init.sqf`, `initServer.sqf`, `initPlayerLocal.sqf`, `initPlayerServer.sqf`, respawn,
 and CfgFunctions preInit/postInit examples. The MP mission additionally includes a remote-exec
 callback example and working `OnPlayerKilled.sqf` / `OnPlayerRespawn.sqf` scripts configured
@@ -92,12 +103,14 @@ dedicated server no longer load the same PBOs twice.
 
 Mods the extension discovers in the workspace are listed in the project settings panel with their
 launch role, so a folder it picked up on its own is always visible. Creating the project settings
-writes every discovered mod as **Not used** (`"off"` in `modTypes`), so a new project
-never launches a folder that was not opted into. The panel offers **Client**, **Server**, and
-**Not used** only; a folder marked **Shared Mod** (or left unclassified) in the Explorer behaves
-like a client mod and is shown as Client there. **Remove** in the same list sets a mod back to Not
-used, which keeps it out of `-mod=`/`-serverMod=` entirely, for example an unpacked server source
-tree that Arma itself reports as `GAME DIR (Empty)`.
+writes every discovered mod as **Not Used** (`"off"` in `modTypes`), so a new project
+never launches a folder that was not opted into. The panel offers **Client Mod**, **Server Mod**,
+and **Not Used**; a folder marked **Shared Mod** (or left unclassified) in the Explorer behaves
+like a client mod and is shown as Client Mod there. External local or Steam Workshop mods can also
+be set to **Not Used**, which keeps them configured but excludes them from `-mod=` and
+`-serverMod=`. **Remove** in the workspace-mod list sets a mod back to Not Used, which keeps it out
+of those launch lists entirely, for example an unpacked server source tree that Arma itself reports
+as `GAME DIR (Empty)`.
 
 Workspace missions are junctioned into both the selected profile and the Arma installation's
 `Missions` / `MPMissions` folders, so dedicated servers can resolve mission directories without
@@ -212,7 +225,8 @@ open and can be paused with its checkbox. Execution and watches always go to the
 that owns the SqfReloader API (the local game); there is no target selector. The API accepts
 arbitrary SQF execution; never expose it to an untrusted network.
 Watch expressions are refreshed every 1000 ms by default (configurable from 1000 to 60000 ms) and
-are evaluated in one SQF batch by `SqfReloader_fnc_evalWatch`.
+are evaluated in one SQF batch by `SqfReloader_fnc_evalWatch`. Up to 10 expressions can be watched
+at a time.
 
 ## Commands
 
@@ -225,6 +239,7 @@ are evaluated in one SQF batch by `SqfReloader_fnc_evalWatch`.
 | **SqfReloader: Reload all functions** | Reload workspace functions. |
 | **SqfReloader: Toggle reload on save** | Turn automatic reload on or off. |
 | **SqfReloader: Show output** | Open extension logs and Arma error messages. |
+| **SqfReloader: See references** | Right-click a function `.sqf` file in the Explorer (or anywhere in its editor) to list every place it is called from. Shift+F12 / Shift+Alt+F12 also work: on a `TAG_fnc_name` they list that function's call sites, and inside a `fn_*.sqf` file they list the file's own.
 
 Other commands set up mods, remove extension-created links, open the Arma folder, and create the
 example project.
@@ -298,8 +313,61 @@ server-side timeout.
 ## Settings
 
 Project settings live in the workspace's `.vscode/sqfReloader-settings.json`. Keys missing from
-that file use the built-in defaults below; VS Code `settings.json` is not read or written. The
-file is validated against a JSON schema, so the editor completes and documents its keys.
+that file use the built-in defaults below. The file is validated against a JSON schema, so the
+editor completes and documents its keys. Three user-level options are read from VS Code's
+`settings.json` instead: `sqfReloader.arma3ToolsDirectory` (see above),
+`sqfReloader.functionLinks`, `sqfReloader.globalVariableLinks` and
+`sqfReloader.localVariableLinks` (all default `true`). Nothing is written to `settings.json`.
+`sqfReloader.localVariableLinks` is scoped to `resource`, so it can also be set per workspace
+folder.
+
+### HEMTT checks
+
+When the `hemtt` command is installed, the extension runs `hemtt check` for every HEMTT project in
+the workspace — any folder containing `.hemtt/project.toml`, including nested ones — and publishes
+the results to the Problems panel as errors and warnings on the reported file, line and column. The
+diagnostics are read from `.hemttout/ci_annotations.txt`, the file HEMTT writes for GitHub Actions,
+so the editor shows exactly what CI would. These options are read from VS Code's `settings.json`,
+so they can be set for the user or for the workspace:
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `sqfReloader.hemtt.enabled` | `true` | Run `hemtt check` in the background. |
+| `sqfReloader.hemtt.interval` | `5` | Seconds between automatic runs. |
+| `sqfReloader.hemtt.onSave` | `true` | Re-run the check for the project that contains a saved `.sqf`, `.cpp`, `.hpp`, `.cfg`, `.sqm` or `.toml` file. |
+| `sqfReloader.hemtt.lints` | `[]` | Extra lints, each passed as `-L <lint>` (e.g. `s01-invalid-command`). |
+| `sqfReloader.hemtt.executable` | `""` | Path to `hemtt`/`hemtt.exe` when it is not on `PATH`. |
+
+**SqfReloader: Run HEMTT check** runs it immediately.
+
+`sqfReloader.functionLinks` resolves `TAG_fnc_name` in `.sqf` files: Ctrl+click opens the matching
+`fn_name.sqf`, and hovering shows the function's header documentation (description, parameters,
+returns) or, when the file has no header, its `params` as a small aligned SQF block listing Name,
+Default and Type (e.g. `_target  [0, 0, 0]  ARRAY or OBJECT`), or its `_this select` / `_this #`
+interface. Only top-level statements count, so a `params` inside a `{ ... }` block (an event
+handler, for example) is ignored.
+
+`sqfReloader.globalVariableLinks` resolves global variables, i.e. any tagged name that is not a `fnc`
+function (`EOEX_var_test`, `EOEX_test2`, ...). A definition is an assignment (`EOEX_var_test =
+true;`) or `missionNamespace setVariable ["EOEX_var_test", value]`. Ctrl+click on a usage
+(`if (EOEX_var_test)`, `getVariable "EOEX_var_test"`, `getVariable ["EOEX_var_test", true]`,
+`isNil "EOEX_var_test"`) jumps to the definition; when a variable is defined in several places,
+Ctrl+click lists them all with the defining line so you can pick one. Comments and strings never
+count as definitions. Only the mission namespace is tracked — `uiNamespace`/`profileNamespace`
+variables are not resolved.
+
+`sqfReloader.localVariableLinks` resolves file-local names (`private _test = ...`, `_test2 = ...`)
+and `params` entries (`params ["_myValue"]`) inside the file you have open. Only that one document is scanned, on
+demand and cached per document version, so an unsaved edit is picked up immediately and nothing is
+indexed from files you have not opened. Because locals are never resolved across files, a value
+passed with `[_data] call ANOTHER_FILE` is not resolvable inside `ANOTHER_FILE`.
+
+Local resolution follows SQF scope rules: every `{ ... }` block is its own scope, so a
+`private _clientId = _x;` inside one `forEach` block is not a definition for a same-named variable
+in a sibling block. The nearest enclosing scope that declares the name wins (shadowing), and only
+declarations above the usage count, because SQF runs top to bottom. Recognized declarations are
+`private _x = ...`, plain `_x = ...`, `private ["_a", "_b"];`, `private "_c";`,
+`private _one = param [0, 1];`, and `params [...];` (which is scoped to its own block).
 Automatic reload on save only runs for supported source files inside a VS Code workspace root that
 contains `.vscode/sqfReloader-settings.json`. Saves outside that configured project are ignored and
 do not send commands or reload requests to Arma. Use the explicit SqfReloader reload commands when

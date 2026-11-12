@@ -7,39 +7,6 @@ Arma 3 game or the Eden Editor over a local REST API.
 The C# side was written from scratch; the SQF side only mirrors the message flow of
 EdenOnline's scripts (extension call -> callback -> dispatch), it shares no code.
 
-## Endpoints
-
-| Method | Route | Body |
-| --- | --- | --- |
-| POST | `/api/command` | `{"type":"code"\|"recompile","code":"...","method":"..."}` (EdenOnline compatible) |
-| POST | `/api/send` | `{"function":"MyEvent","data":[...]}` - calls the SQF handler registered for `MyEvent` |
-| POST | `/api/eval` | `{"code":"systemChat 'hi'"}` - runs code inside Arma |
-| POST | `/api/reload` | `{"functions":["MyTag_fnc_one"]}` or `{}` - recompiles `fn_*.sqf` from disk |
-| POST | `/api/source` | `{"directory":"...\\@SqfReloader\\source"}` - points the DLL at the SQF sources |
-| POST | `/api/log` | `{"level":"debug"}` |
-| GET | `/api` | documentation page in a browser, status JSON otherwise |
-| GET | `/api/docs` | documentation page |
-| GET | `/api/status` | - |
-| GET | `/api/functions` | - |
-
-Default endpoint: `http://127.0.0.1:8764/api/` (config: `%LOCALAPPDATA%\SqfReloader\config.json`).
-Opening that URL in a browser shows the generated API documentation; scripts that do not send an
-HTML `Accept` header keep receiving the status JSON.
-
-## Quick start
-
-1. Run `tools\install.ps1` (right click -> *Run with PowerShell*):
-   builds the DLL, packs the mod, installs `@SqfReloader`, writes the REST config and
-   offers to add `-mod="@SqfReloader"` to the Steam launch options.
-2. Start Arma 3 / Eden Editor with `@SqfReloader` enabled. No launch parameter is needed: the mod
-   starts the API from its own `Cfg3DEN >> EventHandlers >> init`.
-3. In the editor open *Tools > SqfReloader: Status*, or call
-   `[] call SqfReloader_fnc_apiStart;` from a script.
-
-```powershell
-curl.exe -s http://127.0.0.1:8764/api/status
-curl.exe -s -X POST http://127.0.0.1:8764/api/eval -H "Content-Type: application/json" -d "{\"code\":\"systemChat 'from REST'\"}"
-```
 
 ## Layout
 
@@ -133,14 +100,7 @@ private _async = ["FunctionIndex", [] , 5] call SqfReloader_fnc_callAsync;  // [
 
 ### Reloading other mods' functions
 
-Every custom function declared in `CfgFunctions` is available for recompile without a separate
-allowlist in `CfgPatches`.
-
-or push single functions through the API:
-
-```powershell
-curl.exe -s -X POST http://127.0.0.1:8764/api/reload -H "Content-Type: application/json" -d "{\"functions\":[\"MyTag_fnc_one\"]}"
-```
+Every custom function declared in `CfgFunctions` is available for recompile without a separate allowlist in `CfgPatches`.
 
 `TAG_fnc_name` is resolved in `\z\<tag>\addons\<tag>\source\fn_name.sqf`,
 `\z\<tag>\addons\<tag>\functions\fn_name.sqf`, `\x\<tag>\addons\...` and unpacked
@@ -152,10 +112,6 @@ curl.exe -s -X POST http://127.0.0.1:8764/api/reload -H "Content-Type: applicati
 // once, at mission start
 ["MyEvent"] call SqfReloader_fnc_send;
 missionNamespace setVariable ["SqfReloader_var_handler_MyEvent", { params ["_a"]; diag_log _a }];
-```
-
-```powershell
-curl.exe -s -X POST http://127.0.0.1:8764/api/send -H "Content-Type: application/json" -d "{\"function\":\"MyEvent\",\"data\":[1,\"two\",[3,4],true,nil]}"
 ```
 
 ## Protocol notes

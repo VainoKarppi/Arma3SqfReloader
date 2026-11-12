@@ -1,4 +1,5 @@
 ﻿**/*.vsix
+*.zip
 
 # Dependencies
 node_modules/

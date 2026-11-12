@@ -262,6 +262,16 @@ export function log(message: string): void {
     mirrorToTestOutput(`LOG ${message}`);
 }
 
+export function logInfo(message: string): void {
+    const level = configuredLogLevel();
+    if (level === "error" || level === "warning") {
+        return;
+    }
+
+    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+    mirrorToTestOutput(`LOG INFO: ${message}`);
+}
+
 export function logError(message: string, error: unknown): void {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
     if (configuredLogLevel() !== "error") {

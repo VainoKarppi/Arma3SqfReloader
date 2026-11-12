@@ -15,9 +15,12 @@
     "clearArmaMissionArtifacts": true,
     "logLevel": "info",
     "watchInterval": 1000,
-    "watchExpressions": [],
+    "watchExpressions": [
+        "allPlayers",
+        "all3DENEntities"
+    ],
     "modTypes": {
-        "server-mod/@ExampleServerMod": "off",
+        "server-example/@ExampleServerMod": "off",
         "SqfReloaderExtension/@SqfReloader": "off"
     },
     "externalMods": [],
@@ -27,5 +30,6 @@
         "reveal": "always",
         "focus": false,
         "panel": "shared"
-    }
+    },
+    "deletedFunctionBehavior": "keep"
 }
