@@ -16,8 +16,12 @@ editable example projects under `examples/armaExamples/`. Windows only.
    - `src/settings.ts` — settings model; `src/projectSettings.ts` — `.vscode/sqfReloader-settings.json`.
    - `src/arma.ts` + `src/armaDetect.ts` — mod/mission/CfgFunctions discovery, Arma install lookup.
    - `src/launcher.ts` + `src/launchArgs.ts` — processes, RPT monitor, Steam, command line.
+   - `src/dllIntegrity.ts` — Smart App Control / code-integrity blocks on the bundled DLL
+     (loader status `0xC0E90002`, Arma's "Bad Image" dialog), checked before a launch.
    - `src/reload.ts` — compile/reload, snapshots, mission restart.
    - `src/junctions.ts`, `src/runtime.ts`, `src/pbo.ts` — linking, `@SqfReloader` deployment, PBO staging.
+   - `src/status.ts` — status bar state machine; `src/diagnostics.ts` — the support report written
+     by "SqfReloader: Create diagnostic report" (redacts personal data before writing).
    - `src/projectView.ts` + `src/projectViewHtml.ts` — the Arma Project panel and its webviews.
    - `src/tutorial.ts` — guided tour steps, progress (`workspaceState`) and README deep links.
    - `src/workspaceHelpers.ts` — workspace/mod/mission queries; `src/missionRecompile.ts` — enabling
@@ -64,9 +68,27 @@ npm run verify                           # version gate + links + tour/cache + H
 node scripts/verify-links.js             # junctions: broken-link repair, mission registration, cleanup
 node scripts/verify-tutorial.js          # guided tour state machine + project-settings cache
 node scripts/verify-hemtt-shim.js        # .cmd/.bat executable resolution
+node scripts/verify-excluded-folders.js  # excludedFolders: discovery, duplicate check, missions
+node scripts/verify-duplicate-diagnostics.js  # stale duplicate-function markers clear themselves
+node scripts/verify-detached-launch.js    # Arma survives a window reload; API port adoption
+node scripts/verify-rename.js            # F2 rename: globals across files, locals per scope
+node scripts/verify-diagnostics.js       # diagnostic report redaction + one real collection run
+node scripts/verify-dll-integrity.js     # Smart App Control / Bad Image preflight (0xC0E90002)
 npx --no-install @vscode/vsce ls         # packaged file list: no orphans, no dev files
 hemtt check                              # inside a generated ClientMod/@ExampleMod or ServerMod/@ExampleServerMod
 ```
+
+`build-all.ps1` uses a signing certificate by default: `-SignThumbprint` / `-SignPfx` /
+`-SignMetadata`, else the `SQFRELOADER_SIGN_*` environment variables, else the newest code-signing
+certificate in the current user's store — and it **stops before building** when there is none.
+After the native build it always runs `checkSignature.ps1` on
+`dist\@SqfReloader\SqfReloader_x64.dll` and fails unless the signature is valid, so an unsigned DLL
+can never be packaged. `-NoSignature` builds unsigned and only prints the check.
+
+`SqfReloaderExtension\tools\checkSignature.ps1 <dll|folder>` reports what Windows, Smart App
+Control and BattlEye look at: status (`Valid` / `NotSigned` / untrusted chain), signer and issuer,
+chain root (with a warning for a self-signed certificate), RFC 3161 timestamp and the
+Mark-of-the-Web. Exit code 0 only when every checked file verifies.
 
 [TESTING.md](./TESTING.md) is the manual checklist (tour, stop-own-instance, idle polling, HEMTT
 shim) for anything that needs a real game.

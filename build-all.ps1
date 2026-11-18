@@ -39,6 +39,23 @@
 .PARAMETER SkipVsce
     Only compile the TypeScript (useful when vsce is not installed).
 
+.PARAMETER SignThumbprint
+    Authenticode-sign the DLL with this certificate from the current user's store.
+
+.PARAMETER SignPfx
+    Authenticode-sign the DLL with a .pfx file (password: -SignPfxPassword or
+    $env:SQFRELOADER_SIGN_PFX_PASSWORD).
+
+.PARAMETER SignMetadata
+    Authenticode-sign the DLL through Microsoft Trusted Signing (metadata .json path).
+
+.PARAMETER SignTimestampUrl
+    RFC 3161 timestamp server (default http://timestamp.digicert.com).
+
+.PARAMETER NoSignature
+    Build without an Authenticode signature: no certificate is looked up, and the mandatory
+    signature check is only reported, not enforced. The check output is printed either way.
+
 .PARAMETER Clean
     Rebuild the DLL from scratch and delete the previous .vsix files.
 
@@ -60,6 +77,12 @@ param(
     [switch]$InstallArma,
     [string]$ArmaDir = "",
     [string]$AddonBuilder = "",
+    [string]$SignThumbprint = "",
+    [string]$SignPfx = "",
+    [string]$SignPfxPassword = "",
+    [string]$SignMetadata = "",
+    [string]$SignTimestampUrl = "http://timestamp.digicert.com",
+    [switch]$NoSignature,
     [switch]$SkipVsce,
     [switch]$Clean
 )
@@ -121,6 +144,42 @@ function Invoke-Native {
 
 . (Join-Path $extensionDir "tools\Common.ps1")
 
+# ---------------------------------------------------------------------------
+# 0a. Signing certificate
+#    A release build signs SqfReloader_x64.dll: Smart App Control and BattlEye refuse unsigned
+#    extensions. The certificate comes from -SignThumbprint / -SignPfx / -SignMetadata, the
+#    SQFRELOADER_SIGN_* environment variables, or the newest code-signing certificate in the
+#    current user's store. -NoSignature builds without it and only reports the check below.
+# ---------------------------------------------------------------------------
+
+if (!$SignThumbprint -and !$SignPfx -and !$SignMetadata) {
+    $SignThumbprint = $env:SQFRELOADER_SIGN_THUMBPRINT
+    $SignPfx = $env:SQFRELOADER_SIGN_PFX
+    $SignMetadata = $env:SQFRELOADER_SIGN_METADATA
+}
+
+if (!$SignThumbprint -and !$SignPfx -and !$SignMetadata -and !$NoSignature) {
+    $certificate = Find-CodeSigningCertificate
+    if ($certificate) {
+        $SignThumbprint = $certificate.Thumbprint
+        Write-Step "Signing with $($certificate.Subject)"
+        Write-Host "    expires $($certificate.NotAfter.ToString('yyyy-MM-dd')), thumbprint $SignThumbprint" -ForegroundColor Gray
+    }
+}
+
+$signingRequested = [bool]($SignThumbprint -or $SignPfx -or $SignMetadata)
+
+if (!$signingRequested -and !$NoSignature) {
+    throw ("No code-signing certificate found, and a release build must sign $dllName (Smart App Control " +
+        "and BattlEye refuse unsigned extensions). Install a code-signing certificate, pass " +
+        "-SignThumbprint <thumbprint> / -SignPfx <file> / -SignMetadata <json>, set " +
+        "SQFRELOADER_SIGN_THUMBPRINT, or use -NoSignature to build unsigned.")
+}
+
+if (!$signingRequested) {
+    Write-Step "Building without an Authenticode signature (-NoSignature)"
+}
+
 if ($Version) {
     if ($Version -notmatch '^\d+\.\d+\.\d+$') {
         throw "-Version needs three numbers like 2.3.0 (got '$Version')."
@@ -158,9 +217,38 @@ Write-Step "Building the SqfReloader extension and mod"
 $buildArgs = @("-File", (Join-Path $extensionDir "tools\build.ps1"), "-Release", "-NoVersionBump")
 if ($Clean) { $buildArgs += "-Clean" }
 if ($AddonBuilder) { $buildArgs += @("-AddonBuilder", $AddonBuilder) }
+if ($SignThumbprint) { $buildArgs += @("-SignThumbprint", $SignThumbprint) }
+if ($SignPfx) { $buildArgs += @("-SignPfx", $SignPfx) }
+if ($SignPfxPassword) { $buildArgs += @("-SignPfxPassword", $SignPfxPassword) }
+if ($SignMetadata) { $buildArgs += @("-SignMetadata", $SignMetadata) }
+if ($SignTimestampUrl) { $buildArgs += @("-SignTimestampUrl", $SignTimestampUrl) }
 
 Invoke-Native -FilePath "powershell" -Arguments (@("-NoProfile", "-ExecutionPolicy", "Bypass") + $buildArgs)
 Write-Ok "SqfReloader_x64.dll and @SqfReloader built"
+
+# ---------------------------------------------------------------------------
+# 1b. Signature check
+#    Always printed, signed or not. Without -NoSignature an unsigned DLL fails the build here,
+#    so an unsigned extension can never reach the .vsix.
+# ---------------------------------------------------------------------------
+
+$distDll = Join-Path $extensionDir "dist\@SqfReloader\$dllName"
+$checkSignature = Join-Path $extensionDir "tools\checkSignature.ps1"
+
+Write-Step "Checking the Authenticode signature of the built DLL"
+
+# Called (not dot-sourced), so its `exit` only ends the check and leaves $LASTEXITCODE.
+& $checkSignature $distDll
+
+if ($LASTEXITCODE -ne 0) {
+    if ($NoSignature) {
+        Write-Host "    -NoSignature: continuing even though the DLL is not signed." -ForegroundColor Yellow
+    }
+    else {
+        throw ("$dllName is not signed ($distDll). Smart App Control and BattlEye refuse unsigned " +
+            "extensions; fix the signing certificate, or build with -NoSignature to skip this check.")
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 2. Runtime shipped inside the VSIX: the complete @SqfReloader mod

@@ -5,8 +5,10 @@ import { findMods, findMissions, Mod, normalizePrefix, readAddon, Addon, toArmaP
 import { createLinks, addonLinkPath, linkMissions, removeModInZLink } from "./junctions";
 import { DEFAULT_HOST, findFreePort } from "./ports";
 import { modFoldersOnce } from "./launchMods";
+import { clearMarkOfTheWeb } from "./dllIntegrity";
 import { log, Settings } from "./settings";
 import { ArmaProfileSelection, selectArmaProfile } from "./profile";
+import { isExcludedPath } from "./excludedFolders";
 
 /**
  * Everything the extension needs at runtime ships inside the .vsix (vscode-runtime/):
@@ -114,7 +116,15 @@ export function prepareRuntime(runtime: Runtime, armaDirectory: string, settings
         // The DLL has to be in the MOD ROOT: a dll\\ subfolder is not searched by Arma.
         const dll = path.join(runtime.modDirectory, "SqfReloader_x64.dll");
         if (fs.existsSync(dll)) {
-            syncFile(dll, path.join(bundledMod, "SqfReloader_x64.dll"));
+            const deployedDll = path.join(bundledMod, "SqfReloader_x64.dll");
+            syncFile(dll, deployedDll);
+
+            // A copy keeps the source's alternate data streams, so a DLL that arrived in a
+            // downloaded .vsix stays marked as "from the internet"; Smart App Control then
+            // refuses to load it (0xC0E90002) while a DLL built on this machine loads fine.
+            if (clearMarkOfTheWeb(deployedDll)) {
+                log(`Removed the Mark-of-the-Web from ${deployedDll} (Smart App Control rejects unsigned DLLs marked as downloaded).`);
+            }
         } else {
             warnings.push(`SqfReloader_x64.dll is missing in ${runtime.modDirectory}.`);
         }
@@ -347,6 +357,40 @@ export function workspaceAddons(): Addon[] {
 }
 
 /**
+ * `%LOCALAPPDATA%\SqfReloader`, where the API's config.json lives.
+ */
+export function apiConfigDirectory(): string {
+    return path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
+}
+
+/**
+ * Adopts the port the last launch wrote to config.json.
+ *
+ * A VS Code window reload restarts the extension host, which forgets the port that was picked
+ * when 8764 was taken. The Arma instance keeps running and keeps listening on that port, so the
+ * new window has to follow the written config instead of the configured default.
+ */
+export function adoptConfiguredApiPort(): number | undefined {
+    try {
+        const parsed: unknown = JSON.parse(fs.readFileSync(path.join(apiConfigDirectory(), "config.json"), "utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+
+        const port = Number((parsed as Record<string, unknown>).port);
+        if (!Number.isFinite(port) || port <= 0 || port > 65535) return undefined;
+
+        if (activePort !== port) {
+            activePort = port;
+            log(`Using the API port from the last launch: ${port}.`);
+        }
+
+        return port;
+    } catch {
+        // No previous launch, or an unreadable config: the configured port applies.
+        return undefined;
+    }
+}
+
+/**
  * Writes %LOCALAPPDATA%\SqfReloader\config.json, which the DLL reads when the API starts.
  *
  * One port is used by every Arma instance (client, editor, hosted mission, dedicated server), so
@@ -363,7 +407,7 @@ export function workspaceAddons(): Addon[] {
  * `probe` skips the check while Arma is running: the game itself holds the port then.
  */
 export async function writeApiConfig(settings: Settings, probe = true): Promise<number> {
-    const directory = path.join(process.env.LOCALAPPDATA ?? path.join(process.env.TEMP ?? ".", "SqfReloader"), "SqfReloader");
+    const directory = apiConfigDirectory();
     fs.mkdirSync(directory, { recursive: true });
 
     const url = new URL(settings.apiUrl);
@@ -392,6 +436,10 @@ export async function writeApiConfig(settings: Settings, probe = true): Promise<
 
             for (const entry of entries) {
                 const sourcePath = path.join(sourceDirectory, entry.name);
+                if (isExcludedPath(sourcePath)) {
+                    continue;
+                }
+
                 if (entry.isDirectory()) {
                     visit(sourcePath);
                     continue;

@@ -5,6 +5,7 @@
     "requestTimeout": 3000,
     "runTimeout": 30,
     "clearArmaMissionArtifacts": true,
+    "excludedFolders": [],
     "enabled": true,
     "autoJunction": true,
     "junctionMode": "addon",

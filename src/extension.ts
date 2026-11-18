@@ -5,6 +5,7 @@ import { evalCode, getStatus, request, sqfString } from "./api";
 import { configuredLogLevel, disposeOutput, getOutput, log, logError, logInfo, readSettings, Settings, updateSetting } from "./settings";
 import { ensureJunctions, removeJunctions, setupFromContext, setupWorkspace } from "./setup";
 import { projectSettingsExists } from "./projectSettings";
+import { isExcludedPath } from "./excludedFolders";
 import { fireHook, HookContext, runHook } from "./hooks";
 import { detectArmaDirectory, findArmaDirectory, findMissions, findModForFile, isArmaDirectory, looksLikeMod, MissionFolder, readMissionMaxPlayers, resetArmaDetection } from "./arma";
 import { cachedArmaDirectory } from "./armaDetect";
@@ -13,9 +14,9 @@ import { cleanupSnapshots, deletedFunctionVariable, isReloadable, registerWorksp
 import { DuplicateFunctionDiagnostics } from "./duplicateFunctions";
 import { apiPort, findCurrentMission, findMissionForCurrentEditor, hasArmaWorkspace, openProjectSettingsFile, workspaceHasNoFiles } from "./workspaceHelpers";
 import { confirmMissionFunctionRecompile } from "./missionRecompile";
-import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, startRptMonitor, stopArma, stopDedicatedServer, stopRptMonitor, trackedArmaPid } from "./launcher";
+import { isRunning, launchArma, refreshDedicatedServerStatus, refreshRunningStatus, setRptDiagnosticCollection, setStartedGameListener, adoptTrackedArmaPid, adoptTrackedServerPid, startRptMonitor, stopArma, stopDedicatedServer, stopRptMonitor, trackedArmaPid } from "./launcher";
 import { parseLaunchArguments } from "./launchArgs";
-import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig } from "./runtime";
+import { loadRuntime, Runtime, workspaceMods, workspaceAddons, writeApiConfig, adoptConfiguredApiPort } from "./runtime";
 import { verifyWorkspaceAddons } from "./runtime";
 import { scaffoldExample, shouldOfferExample, exampleMod } from "./scaffold";
 import { SqfSymbolLookup, seeReferences } from "./links";
@@ -30,6 +31,7 @@ import { ArmaAiTool, ARMA_AI_TOOL_NAME } from "./armaAiTool";
 import { activateHemttCheck, configureHemttCheck, disposeHemttCheck, onHemttDocumentChanged, onHemttDocumentSaved, runHemttCheck } from "./hemtt";
 import { initTutorialStore, completeTutorialStep, dismissTutorial, markExampleWorkspace, noteTutorialEvent, readTutorial, startTutorial } from "./tutorial";
 import { markExampleReady, clearExampleReady } from "./exampleBanner";
+import { createDiagnosticReport } from "./diagnostics";
 let statusBar: vscode.StatusBarItem | undefined;
 let runtime: Runtime | undefined;
 let workspaceInjectionLoop: Promise<void> | undefined;
@@ -41,6 +43,9 @@ let statusPollDriver: ((active: boolean) => void) | undefined;
 const DECLINE_EXAMPLE_KEY = "sqfReloader.setupExampleDeclined";
 /** Per-workspace record of the example-mod offer, keyed by the extension version. */
 const EXAMPLE_PROMPT_VERSION_KEY = "sqfReloader.setupExamplePromptVersion";
+/** PID of the game this window started; survives a window reload so "Stop Arma 3" still knows it. */
+const TRACKED_ARMA_PID_KEY = "sqfReloader.trackedArmaPid";
+const TRACKED_SERVER_PID_KEY = "sqfReloader.trackedServerPid";
 
 // Transition tracking for lifecycle hooks (connected, crashed, exited).
 let wasClientConnected = false;
@@ -53,7 +58,7 @@ function hasConfiguredProjectRoot(document: vscode.TextDocument): boolean {
 }
 
 function hasConfiguredProjectUri(uri: vscode.Uri): boolean {
-    if (uri.scheme !== "file") {
+    if (uri.scheme !== "file" || isExcludedPath(uri.fsPath)) {
         return false;
     }
 
@@ -122,6 +127,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
     runtime = loadRuntime(context);
     initTutorialStore(context.workspaceState);
+
+    // The game is not a child of the extension host, so it outlives a window reload; remember
+    // which process this window started and adopt it again when the host restarts.
+    adoptTrackedArmaPid(context.workspaceState.get<number>(TRACKED_ARMA_PID_KEY));
+    adoptTrackedServerPid(context.workspaceState.get<number>(TRACKED_SERVER_PID_KEY));
+    setStartedGameListener((kind, pid) => {
+        if (pid === undefined) return;
+        void context.workspaceState.update(kind === "server" ? TRACKED_SERVER_PID_KEY : TRACKED_ARMA_PID_KEY, pid);
+    });
     // Resolve the Arma folder once on load (registry / Steam) and keep it in memory; the
     // setting stays empty unless the user pins a folder.
     void detectArmaDirectory();
@@ -143,7 +157,8 @@ export function activate(context: vscode.ExtensionContext): void {
         sqfSymbols,
         vscode.languages.registerDefinitionProvider(sqfSelector, sqfSymbols),
         vscode.languages.registerHoverProvider(sqfSelector, sqfSymbols),
-        vscode.languages.registerReferenceProvider(sqfSelector, sqfSymbols)
+        vscode.languages.registerReferenceProvider(sqfSelector, sqfSymbols),
+        vscode.languages.registerRenameProvider(sqfSelector, sqfSymbols)
     );
     context.subscriptions.push({ dispose: stopMissionArtifactCleanup });
     const rptDiagnostics = vscode.languages.createDiagnosticCollection("sqfReloader");
@@ -191,6 +206,7 @@ export function activate(context: vscode.ExtensionContext): void {
             const running = await refreshRunningStatus();
             if (wasArmaRunning && !running) {
                 const settings = readSettings();
+                void context.workspaceState.update(TRACKED_ARMA_PID_KEY, undefined);
                 fireHook("onClientExit", settings, { apiUrl: settings.apiUrl });
                 void findArmaDirectory(settings).then(armaDirectory => {
                     if (armaDirectory) {
@@ -221,6 +237,11 @@ export function activate(context: vscode.ExtensionContext): void {
         }
     });
     void statusPoll();
+
+    // A window reload keeps Arma running (it is not a child of the extension host), so this new
+    // extension host has to reconnect to the game that is still up: adopt its API port, apply the
+    // configured log level and compile every workspace function again.
+    void reconnectToRunningGame();
 
     // The status bar shows the API, so it is refreshed for connection changes too, and the
     // first Arma 3 (or dedicated server) connection is written to the output channel.
@@ -315,6 +336,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // --- Save -> reload ---------------------------------------------------
     context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async document => {
+        if (isExcludedPath(document.fileName)) {
+            log(`Ignored save in excluded folder: ${document.fileName}.`);
+            return;
+        }
+
         onHemttDocumentSaved(document);
 
         if (!hasConfiguredProjectRoot(document)) {
@@ -429,6 +455,10 @@ export function activate(context: vscode.ExtensionContext): void {
             }).catch(error => {
                 logError("could not apply SqfReloader log level", error);
             });
+        }
+        if (nextSettings.excludedFolders.join("|") !== previous.excludedFolders.join("|")) {
+            // Markers from a folder that just became excluded would keep blocking the reload.
+            duplicateDiagnostics.clearExcluded();
         }
         fireHook("onSettingsChanged", nextSettings);
     };
@@ -1073,6 +1103,10 @@ export function activate(context: vscode.ExtensionContext): void {
         getOutput().show(true);
     });
 
+    register(context, "sqfReloader.createDiagnosticReport", async () => {
+        await createDiagnosticReport(context);
+    });
+
     register(context, "sqfReloader.toggleAutoReload", async () => {
         if (!vscode.workspace.workspaceFolders?.length) {
             vscode.window.showWarningMessage("Open an Arma project folder first: reload on save is stored in the project settings.");
@@ -1174,6 +1208,34 @@ async function promptForExampleIfNeeded(context: vscode.ExtensionContext, versio
     } else if (choice === "Don't ask again") {
         await context.globalState.update(DECLINE_EXAMPLE_KEY, true);
     }
+}
+
+/**
+ * Reattaches to an Arma instance that is already running when the extension host starts.
+ *
+ * This is the normal path after **Developer: Reload Window** (or an extension update) while the
+ * game is open: the game was not started as a child of the extension host, so it kept running,
+ * and the new host has to pick up where the old one left off — follow the API port of the last
+ * launch, match the log level and compile every workspace function again, because the game's
+ * missionNamespace still holds whatever was compiled before the reload.
+ */
+async function reconnectToRunningGame(): Promise<void> {
+    if (!await refreshRunningStatus()) return;
+
+    adoptConfiguredApiPort();
+    const settings = readSettings();
+
+    try {
+        const status = await getStatus(settings);
+        if (status.gameConnected !== true) {
+            log("Arma 3 is running but has no SqfReloader callback yet; waiting for it before recompiling workspace functions.");
+        }
+    } catch (error) {
+        log(`Arma 3 is running; waiting for the SqfReloader API (${error instanceof Error ? error.message : String(error)}).`);
+    }
+
+    log("Arma 3 was already running, so this window reconnects to it and recompiles the workspace functions.");
+    void injectWorkspaceFunctionsWhenReady(settings);
 }
 
 async function applyRuntimeLogLevel(settings: Settings): Promise<void> {

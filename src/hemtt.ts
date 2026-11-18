@@ -5,6 +5,7 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { log, logError, logInfo } from "./settings";
 import { findMissingAddonPrefixes, writeAddonPrefixes } from "./addonPrefixes";
+import { isExcludedPath } from "./excludedFolders";
 
 /** Read from VS Code settings.json, so both the user and the workspace can configure it. */
 const SECTION = "sqfReloader.hemtt";
@@ -143,6 +144,7 @@ export function disposeHemttCheck(): void {
 /** Debounced check after saving a file that belongs to a HEMTT project. */
 export function onHemttDocumentSaved(document: vscode.TextDocument): void {
     if (document.uri.scheme !== "file" || !CHECKED_FILE.test(document.uri.fsPath)) return;
+    if (isExcludedPath(document.uri.fsPath)) return;
 
     const config = readHemttConfig(document.uri);
     if (!config.enabled || !config.onSave || !isHemttProjectFile(document.uri)) return;
@@ -162,6 +164,7 @@ export function onHemttDocumentSaved(document: vscode.TextDocument): void {
  */
 export function onHemttDocumentChanged(document: vscode.TextDocument): void {
     if (document.uri.scheme !== "file" || !CHECKED_FILE.test(document.uri.fsPath)) return;
+    if (isExcludedPath(document.uri.fsPath)) return;
 
     const config = readHemttConfig(document.uri);
     if (!config.enabled || !config.unsaved || !storageDirectory) return;
@@ -481,7 +484,9 @@ export async function findHemttProjects(): Promise<string[]> {
         for (const entry of entries) {
             // Symlinked folders are skipped (isDirectory is false for them) so junctions cannot loop.
             if (!entry.isDirectory() || entry.name.startsWith(".") || SKIPPED_DIRECTORIES.has(entry.name.toLowerCase())) continue;
-            pending.push({ directory: path.join(next.directory, entry.name), depth: next.depth + 1 });
+            const child = path.join(next.directory, entry.name);
+            if (isExcludedPath(child)) continue;
+            pending.push({ directory: child, depth: next.depth + 1 });
         }
     }
 

@@ -130,9 +130,12 @@ Right-click a mod folder in the Explorer and choose **Arma 3: Set folder as Clie
 `.vscode/sqfReloader-settings.json` under `modTypes`, keyed by the folder's path relative to the
 workspace root. A server
 mod is left out of normal Arma launches and is passed as `-serverMod` when starting a dedicated
-server directly from its workspace folder; it is not copied into the Arma installation. Client and
-unclassified folders use `-mod`; an unclassified folder is treated as a client mod. **Clear Mod
-Type** removes an explicit assignment.
+server directly from its workspace folder; it is not copied into the Arma installation. Client
+folders use `-mod`. Once the project settings save any role, **only folders with a saved role reach
+Arma**: an unclassified folder is left out of `-mod=` and `-serverMod=`, so a `Publish` copy written
+by a build script is not mounted as a second mod. While no role has been saved at all, every
+discovered folder still launches as a client mod. **Clear Mod Type** removes an explicit
+assignment.
 
 Every mod folder reaches Arma exactly once: a folder that is both a workspace mod and a configured
 external mod (`externalMods`), which is common when the workspace folder is a copy of
@@ -143,8 +146,8 @@ Mods the extension discovers in the workspace are listed in the project settings
 launch role, so a folder it picked up on its own is always visible. Creating the project settings
 writes every discovered mod as **Not Used** (`"off"` in `modTypes`), so a new project
 never launches a folder that was not opted into. The panel offers **Client Mod**, **Server Mod**,
-and **Not Used**; a folder left unclassified in the Explorer behaves like a client mod and is
-shown as Client Mod there. External local or Steam Workshop mods can also
+and **Not Used**; a folder left unclassified in the Explorer is shown as Client Mod there but stays
+out of the launch lists once the project saves roles. External local or Steam Workshop mods can also
 be set to **Not Used**, which keeps them configured but excludes them from `-mod=` and
 `-serverMod=`. **Remove** in the workspace-mod list sets a mod back to Not Used, which keeps it out
 of those launch lists entirely, for example an unpacked server source tree that Arma itself reports
@@ -192,7 +195,10 @@ Mod-originated scripts are not terminated or restarted.
 
 Open the mod folder or a workspace containing it. No `$PBOPREFIX$` file is required. It derives
 function names from `CfgFunctions` and mounts the source addon under its own
-`z\<tag>\addons\<addon>` path for live reloads. Your existing
+`z\<tag>\addons\<addon>` path for live reloads. A `CfgFunctions` that already declares the final
+Arma path (`file = "z\eoex\addons\functions\extension"`) is respected as written — the addon is
+linked where the config looks, whether that config sits in the addon folder or at the mod root —
+so the configured path resolves in the game. Your existing
 prefix remains available for normal PBO builds and loading the mod manually. Run
 **SqfReloader: Play** to set up links and start Arma with your mod.
 
@@ -290,6 +296,7 @@ at a time.
 | **SqfReloader: Reload all functions** | Reload workspace functions. |
 | **SqfReloader: Toggle reload on save** | Turn automatic reload on or off. |
 | **SqfReloader: Show output** | Open extension logs and Arma error messages. |
+| **SqfReloader: Create diagnostic report** | Write `%LOCALAPPDATA%\SqfReloader\diagnostic.txt` for a bug report and open the folder. User name, computer name, Arma profile name and personal paths are replaced. |
 | **SqfReloader: See references** | Right-click a function `.sqf` file in the Explorer (or anywhere in its editor) to list every place it is called from. Shift+F12 / Shift+Alt+F12 also work: on a `TAG_fnc_name` they list that function's call sites, and inside a `fn_*.sqf` file they list the file's own.
 
 | **SqfReloader: Create example mod** | Write `ClientMod/` and `ServerMod/` and offer the guided tour. |
@@ -447,18 +454,47 @@ in a sibling block. The nearest enclosing scope that declares the name wins (sha
 declarations above the usage count, because SQF runs top to bottom. Recognized declarations are
 `private _x = ...`, plain `_x = ...`, `private ["_a", "_b"];`, `private "_c";`,
 `private _one = param [0, 1];`, and `params [...];` (which is scoped to its own block).
+
+### Rename (F2)
+
+F2 works on both kinds of variable, on any occurrence — the assignment, a read such as
+`EOEX_var_Comments get "Data"`, or the name inside `getVariable`/`setVariable`/`isNil`:
+
+- **Global (`TAG_name`)** — renamed in every workspace `.sqf` file, in any namespace
+  (`missionNamespace`, `uiNamespace`, `profileNamespace`, `with`/`call` scopes). Both the
+  identifier and a string literal that is exactly the name are replaced, because that string is how
+  the variable is passed to `getVariable "TAG_name"` / `setVariable ["TAG_name", ...]` /
+  `isNil "TAG_name"`. Matching is case-insensitive, like Arma resolves variable names. Comments are
+  never touched, and the replacement is written as typed, so a rename also normalizes casing.
+- **Local (`_name`)** — renamed only inside the document you are editing and only for the
+  occurrences that resolve to the same declaration, so a `_value` in one `{ ... }` block does not
+  drag its shadowed namesakes in sibling blocks along. An unsaved buffer is renamed as it is in the
+  editor; you still have to save for the file on disk (and the reload) to follow.
+
+A new name must keep the SQF shape: a global needs a tag (`EOEX_var_Comments`, not `Comments`), a
+local needs the leading underscore (`_myValue`, not `myValue`), otherwise the rename is rejected
+with a message. Rename is offered only when the name resolves — an undeclared `_ghost` or a plain
+word is not renameable, so F2 cannot start a rename that would rewrite the whole workspace.
+`sqfReloader.globalVariableLinks` / `sqfReloader.localVariableLinks` turn this off together with
+the hover and Ctrl+click behaviour.
+
 Automatic reload on save only runs for supported source files inside a VS Code workspace root that
 contains `.vscode/sqfReloader-settings.json`. Saves outside that configured project are ignored and
 do not send commands or reload requests to Arma. Use the explicit SqfReloader reload commands when
 you want to send changes manually.
 If multiple `fn_*.sqf` files resolve to the same Arma function variable, SqfReloader marks each
-definition as an error and blocks reloads until the duplicate is renamed or removed.
+definition as an error and blocks reloads until the duplicate is renamed or removed. The markers
+are re-checked every 15 seconds and whenever a `fn_*.sqf` file is created or deleted, so removing
+one of the duplicates clears the error (and unblocks the reload) without saving anything. Folders that
+only hold a copy of the mod (a publish or build output folder) go into `excludedFolders` instead;
+they are then ignored by discovery, reload, duplicate checks, links and the function index.
 
 | Setting | Purpose |
 | --- | --- |
 | `armaDirectory` | Arma 3 install folder. Leave empty for automatic detection: the folder is read once from the registry / Steam libraries when the extension loads and kept in memory for the session, so nothing is written back to this setting. Set it only to pin a specific install. |
 | `enabled` | Enable or disable automatic reload for supported files in a configured project. |
 | `deletedFunctionBehavior` | When a `fn_*.sqf` file is deleted, `clear` removes its missionNamespace variable from running Arma, `ask` prompts before removing it, and `keep` leaves the variable intact (default). |
+| `excludedFolders` | Folders SqfReloader ignores completely, relative to the workspace folder (absolute paths also work). Nothing inside them is reloaded, duplicate-checked, linked or indexed, so a publish script's copy of the mod no longer blocks every reload with a duplicate function error. Example: `["Publish"]`. |
 | `apiUrl` | SqfReloader API host address. The extension adds the API path and uses `apiPort`. Default: `http://127.0.0.1`. |
 | `apiPort` | SqfReloader API port, used by every Arma instance (client, editor, hosted mission, dedicated server). Default: `8764`. |
 | `runTimeout` | Maximum seconds for **Run in Arma** to wait for a result. Default: `30`. |
@@ -512,6 +548,21 @@ unless `continueOnError` is enabled. All other events run in the background.
 
 ## Troubleshooting
 
+**Arma shows "SqfReloader_x64.dll is either not designed to run on Windows or it contains an
+error" (error status 0xc0e90002).** A code-integrity check refused the DLL — `0xC0E90002` is
+`STATUS_SYSTEM_INTEGRITY_POLICY_VIOLATION`, and on Windows 11 that is Smart App Control's
+"verified and reputable" policy (`{0283ac0f-fff1-49ae-ada1-8a933130cad6}`). Arma starts anyway and
+runs *without* SqfReloader, so nothing is ever reloaded. The DLL is unsigned and Smart App Control
+has no per-app exception, but in practice the deciding factor is the **Mark-of-the-Web**: a DLL
+copied from another machine, or unpacked from a downloaded `.vsix`/`.zip`, keeps that mark when it
+is copied into the Arma folder, while the same project built on that machine never has it. **Play**
+removes the mark from the deployed `<Arma 3>\@SqfReloader\SqfReloader_x64.dll` before starting the
+game; for a game started another way, run `Unblock-File <path>` once. If it still fails, the only
+remaining fixes are signing the DLL with a certificate from the Microsoft Trusted Root Program or
+turning Smart App Control off in **Windows Security > App & browser control > Smart App Control
+settings**. **Event Viewer > Applications and Services Logs > Microsoft > Windows > CodeIntegrity >
+Operational** (events 3033 and 3077) names the file and the policy that blocked it.
+
 **Only `config.cpp` (or an old copy) is visible in `z\<tag>\addons\<addon>`.** A real folder is
 sitting on the mount path, so the extension cannot create its junction there; Arma then reads
 that stale folder instead of your workspace sources. On startup, **Play**, and **Set up this
@@ -544,6 +595,16 @@ that moment, because removing the mount would break the session. Run **SqfReload
 created by this extension** to clean up at any time; links whose target no longer exists are also
 pruned on the next launch.
 
+**Arma keeps running after a window reload.** Arma is created by the Windows WMI provider
+(`Win32_Process.Create`), not as a child of the extension host, so **Developer: Reload Window** (and
+an extension update) cannot take the game down; VS Code otherwise closes the extension host
+together with every process it started. The reloaded window reconnects by itself: it adopts the API
+port of the last launch, matches the log level and compiles every workspace function again, so the
+session continues where it left off. Closing VS Code entirely also leaves the game running — use
+**SqfReloader: Stop Arma 3** (the window still knows the PID it started, also across a reload). The
+fallback when the WMI call is unavailable (a locked-down PowerShell/WMI, for example) is a normal
+child process, which closes with the VS Code window; the output channel says so when that happens.
+
 **HEMTT says "command not found" even though it is installed.** HEMTT installed through scoop or
 Chocolatey is a `.cmd`/`.bat` shim. The extension runs such a shim through `cmd.exe`, but a
 mangled `PATH` (for example from a VS Code started before HEMTT was installed) still hides it;
@@ -558,6 +619,14 @@ warning.
 **SqfReloader: Create example mod** (or that still contain `ClientMod/@ExampleMod`). Run that
 command, or use **SqfReloader: Start the guided tour** to reopen it after choosing *Not now*.
 
+**Reporting a problem.** Run **SqfReloader: Create diagnostic report**. It writes
+`%LOCALAPPDATA%\SqfReloader\diagnostic.txt` and opens that folder. The report lists the extension,
+VS Code, Windows and Arma versions, the detected Arma folder, the deployed DLL with its SHA-256 hash
+and code-integrity state, the API configuration, the workspace links and the recent Arma/extension
+errors. It is safe to attach to a public issue: your user name, computer name, Arma profile name and
+every `C:\Users\<name>` path are replaced with `<user>`, `<computer>`, `<profile>` and
+`%USERPROFILE%`.
+
 ## Build from source
 
 Requirements: .NET SDK 10, Visual Studio 2022 Build Tools with C++ tools, Node.js 20+, VS Code,
@@ -570,3 +639,68 @@ powershell -ExecutionPolicy Bypass -File build-all.ps1
 The build creates the native extension, packages the SqfReloader Arma mod, compiles the VS Code
 extension, and produces a `.vsix`. Add `-Install` to install the VS Code extension after the
 build. See `build-all.ps1` for additional options.
+
+### Signing the DLL
+
+`SqfReloader_x64.dll` is unsigned by default. Windows 11's Smart App Control and BattlEye only load
+an extension signed by a certificate that chains to the **Microsoft Trusted Root Program**, so a
+release for other machines has to be signed. The native build signs the published DLL, with
+SHA-256 and an RFC 3161 timestamp from `http://timestamp.digicert.com` (`-SignTimestampUrl`
+overrides it), and fails if the result does not verify:
+
+```powershell
+# Certificate in the current user's certificate store (OV/EV token, DigiCert KeyLocker,
+# SSL.com eSigner, ...): signtool sign /sha1 <thumbprint>
+powershell -ExecutionPolicy Bypass -File SqfReloaderExtension\tools\build.ps1 -SignThumbprint <thumbprint>
+
+# Certificate file: signtool sign /f <pfx>
+powershell -ExecutionPolicy Bypass -File SqfReloaderExtension\tools\build.ps1 -SignPfx .\codesign.pfx
+#   password: -SignPfxPassword or $env:SQFRELOADER_SIGN_PFX_PASSWORD
+
+# Microsoft Trusted Signing: signtool sign /dlib ... /dmdf <metadata.json>
+powershell -ExecutionPolicy Bypass -File SqfReloaderExtension\tools\build.ps1 -SignMetadata .\trusted-signing.json
+```
+
+`build-all.ps1` accepts the same switches and passes them through, and it **enforces** the
+signature: without an explicit switch it uses `$env:SQFRELOADER_SIGN_THUMBPRINT` /
+`SQFRELOADER_SIGN_PFX` / `SQFRELOADER_SIGN_METADATA`, otherwise the newest code-signing certificate
+in the current user's store, and with none of those it stops before building. After the native build
+it always runs `tools\checkSignature.ps1` on `dist\@SqfReloader\SqfReloader_x64.dll` and fails on
+anything that is not a valid signature — so an unsigned DLL never reaches the `.vsix`. Add
+`-NoSignature` to build unsigned; the check is still printed, it just no longer fails the build.
+
+```powershell
+.\build-all.ps1 -Version "3.8.2" -Clean              # signs; fails if the DLL is not signed
+.\build-all.ps1 -Version "3.8.2" -Clean -NoSignature # builds unsigned, prints the check only
+```
+
+Signing needs `signtool.exe` (Windows SDK, component "Windows SDK Signing Tools for Desktop Apps");
+the build says so if it is missing. The certificate is part of the DLL cache key, so switching
+between signed and unsigned builds always rebuilds.
+
+Where the certificate comes from matters more than how it is used:
+
+| Option | Notes |
+| --- | --- |
+| **Microsoft Trusted Signing** | Azure service (a few USD/month), certificates issued under Microsoft's own root; use `-SignMetadata` with the Trusted Signing client tools installed. |
+| **OV/EV certificate** | Any CA. Since June 2023 the private key must live in an FIPS 140-2 HSM, so use the CA's cloud signing tool or a hardware token and select it with `-SignThumbprint`. |
+| **SignPath Foundation** | Free code-signing certificates for open-source projects, with an Azure DevOps/GitHub integration. |
+| **Self-signed** | Fine for testing this pipeline (add the root to Trusted Root, or the build's verify step rejects it), but Smart App Control ignores it — there is no per-app exception. |
+
+Signing is necessary but not always sufficient: Smart App Control also weighs cloud reputation, so a
+freshly signed binary can still be refused until it is known. Submitting the signed file to
+Microsoft's malware-analysis portal as a false positive is the documented way to speed that up.
+Clearing the Mark-of-the-Web is *not* an alternative — that only affects SmartScreen-style checks,
+not this code-integrity one.
+
+To see exactly what Windows sees, run the checker on a built or deployed DLL (a folder checks every
+DLL below it):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File SqfReloaderExtension\tools\checkSignature.ps1 "C:\Program Files (x86)\Steam\steamapps\common\Arma 3\@SqfReloader\SqfReloader_x64.dll"
+```
+
+It prints the signature status, signer, issuer, chain root (with a warning when the signing
+certificate is self-signed, which Smart App Control ignores), the RFC 3161 timestamp and the
+Mark-of-the-Web, and exits with 0 only when the file verifies. The one-liner equivalent is
+`Get-AuthenticodeSignature <dll>`, which is also what the extension's own preflight uses.

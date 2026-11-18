@@ -272,8 +272,8 @@ async function checkReveal() {
     vscode.calls.executeCommand.length = 0;
 
     try {
-        const { scaffoldExample } = require(path.join(repoRoot, "out", "scaffold.js"));
-        await scaffoldExample({ target: revealRoot });
+        const scaffold = require(path.join(repoRoot, "out", "scaffold.js"));
+        await scaffold.scaffoldExample({ target: revealRoot });
 
         const previews = vscode.calls.executeCommand.filter(call => call.command === "markdown.showPreview");
         check("create example opens the ClientMod README preview once", previews.length === 1, `${previews.length}`);
@@ -286,6 +286,39 @@ async function checkReveal() {
             vscode.calls.executeCommand.map(call => call.command).join(", "));
     } finally {
         fs.rmSync(revealRoot, { recursive: true, force: true });
+    }
+
+    await checkRevealWaits(vscode);
+}
+
+// --- the README preview must not open before the scaffold has written the README ----
+async function checkRevealWaits(vscode) {
+    const scaffold = require(path.join(repoRoot, "out", "scaffold.js"));
+    const waitRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sqfreloader-reveal-wait-"));
+    const originalOpenTextDocument = vscode.workspace.openTextDocument;
+    vscode.calls.executeCommand.length = 0;
+
+    try {
+        // VS Code rejects opening a file that is not on disk yet, like the real document service.
+        vscode.workspace.openTextDocument = uri => fs.existsSync(uri.fsPath)
+            ? Promise.resolve({ uri })
+            : Promise.reject(new Error(`cannot open ${uri.fsPath}: file not found`));
+
+        const readme = path.join(waitRoot, "README.md");
+        const timer = setTimeout(() => fs.writeFileSync(readme, "# Example\r\n", "utf8"), 300);
+        try {
+            await scaffold.revealExample({ clientExampleDirectory: waitRoot });
+        } finally {
+            clearTimeout(timer);
+        }
+
+        const previews = vscode.calls.executeCommand.filter(call => call.command === "markdown.showPreview");
+        check("the README preview waits until the README exists",
+            previews.length === 1 && fs.existsSync(previews[0].args[0].fsPath),
+            previews.length === 1 ? "preview opened without the README" : "no preview");
+    } finally {
+        vscode.workspace.openTextDocument = originalOpenTextDocument;
+        fs.rmSync(waitRoot, { recursive: true, force: true });
     }
 
     console.log("");

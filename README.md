@@ -36,6 +36,8 @@ install in Arma.
 - Windows (x64). Not supported on macOS, Linux, VS Code Web or container/WSL hosts.
 - VS Code 1.99 or later, in a trusted workspace.
 - Arma 3 installed; Arma 3 Tools recommended for staging addon PBOs.
+- **Windows Smart App Control turned off** — it refuses to load the unsigned SqfReloader DLL. See
+  [Smart App Control must be off](#smart-app-control-must-be-off).
 
 See [LIMITATIONS.md](./LIMITATIONS.md) for the full support matrix: what works, what *should*
 work but is untested, what is planned, and what is deliberately out of scope.
@@ -64,6 +66,30 @@ unless you use HEMTT, in which case the extension offers to generate the missing
 | [PLAN.md](./PLAN.md) | Release plan and future backlog. |
 | [examples/](./examples) | PowerShell scripts for the REST API and the example mod templates. |
 
+
+### Smart App Control must be off
+
+Smart App Control only loads applications it trusts and has **no per-app exception**, while the
+bundled `SqfReloader_x64.dll` is not code-signed. If it stays on, Arma 3 shows this dialog and then
+**starts without SqfReloader** — saving a `.sqf` file reloads nothing, and the status bar waits for
+a connection that never arrives:
+
+```text
+arma3_x64.exe - Bad Image
+C:\Program Files (x86)\Steam\steamapps\common\Arma 3\@SqfReloader\SqfReloader_x64.dll is either not
+designed to run on Windows or it contains an error. Try installing the program again using the
+original installation media or contact your system administrator or the software vendor for
+support. Error status 0xc0e90002.
+```
+
+Turn it off in **Windows Security → App & browser control → Smart App Control settings → Off**.
+Windows 11 Home can enable it on a clean install, so it is worth checking even when nothing was
+changed.
+
+The extension reports the block on **SqfReloader: Play** instead of launching silently. If you
+cannot turn Smart App Control off, a build signed with a certificate from the Microsoft Trusted
+Root Program loads as well; see [README-FULL.md](./README-FULL.md#troubleshooting), "Signing the DLL".
+
 ## Security
 
 The local REST API can execute arbitrary SQF in a running game and has no request
@@ -73,8 +99,10 @@ authentication. Keep it on `127.0.0.1` and never expose it to a network; see
 ## Support
 
 Report bugs and request features on [GitHub](https://github.com/VainoKarppi/Arma3SqfReloader/issues).
-For bug reports, attach `SqfReloader.log` from `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log`
-and the Arma `.rpt`.
+For bug reports, run **SqfReloader: Create diagnostic report** and attach
+`%LOCALAPPDATA%\SqfReloader\diagnostic.txt` (user name, computer name and personal paths are
+removed), plus `SqfReloader.log` from `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log` and the Arma
+`.rpt`.
 
 ## License
 

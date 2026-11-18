@@ -5,8 +5,47 @@
 // UI calls recorded so scripts can assert what the extension opened (see verify-template.js).
 const calls = { showTextDocument: [], executeCommand: [] };
 
+class Position {
+    constructor(line, character) {
+        this.line = line;
+        this.character = character;
+    }
+}
+
+class Range {
+    constructor(start, end) {
+        // Both VS Code forms: (start, end) positions, or (startLine, startChar, endLine, endChar).
+        if (typeof start === "number") {
+            this.start = new Position(start, end);
+            this.end = new Position(arguments[2], arguments[3]);
+        } else {
+            this.start = start;
+            this.end = end;
+        }
+    }
+}
+
+/** Records the edits a provider produces, so a script can assert what would be replaced. */
+class WorkspaceEdit {
+    constructor() {
+        this.edits = [];
+    }
+
+    replace(uri, range, text) {
+        this.edits.push({ uri, range, text });
+    }
+
+    insert(uri, position, text) {
+        this.edits.push({ uri, range: new Range(position, position), text });
+    }
+}
+
 module.exports = {
     calls,
+    version: "0.0.0-stub",
+    Position,
+    Range,
+    WorkspaceEdit,
     window: {
         createOutputChannel: () => ({
             appendLine: () => undefined,
@@ -33,6 +72,7 @@ module.exports = {
             update: () => Promise.resolve(undefined)
         }),
         workspaceFolders: [],
+        isTrusted: true,
         openTextDocument: () => Promise.resolve({}),
         createFileSystemWatcher: () => ({
             onDidChange: () => ({ dispose: () => undefined }),
@@ -42,6 +82,8 @@ module.exports = {
         }),
         onDidSaveTextDocument: () => ({ dispose: () => undefined }),
         onDidChangeTextDocument: () => ({ dispose: () => undefined }),
+        onDidCloseTextDocument: () => ({ dispose: () => undefined }),
+        onDidOpenTextDocument: () => ({ dispose: () => undefined }),
         onDidChangeWorkspaceFolders: () => ({ dispose: () => undefined }),
         onDidChangeConfiguration: () => ({ dispose: () => undefined })
     },
@@ -56,7 +98,14 @@ module.exports = {
         file: fsPath => ({ fsPath })
     },
     env: {
-        openExternal: () => Promise.resolve(true)
+        openExternal: () => Promise.resolve(true),
+        appName: "Visual Studio Code",
+        language: "en",
+        remoteName: undefined,
+        clipboard: { writeText: () => Promise.resolve(undefined) }
+    },
+    ProgressLocation: {
+        Notification: 15
     },
     StatusBarAlignment: {
         Left: 1

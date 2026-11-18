@@ -5,6 +5,7 @@ import { Addon, findAddonForFile, findArmaDirectory, findMissions, readFunctionT
 import { evalCode, getStatus, listFunctions, reloadEverything, sqfString } from "./api";
 import { Settings, log, logError, logInfo } from "./settings";
 import { workspaceAddons } from "./runtime";
+import { isExcludedPath } from "./excludedFolders";
 
 export interface ReloadOutcome {
     ok: boolean;
@@ -56,6 +57,10 @@ export async function reloadDocument(document: vscode.TextDocument, settings: Se
 
     if (document.uri.scheme !== "file" || !/\.(sqf|cpp|hpp)$/i.test(document.fileName)) {
         return { ok: true, message: "Not a saved SQF/C++ file." };
+    }
+
+    if (isExcludedPath(document.fileName)) {
+        return { ok: true, message: `${path.basename(document.fileName)} is inside a folder excluded by the project settings; nothing was reloaded.` };
     }
 
     const missionFunction = findMissionFunction(document.fileName);
@@ -212,6 +217,7 @@ async function writeSnapshot(
 
 function findMissionFunction(filePath: string): MissionFunction | undefined {
     if (!/^fn_[\w-]+\.sqf$/i.test(path.basename(filePath))) return undefined;
+    if (isExcludedPath(filePath)) return undefined;
 
     const roots = (vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.fsPath);
     for (const mission of findMissions(roots)) {
@@ -233,6 +239,7 @@ function findMissionFunction(filePath: string): MissionFunction | undefined {
 /** Resolves the Arma function variable for a function file that has already been deleted. */
 export function deletedFunctionVariable(filePath: string): string | undefined {
     if (!/^fn_[\w-]+\.sqf$/i.test(path.basename(filePath))) return undefined;
+    if (isExcludedPath(filePath)) return undefined;
 
     const missionFunction = findMissionFunction(filePath);
     if (missionFunction) return missionFunction.variable;
@@ -243,6 +250,8 @@ export function deletedFunctionVariable(filePath: string): string | undefined {
 
 /** Lists all workspace files that currently resolve to the same Arma function variable. */
 export function findDuplicateFunctionFiles(filePath: string): { variable: string; files: string[] } | undefined {
+    if (isExcludedPath(filePath)) return undefined;
+
     const variable = deletedFunctionVariable(filePath);
     if (!variable) return undefined;
 
@@ -261,6 +270,9 @@ export function findDuplicateFunctionFiles(filePath: string): { variable: string
 
             for (const entry of entries) {
                 const child = path.join(current, entry.name);
+                if (isExcludedPath(child)) {
+                    continue;
+                }
                 if (entry.isDirectory()) {
                     scan(child);
                 } else if (entry.isFile() && /^fn_[\w-]+\.sqf$/i.test(entry.name)
@@ -475,6 +487,10 @@ export async function registerWorkspaceFunctions(settings: Settings): Promise<Re
             for (const entry of entries) {
                 const filePath = path.join(directory, entry.name);
 
+                if (isExcludedPath(filePath)) {
+                    continue;
+                }
+
                 if (entry.isDirectory()) {
                     visit(filePath);
                     continue;
@@ -656,6 +672,10 @@ function findMissionDirectory(filePath: string): string | undefined {
 /** Files that should trigger a reload when saved. */
 export function isReloadable(document: vscode.TextDocument): boolean {
     if (document.uri.scheme !== "file") {
+        return false;
+    }
+
+    if (isExcludedPath(document.fileName)) {
         return false;
     }
 

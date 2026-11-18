@@ -5,6 +5,7 @@ import { findAddonForFile, findMissions, readFunctionTag, toFunctionVariable } f
 import { deletedFunctionVariable } from "./reload";
 import { workspaceAddons } from "./runtime";
 import { log, logError } from "./settings";
+import { isExcludedPath } from "./excludedFolders";
 
 /** `TAG_fnc_name` as it appears in SQF code (call sites, comments, config.cpp). */
 const FUNCTION_VARIABLE_SOURCE = "\\b[A-Za-z][A-Za-z0-9]*_fnc_[A-Za-z0-9]+\\b";
@@ -111,6 +112,8 @@ interface VariableDefinition {
 /** A local definition plus the `{ ... }` scope it belongs to. */
 interface ScopedDefinition extends VariableDefinition {
     scopeId: number;
+    /** Character offset in the document, used to order declarations and resolve the scope. */
+    offset: number;
 }
 
 /** Scope information of one open document. */
@@ -142,7 +145,7 @@ interface LocalIndex {    version: number;
  * Function resolution reuses the reloader's own rules (`fn_*.sqf` inside an addon source folder
  * plus mission functions). Variables are collected from every `.sqf` file in the workspace.
  */
-export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.ReferenceProvider, vscode.HoverProvider, vscode.Disposable {
+export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.ReferenceProvider, vscode.HoverProvider, vscode.RenameProvider, vscode.Disposable {
     private functions: Map<string, string> | undefined;
     private variables: Map<string, VariableDefinition[]> | undefined;
     private missionDirs: string[] | undefined;
@@ -232,6 +235,109 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
     }
 
     /**
+     * F2 on a variable: a global (`TAG_name`, including the `getVariable "TAG_name"` string form)
+     * is renamed in every workspace `.sqf` file, a file-local `_name` only inside the scope that
+     * declares it.
+     *
+     * Renaming is offered only when the name resolves (a local needs a visible declaration, a
+     * global needs the tagged-name shape), so a stray `_x` or an unrelated word cannot start a
+     * rename that would touch the whole file.
+     */
+    prepareRename(document: vscode.TextDocument, position: vscode.Position): { range: vscode.Range; placeholder: string } | undefined {
+        const target = this.renameTarget(document, position);
+        if (!target) return undefined;
+        return { range: target.range, placeholder: target.name };
+    }
+
+    provideRenameEdits(document: vscode.TextDocument, position: vscode.Position, newName: string, token: vscode.CancellationToken): vscode.WorkspaceEdit | undefined {
+        const target = this.renameTarget(document, position);
+        if (!target) return undefined;
+
+        const replacement = newName.trim();
+        return target.kind === "local"
+            ? this.localRenameEdits(document, target, replacement)
+            : this.globalRenameEdits(target.name, replacement, token);
+    }
+
+    /** Rename scope: a file-local name, or a workspace-wide global variable name. */
+    private renameTarget(document: vscode.TextDocument, position: vscode.Position): RenameTarget | undefined {
+        if (document.uri.scheme !== "file" || isExcludedPath(document.uri.fsPath)) return undefined;
+
+        const wordRange = document.getWordRangeAtPosition(position, IDENTIFIER);
+        const word = wordRange ? document.getText(wordRange) : "";
+
+        if (wordRange && LOCAL_VARIABLE.test(word) && localVariableLinksEnabled(document.uri)) {
+            const locals = this.localIndex(document);
+            const scopeId = this.declarationScopeAt(locals, word, document.offsetAt(wordRange.start));
+            if (scopeId === undefined) return undefined;
+            return { kind: "local", name: word, range: wordRange, scopeId };
+        }
+
+        if (!globalVariableLinksEnabled(document.uri)) return undefined;
+
+        const found = variableNameAt(document, position);
+        return found ? { kind: "global", name: found.name, range: found.range } : undefined;
+    }
+
+    private localRenameEdits(document: vscode.TextDocument, target: LocalRenameTarget, replacement: string): vscode.WorkspaceEdit | undefined {
+        if (!LOCAL_VARIABLE.test(replacement)) {
+            throw new Error(`'${replacement}' is not a local SQF variable name (expected something like _myValue).`);
+        }
+
+        const text = document.getText();
+        const locals = this.localIndex(document);
+        const edit = new vscode.WorkspaceEdit();
+
+        for (const occurrence of identifierOccurrences(text, target.name)) {
+            if (this.declarationScopeAt(locals, target.name, occurrence.start) !== target.scopeId) continue;
+            edit.replace(
+                document.uri,
+                new vscode.Range(document.positionAt(occurrence.start), document.positionAt(occurrence.end)),
+                replacement
+            );
+        }
+
+        return edit;
+    }
+
+    private globalRenameEdits(name: string, replacement: string, token: vscode.CancellationToken): vscode.WorkspaceEdit | undefined {
+        if (!GLOBAL_VARIABLE.test(replacement)) {
+            throw new Error(`'${replacement}' is not a global SQF variable name (expected a tag and a name, e.g. EOEX_var_Comments).`);
+        }
+
+        const edit = new vscode.WorkspaceEdit();
+
+        for (const file of this.sqfFiles()) {
+            if (token.isCancellationRequested) return undefined;
+
+            const uri = vscode.Uri.file(file);
+            const document = this.openDocument(file);
+            const occurrences = variableOccurrences(document ? document.getText() : this.fileText(file), name);
+            if (occurrences.length === 0) continue;
+
+            const lineStarts = document ? [] : lineStartOffsets(this.fileText(file));
+            for (const occurrence of occurrences) {
+                const range = document
+                    ? new vscode.Range(document.positionAt(occurrence.start), document.positionAt(occurrence.end))
+                    : occurrencesRange(lineStarts, occurrence);
+                edit.replace(uri, range, replacement);
+            }
+        }
+
+        return edit;
+    }
+
+    /** The open text document of a file, so unsaved edits are renamed too. */
+    private openDocument(file: string): vscode.TextDocument | undefined {
+        const key = this.cacheKey(file);
+        return vscode.workspace.textDocuments.find(document => document.uri.scheme === "file" && this.cacheKey(document.uri.fsPath) === key);
+    }
+
+    private fileText(file: string): string {
+        return this.fileLines(file).join("\n");
+    }
+
+    /**
      * Call sites of the function variable under the cursor. When the cursor is not on a
      * `TAG_fnc_name` but the file is itself a `fn_*.sqf`, the file's own function variable is
      * used, so Shift+F12 / "Find All References" also works while editing the definition (which
@@ -239,6 +345,7 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
      */
     provideReferences(document: vscode.TextDocument, position: vscode.Position, context: vscode.ReferenceContext, token: vscode.CancellationToken): vscode.Location[] | undefined {
         if (!functionLinksEnabled() || document.uri.scheme !== "file") return undefined;
+        if (isExcludedPath(document.uri.fsPath)) return undefined;
 
         const found = functionVariableAt(document, position);
         const variable = found?.variable ?? functionVariableForFile(document.uri.fsPath);
@@ -291,6 +398,7 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
     /** Function variable under the cursor, its target file and the word range. */
     private resolveFunction(document: vscode.TextDocument, position: vscode.Position): { variable: string; file: string; range: vscode.Range } | undefined {
         if (!functionLinksEnabled() || document.uri.scheme !== "file") return undefined;
+        if (isExcludedPath(document.uri.fsPath)) return undefined;
 
         const wordRange = document.getWordRangeAtPosition(position, new RegExp(FUNCTION_VARIABLE_SOURCE));
         if (!wordRange) return undefined;
@@ -325,8 +433,10 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
                 if (visited >= MAX_FILES) return;
                 if (entry.name.startsWith(".") || entry.name.toLowerCase() === "node_modules") continue;
 
-                visited++;
                 const child = path.join(directory, entry.name);
+                if (isExcludedPath(child)) continue;
+
+                visited++;
                 if (entry.isDirectory()) {
                     collect(child, resolveVariable);
                     continue;
@@ -394,27 +504,37 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
         const candidates = locals.index.get(name.toLowerCase()) ?? [];
         if (candidates.length === 0) return undefined;
 
-        const beforeCursor = (definition: VariableDefinition): boolean =>
-            definition.line < wordRange.start.line
-            || (definition.line === wordRange.start.line && definition.character < wordRange.start.character);
-
         // Walk from the innermost scope outwards; the first scope with a visible declaration wins.
-        let scopeId: number | undefined = locals.scopeAt[this.offsetOf(document, wordRange.start)];
-        let definitions: VariableDefinition[] = [];
+        const scopeId = this.scopeOfDeclaration(locals, name, document.offsetAt(wordRange.start));
+        if (scopeId === undefined) return undefined;
 
-        while (scopeId !== undefined) {
-            definitions = candidates.filter(definition => definition.scopeId === scopeId && beforeCursor(definition));
-            if (definitions.length > 0) break;
-            scopeId = locals.parent.get(scopeId);
-        }
-
+        const definitions: VariableDefinition[] = candidates.filter(definition =>
+            definition.scopeId === scopeId && definition.offset < document.offsetAt(wordRange.start));
         if (definitions.length === 0) return undefined;
         return { range: wordRange, definitions, lines: document.getText().split(/\r?\n/) };
     }
 
-    /** Character offset of a position in the document text. */
-    private offsetOf(document: vscode.TextDocument, position: vscode.Position): number {
-        return document.offsetAt(position);
+    /**
+     * Innermost scope (walking outwards from `offset`) that declares `name` above that offset, so
+     * every occurrence of a local resolves to the declaration that is actually visible to it.
+     */
+    private scopeOfDeclaration(locals: LocalIndex, name: string, offset: number): number | undefined {
+        const candidates = locals.index.get(name.toLowerCase()) ?? [];
+        if (candidates.length === 0) return undefined;
+
+        let scopeId: number | undefined = locals.scopeAt[offset] ?? 0;
+        while (scopeId !== undefined) {
+            if (candidates.some(definition => definition.scopeId === scopeId && definition.offset < offset)) return scopeId;
+            scopeId = locals.parent.get(scopeId);
+        }
+
+        return undefined;
+    }
+
+    /** Scope a variable occurrence belongs to, counting the declaration itself as being in scope. */
+    private declarationScopeAt(locals: LocalIndex, name: string, offset: number): number | undefined {
+        const exact = (locals.index.get(name.toLowerCase()) ?? []).find(definition => definition.offset === offset);
+        return exact ? exact.scopeId : this.scopeOfDeclaration(locals, name, offset);
     }
 
     /**
@@ -438,11 +558,9 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
             const definitions = index.get(name.toLowerCase()) ?? [];
             const scopeId = scopes.scopeAt[offset] ?? 0;
 
-            if (definitions.some(item => item.line === position.line
-                && item.character === position.character
-                && item.scopeId === scopeId)) return;
+            if (definitions.some(item => item.offset === offset && item.scopeId === scopeId)) return;
 
-            definitions.push({ file, line: position.line, character: position.character, scopeId });
+            definitions.push({ file, line: position.line, character: position.character, scopeId, offset });
             index.set(name.toLowerCase(), definitions);
         };
 
@@ -525,6 +643,7 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
     /** Global variable under the cursor and every place it is defined. */
     private resolveVariable(document: vscode.TextDocument, position: vscode.Position): { name: string; range: vscode.Range; definitions: VariableDefinition[] } | undefined {
         if (!globalVariableLinksEnabled(document.uri) || document.uri.scheme !== "file") return undefined;
+        if (isExcludedPath(document.uri.fsPath)) return undefined;
 
         const found = variableNameAt(document, position);
         if (!found) return undefined;
@@ -615,6 +734,8 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
                 if (entry.name.startsWith(".") || entry.name.toLowerCase() === "node_modules") continue;
 
                 const child = path.join(directory, entry.name);
+                if (isExcludedPath(child)) continue;
+
                 if (entry.isDirectory()) visit(child);
                 else if (entry.isFile() && /\.sqf$/i.test(entry.name)) files.push(child);
             }
@@ -710,6 +831,104 @@ export class SqfSymbolLookup implements vscode.DefinitionProvider, vscode.Refere
     }
 }
 
+/** A rename offered on a variable name: a global (`TAG_name`) or a file-local `_name`. */
+interface RenameTargetBase {
+    name: string;
+    range: vscode.Range;
+}
+
+interface GlobalRenameTarget extends RenameTargetBase {
+    kind: "global";
+}
+
+interface LocalRenameTarget extends RenameTargetBase {
+    kind: "local";
+    /** Scope the name was declared in; only occurrences resolving to it are renamed. */
+    scopeId: number;
+}
+
+type RenameTarget = GlobalRenameTarget | LocalRenameTarget;
+
+/** A span of the document text to replace. */
+interface Occurrence {
+    start: number;
+    end: number;
+}
+
+/**
+ * Every occurrence of a global variable name in a file: the identifier itself (`TAG_name = ...`,
+ * `TAG_name get "Data"`) and a string literal that is exactly the name, which is how the name is
+ * passed to `getVariable`/`setVariable`/`isNil` in any namespace.
+ *
+ * Names match case-insensitively, like Arma resolves them. Strings and comments are skipped for
+ * the identifier scan, so a name inside a comment is not renamed.
+ */
+function variableOccurrences(text: string, name: string): Occurrence[] {
+    const lower = name.toLowerCase();
+    const occurrences: Occurrence[] = [];
+    const lineStarts = lineStartOffsets(text);
+    const lines = text.split(/\r?\n/);
+    const state = { inBlockComment: false };
+
+    for (let lineNumber = 0; lineNumber < lines.length; lineNumber++) {
+        const line = lines[lineNumber];
+        const { code, strings } = scanLine(line, state);
+        const lineOffset = lineStarts[lineNumber] ?? text.length;
+
+        const identifier = /[A-Za-z_][A-Za-z0-9_]*/g;
+        let match: RegExpExecArray | null;
+        while ((match = identifier.exec(code)) !== null) {
+            if (match[0].toLowerCase() !== lower) continue;
+            occurrences.push({ start: lineOffset + match.index, end: lineOffset + match.index + match[0].length });
+        }
+
+        for (const literal of strings) {
+            if (literal.value.toLowerCase() !== lower) continue;
+            // An escaped quote would make the value shorter than the text it came from.
+            const start = lineOffset + literal.start + 1;
+            if (line.slice(literal.start + 1, literal.start + 1 + literal.value.length) !== literal.value) continue;
+            occurrences.push({ start, end: start + literal.value.length });
+        }
+    }
+
+    return occurrences;
+}
+
+/** Occurrences of a local name, ignoring strings and comments (locals are never referenced by name). */
+function identifierOccurrences(text: string, name: string): Occurrence[] {
+    const lower = name.toLowerCase();
+    const occurrences: Occurrence[] = [];
+    const lineStarts = lineStartOffsets(text);
+    const lines = text.split(/\r?\n/);
+    const state = { inBlockComment: false };
+
+    for (let lineNumber = 0; lineNumber < lines.length; lineNumber++) {
+        if (!lines[lineNumber].toLowerCase().includes(lower)) {
+            // Still advance the block-comment state so a `/* */` spanning lines is tracked.
+            scanLine(lines[lineNumber], state);
+            continue;
+        }
+
+        const { code } = scanLine(lines[lineNumber], state);
+        const lineOffset = lineStarts[lineNumber] ?? text.length;
+        const identifier = /[A-Za-z_][A-Za-z0-9_]*/g;
+        let match: RegExpExecArray | null;
+        while ((match = identifier.exec(code)) !== null) {
+            if (match[0].toLowerCase() !== lower) continue;
+            occurrences.push({ start: lineOffset + match.index, end: lineOffset + match.index + match[0].length });
+        }
+    }
+
+    return occurrences;
+}
+
+/** Range of an occurrence in a file that is not open, from its line starts. */
+function occurrencesRange(lineStarts: number[], occurrence: Occurrence): vscode.Range {
+    const start = offsetToPosition(lineStarts, occurrence.start);
+    const end = offsetToPosition(lineStarts, occurrence.end);
+    return new vscode.Range(start.line, start.character, end.line, end.character);
+}
+
 /** Identifier or quoted variable name under the cursor. */
 function variableNameAt(document: vscode.TextDocument, position: vscode.Position): { name: string; range: vscode.Range } | undefined {
     const wordRange = document.getWordRangeAtPosition(position, IDENTIFIER);
@@ -762,8 +981,7 @@ function stringLiteralAt(line: string, character: number): { value: string; star
     return undefined;
 }
 
-interface StringLiteral {
-    value: string;
+interface StringLiteral {    value: string;
     start: number;
 }
 

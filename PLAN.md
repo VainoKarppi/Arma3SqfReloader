@@ -339,6 +339,9 @@ The release is ready when all of the following are true:
 
 - **Progress:** the paths touched by the items above now follow the rule (link inspection errors,
   launch/stop failures, HEMTT shim resolution). The remaining `catch { }` blocks still need a pass.
+  **SqfReloader: Create diagnostic report** (`src/diagnostics.ts`) now gives support one file with
+  the versions, DLL hashes, API/config, links and recent errors, redacted of personal data, so a
+  report no longer has to be assembled by asking the user for each piece.
 
 - **Why:** Several `catch {}` blocks swallow failures with no output (e.g. `runtime.ts` `currentLinkTarget`,
   `extension.ts` Eden `getStatus` probe), while other paths show modal dialogs. Support reports become guesswork.

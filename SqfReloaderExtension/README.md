@@ -35,6 +35,7 @@ SqfReloaderExtension/
 ├── tools/install-call-extension.ps1   downloads the harness into tests/callExtension
 ├── tools/smoke-test.ps1         DLL + REST test without Arma
 ├── tools/check-sqf.ps1          SQF syntax / CfgFunctions check
+├── tools/checkSignature.ps1      Authenticode status, signer chain and timestamp of a DLL
 ├── tests/callExtension/         harness + sqfreloader_test.sqf (the SQF the harness executes)
 ├── dist/@SqfReloader/               generated mod (scripts.pbo + SqfReloader_x64.dll, same layout as the sources)
 └── dist/SqfReloader-Setup.zip       distributable package (install.ps1 -NoBuild)
@@ -142,7 +143,13 @@ powershell -ExecutionPolicy Bypass -File tools\check-sqf.ps1        # SQF balanc
 powershell -ExecutionPolicy Bypass -File tools\build.ps1            # DLL + mod folder (+ -PackPbo)
 powershell -ExecutionPolicy Bypass -File tools\test-extension.ps1   # Arma -> extension, via harness
 powershell -ExecutionPolicy Bypass -File tools\smoke-test.ps1       # PE exports, ABI, REST, batching
+powershell -ExecutionPolicy Bypass -File tools\checkSignature.ps1 <dll>  # signature, signer chain, timestamp
 ```
+
+A signed release build (`tools\build.ps1 -SignThumbprint <thumbprint>`, `-SignPfx <file>` or
+`-SignMetadata <trusted-signing.json>`) is what Smart App Control and BattlEye require;
+`tools\checkSignature.ps1` prints what they look at, including whether the chain ends in a
+self-signed certificate that Smart App Control ignores.
 
 ### `tools\test-extension.ps1` - the Arma -> extension direction
 

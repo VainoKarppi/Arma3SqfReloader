@@ -5,9 +5,9 @@ class CfgPatches {
         requiredVersion = 2.22;
         requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "Razer";
-        version = "3.8.2";
-        versionStr = "3.8.2";
-        versionAr[] = {3, 8, 2};
+        version = "3.8.4";
+        versionStr = "3.8.4";
+        versionAr[] = {3, 8, 4};
     };
 };
 
@@ -81,27 +81,3 @@ class Cfg3DEN {
     };
 };
 
-class ctrlMenuStrip;
-class display3DEN {
-    class Controls {
-        class MenuStrip : ctrlMenuStrip {
-            class Items {
-                class Tools {
-                    items[] += {"SqfReloader_Status", "SqfReloader_Restart"};
-                };
-
-                class SqfReloader_Status {
-                    text = "SqfReloader: Status";
-                    picture = "\a3\3DEN\Data\Controls\ctrlMenu\link_ca.paa";
-                    action = "[] call SqfReloader_fnc_showStatus;";
-                };
-
-                class SqfReloader_Restart {
-                    text = "SqfReloader: Restart server";
-                    picture = "\a3\3DEN\Data\Controls\ctrlMenu\link_ca.paa";
-                    action = "['restart'] call SqfReloader_fnc_showStatus;";
-                };
-            };
-        };
-    };
-};

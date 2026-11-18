@@ -283,13 +283,61 @@ export function exampleMod(root: string): Mod | undefined {
     return findMods(root).find(mod => mod.name.toLowerCase() === TEMPLATE_MOD_NAME.toLowerCase());
 }
 
+/** How long the reveal waits for the scaffolded README before it gives up and logs instead. */
+const README_REVEAL_TIMEOUT_MS = 10_000;
+const README_REVEAL_POLL_MS = 100;
+
+/**
+ * Waits until the README can be opened.
+ *
+ * The preview is a custom editor that renders a "file not found" page when it resolves before the
+ * scaffold's write is visible, and that page stays even after the file appears. Waiting for the
+ * document here keeps the preview from racing the write.
+ */
+async function waitForReadme(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
+    const deadline = Date.now() + README_REVEAL_TIMEOUT_MS;
+    let lastError: unknown;
+
+    for (;;) {
+        try {
+            return await vscode.workspace.openTextDocument(uri);
+        } catch (error) {
+            lastError = error;
+        }
+
+        if (Date.now() >= deadline) {
+            log(`The example README was not ready to open: ${uri.fsPath} (${lastError instanceof Error ? lastError.message : String(lastError)})`);
+            return undefined;
+        }
+
+        await new Promise<void>(resolve => setTimeout(resolve, README_REVEAL_POLL_MS));
+    }
+}
+
+/** The README as a workspace URI, so remote and virtual workspaces resolve the same file. */
+function readmeUri(file: string): vscode.Uri {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        const relative = path.relative(folder.uri.fsPath, file);
+        if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+            return vscode.Uri.joinPath(folder.uri, relative);
+        }
+    }
+
+    return vscode.Uri.file(file);
+}
+
 /**
  * Opens the client example walkthrough as a rendered Markdown preview so a new workspace starts on
  * one thing: the guide for the mod that was just created.
  */
-async function revealExample(result: ScaffoldResult): Promise<void> {
+export async function revealExample(result: ScaffoldResult): Promise<void> {
     const readme = path.join(result.clientExampleDirectory, "README.md");
-    const uri = vscode.Uri.file(readme);
+    const uri = readmeUri(readme);
+    const document = await waitForReadme(uri);
+
+    if (!document) {
+        return;
+    }
 
     try {
         await vscode.commands.executeCommand("markdown.showPreview", uri);
@@ -300,7 +348,6 @@ async function revealExample(result: ScaffoldResult): Promise<void> {
 
     // Markdown preview is a built-in extension, but keep the README reachable if it is disabled.
     try {
-        const document = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(document, { preview: true });
     } catch (error) {
         log(`Could not open ${readme}: ${error instanceof Error ? error.message : String(error)}`);

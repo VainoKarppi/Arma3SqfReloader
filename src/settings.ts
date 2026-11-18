@@ -50,6 +50,11 @@ export interface Settings {
     createExampleWithMission: boolean;
     /** Remove Arma-generated ~Mission.World preview copies from the active profile. */
     clearArmaMissionArtifacts: boolean;
+    /**
+     * Folders SqfReloader ignores completely (publish/build output copies of the mod).
+     * Paths relative to the workspace folder, or absolute.
+     */
+    excludedFolders: string[];
     /** Diagnostic verbosity in the VS Code output and Arma RPT. */
     logLevel: LogLevel;
     /** Commands keyed by lifecycle event (see hookEvents.ts). */
@@ -79,6 +84,7 @@ export function readSettings(): Settings {
         extraLaunchArguments: stringValue(values, "extraLaunchArguments", "-noSplash -skipIntro -noPause"),
         createExampleWithMission: booleanValue(values, "createExampleWithMission", true),
         clearArmaMissionArtifacts: booleanValue(values, "clearArmaMissionArtifacts", true),
+        excludedFolders: stringArrayValue(values, "excludedFolders"),
         logLevel: normalizeLogLevel(stringValue(values, "logLevel", "info")),
         hooks: hooksValue(values),
         hookPresentation: presentationValue(values, "hookPresentation")
@@ -254,28 +260,53 @@ export function getOutput(): vscode.OutputChannel {
     return channel;
 }
 
+/** Log lines kept in memory for the diagnostic report, including those the output filter drops. */
+const recentLines: string[] = [];
+const RECENT_LINE_LIMIT = 300;
+
+export function recentLogLines(): string[] {
+    return [...recentLines];
+}
+
+function recordRecentLine(line: string): void {
+    recentLines.push(line);
+
+    if (recentLines.length > RECENT_LINE_LIMIT) {
+        recentLines.splice(0, recentLines.length - RECENT_LINE_LIMIT);
+    }
+}
+
 export function log(message: string): void {
+    const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+    recordRecentLine(line);
+
     if (configuredLogLevel() !== "verbose") {
         return;
     }
 
-    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+    getOutput().appendLine(line);
     mirrorToTestOutput(`LOG ${message}`);
 }
 
 export function logInfo(message: string): void {
+    const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+    recordRecentLine(line);
+
     const level = configuredLogLevel();
     if (level === "error" || level === "warning") {
         return;
     }
 
-    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
+    getOutput().appendLine(line);
     mirrorToTestOutput(`LOG INFO: ${message}`);
 }
 
 export function logError(message: string, error: unknown): void {
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    getOutput().appendLine(`[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`);
+    const line = `[${new Date().toLocaleTimeString()}] ERROR: ${message} - ${detail}`;
+    recordRecentLine(line);
+
+    getOutput().appendLine(line);
     mirrorToTestOutput(`LOG ERROR: ${message} - ${detail}`);
 }
 

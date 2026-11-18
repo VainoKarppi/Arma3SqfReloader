@@ -30,6 +30,7 @@ export const PROJECT_SETTING_DEFAULTS: Record<string, unknown> = {
     serverLaunchArguments: "",
     createExampleWithMission: true,
     clearArmaMissionArtifacts: true,
+    excludedFolders: [],
     logLevel: "info",
     watchInterval: 1000,
     watchExpressions: [],

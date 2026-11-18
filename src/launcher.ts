@@ -10,10 +10,11 @@ import { createLinks, linkMissions, reconcileLinks } from "./junctions";
 import { createLinksWithRepair } from "./linkRepair";
 import { cleanupSnapshots } from "./reload";
 import { parseApiUrl } from "./ports";
-import { modTypeForDirectory } from "./modTypes";
+import { modLaunchesInArma, modTypeForDirectory } from "./modTypes";
 import { launchModFolders, launchServerModFolders, modFoldersOnce } from "./launchMods";
 import { fireHook, HookContext, runHook } from "./hooks";
 import { buildWorkspaceAddonPbos } from "./pbo";
+import { blockedDllWarning } from "./dllIntegrity";
 import { armaLogDirectory } from "./rpt";
 import { formatLaunchArgument, launchArguments } from "./launchArgs";
 import type { LaunchOptions } from "./launchArgs";
@@ -27,8 +28,8 @@ function requestedApiPort(settings: Settings): number {
     return parseApiUrl(settings.apiUrl).port;
 }
 
-let armaProcess: ReturnType<typeof spawn> | undefined;
-let dedicatedServerProcess: ReturnType<typeof spawn> | undefined;
+let armaProcess: StartedGame | undefined;
+let dedicatedServerProcess: StartedGame | undefined;
 let externalArmaRunning = false;
 let externalDedicatedServerRunning = false;
 let runningStatusPromise: Promise<boolean> | undefined;
@@ -43,6 +44,8 @@ let rptLaunchStartedAt = 0;
 let rptPathLoggedForLaunch = false;
 let rptDiagnostics: vscode.DiagnosticCollection | undefined;
 let rptReadInProgress = false;
+/** Set after a launch reported a blocked DLL, so the same warning is not shown on every launch. */
+let reportedDllPolicyWarning = false;
 
 export function setRptDiagnosticCollection(collection: vscode.DiagnosticCollection): void {
     rptDiagnostics = collection;
@@ -111,10 +114,11 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             await writeApiConfig(settings, false);
         }
 
-        const workspaceModsFound = workspaceMods().filter(mod => modTypeForDirectory(mod.directory) !== "off");
-        const disabledMods = workspaceMods().filter(mod => modTypeForDirectory(mod.directory) === "off");
-        if (disabledMods.length > 0) {
-            log(`Not passing these workspace mods to Arma (mod type "off"): ${disabledMods.map(mod => mod.directory).join(", ")}`);
+        const discoveredMods = workspaceMods();
+        const workspaceModsFound = discoveredMods.filter(mod => modLaunchesInArma(mod.directory));
+        const skippedMods = discoveredMods.filter(mod => !modLaunchesInArma(mod.directory));
+        if (skippedMods.length > 0) {
+            log(`Not passing these workspace mods to Arma (role "off" or no role saved in modTypes): ${skippedMods.map(mod => mod.directory).join(", ")}`);
         }
         const classifiedServerMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) === "server");
         const clientMods = workspaceModsFound.filter(mod => modTypeForDirectory(mod.directory) !== "server");
@@ -128,6 +132,15 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         const serverMods = [...classifiedServerMods, ...additionalServerMods];
         const launch = prepareRuntime(runtime, armaDirectory, settings, clientMods, serverMods);
         launch.executable = executable;
+
+        // Smart App Control refuses the unsigned DLL, so Arma starts without SqfReloader and the
+        // status bar would wait for a callback that can never arrive. Say what happened instead.
+        const policyWarning = await blockedDllWarning(path.join(launch.modPath, "SqfReloader_x64.dll"));
+        if (policyWarning) {
+            launch.warnings.push(policyWarning.message);
+            for (const line of policyWarning.detail) log(line);
+            reportDllPolicyWarning(policyWarning.message, silent);
+        }
 
         // -mod= is the workspace mod folders plus the configured external mods. A folder that is
         // both (very common: the workspace folder is a copy of the one in the Arma directory)
@@ -215,7 +228,7 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
             return false;
         }
 
-        startProcess(launch, settings, options, args);
+        await startProcess(launch, settings, options, args);
 
         fireHook(options.dedicatedServer ? "postServerLaunch" : "postClientLaunch", settings, hookContext);
         if (options.hostMission) fireHook("postHostMission", settings, hookContext);
@@ -227,6 +240,27 @@ export async function launchArma(runtime: Runtime, settings: Settings, options: 
         vscode.window.showErrorMessage(`Arma 3 SQF Reloader: ${error instanceof Error ? error.message : String(error)}`);
         return false;
     }
+}
+
+/**
+ * Reports a DLL that a code-integrity policy refuses to load. Shown once per session: the fix is a
+ * Windows setting, so repeating it on every launch would only be noise.
+ */
+function reportDllPolicyWarning(message: string, silent: boolean): void {
+    if (silent || reportedDllPolicyWarning) return;
+    reportedDllPolicyWarning = true;
+
+    void vscode.window.showWarningMessage(message, "Open Windows Security", "Show output").then(choice => {
+        if (choice === "Open Windows Security") {
+            // The App & browser control page, where every Smart App Control setting lives.
+            void vscode.env.openExternal(vscode.Uri.parse("windowsdefender://appbrowsercontrol")).then(
+                undefined,
+                error => logError("could not open Windows Security", error)
+            );
+        } else if (choice === "Show output") {
+            getOutput().show(true);
+        }
+    });
 }
 
 async function ensureSteamReady(silent: boolean): Promise<boolean> {
@@ -329,8 +363,21 @@ async function waitForSteam(): Promise<boolean> {
  * Folder Arma writes its .rpt logs to: <c>%LOCALAPPDATA%\Arma 3</c> (single player profile).
  * Resolved at runtime because the output channel does not expand environment variables.
  */
-function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions, args = launchArguments(launch, settings, options)): void {
+/**
+ * A game process this window started.
+ *
+ * Arma is created by the WMI provider (see {@link startProcessOutsideTree}), so it is not a child
+ * of the extension host and only its PID is known. The `handle` is set when the launch had to
+ * fall back to a plain child process.
+ */
+interface StartedGame {
+    pid?: number;
+    handle?: ReturnType<typeof spawn>;
+    /** Set once the process was seen running, so a startup race cannot forget it too early. */
+    confirmed?: boolean;
+}
 
+function startProcess(launch: PreparedLaunch, settings: Settings, options: LaunchOptions, args = launchArguments(launch, settings, options)): Promise<void> {
     const output = getOutput();
     const rawCommand = `"${launch.executable}" ${args.join(" ")}`;
     output.appendLine(`Arma directory: ${pathToFileURL(launch.armaDirectory).href}`);
@@ -344,33 +391,139 @@ function startProcess(launch: PreparedLaunch, settings: Settings, options: Launc
     output.show(true);
     log(`Starting: ${rawCommand}`);
 
-    // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
-    // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
     rptLaunchStartedAt = Date.now();
     rptPathLoggedForLaunch = false;
-    const processHandle = spawn(launch.executable, args, {
-        // Match the quoted argv[0] emitted by the working Arma Launcher command line.
-        argv0: `"${launch.executable}"`,
-        cwd: launch.armaDirectory,
-        detached: false,
-        stdio: "ignore",
-        windowsVerbatimArguments: true
-    });
-    if (options.dedicatedServer) dedicatedServerProcess = processHandle;
-    else armaProcess = processHandle;
+    return startGameProcess(launch, options, args);
+}
 
-    log(`Launched pid ${processHandle.pid ?? "?"}.`);
+/**
+ * Starts the game so a VS Code window reload keeps it running.
+ *
+ * VS Code terminates the extension host together with its child processes (a `taskkill /T`-style
+ * tree kill), which used to close Arma whenever the window reloaded. A process created by the WMI
+ * provider is not a descendant of VS Code, so it survives; `detached: true` does not help because
+ * the process stays in the tree. When the WMI call is unavailable the launch falls back to a
+ * child process, which still works but closes with the window.
+ */
+async function startGameProcess(launch: PreparedLaunch, options: LaunchOptions, args: string[]): Promise<void> {
+    const started: StartedGame = {};
+
+    const outOfTreePid = await startProcessOutsideTree(launch.executable, args, launch.armaDirectory);
+    if (outOfTreePid !== undefined) {
+        started.pid = outOfTreePid;
+    } else {
+        log("Could not create the Arma process outside the VS Code process tree; starting it as a child process (it closes when the VS Code window reloads).");
+        // Arma is a native .exe, so the command line is assembled verbatim instead of letting Node
+        // quote each argument: the complete "-mod=A;B" value must reach the game as one argument.
+        const processHandle = spawn(launch.executable, args, {
+            // Match the quoted argv[0] emitted by the working Arma Launcher command line.
+            argv0: `"${launch.executable}"`,
+            cwd: launch.armaDirectory,
+            detached: false,
+            stdio: "ignore",
+            windowsVerbatimArguments: true
+        });
+        started.handle = processHandle;
+        started.pid = processHandle.pid;
+
+        processHandle.on("error", error => logError(`${path.basename(launch.executable)} could not be started`, error));
+        processHandle.on("exit", (code, signal) => {
+            log(`${path.basename(launch.executable)} exited (${signal ?? code ?? "?"}).`);
+            if (options.dedicatedServer) dedicatedServerProcess = undefined;
+            else {
+                cleanupSnapshots(launch.armaDirectory);
+                armaProcess = undefined;
+            }
+        });
+    }
+
+    if (options.dedicatedServer) dedicatedServerProcess = started;
+    else armaProcess = started;
+
+    log(`Launched pid ${started.pid ?? "?"}.`);
+    startedGameListener?.(options.dedicatedServer === true ? "server" : "client", started.pid);
     startRptMonitor();
+}
 
-    processHandle.on("error", error => logError(`${path.basename(launch.executable)} could not be started`, error));
-    processHandle.on("exit", (code, signal) => {
-        log(`${path.basename(launch.executable)} exited (${signal ?? code ?? "?"}).`);
-        if (options.dedicatedServer) dedicatedServerProcess = undefined;
-        else {
-            cleanupSnapshots(launch.armaDirectory);
-            armaProcess = undefined;
-        }
+/** Told about every game process this window starts, so the PID can survive an extension restart. */
+let startedGameListener: ((kind: "client" | "server", pid: number | undefined) => void) | undefined;
+
+export function setStartedGameListener(listener: (kind: "client" | "server", pid: number | undefined) => void): void {
+    startedGameListener = listener;
+}
+
+/**
+ * Creates a process with `Win32_Process.Create`, which runs it from the WMI provider instead of from
+ * this extension host, and returns its PID.
+ *
+ * This is how the game is started: a child process is part of the extension host's process tree and
+ * is killed by VS Code when the window reloads, a WMI-created one is not. The command line is passed
+ * through base64 so neither quotes in `-mod=` paths nor argument separators reach a shell.
+ *
+ * Exported for `scripts/verify-detached-launch.js`, which checks the survival property with a fake
+ * game executable.
+ */
+export function startProcessOutsideTree(executable: string, args: string[], workingDirectory: string): Promise<number | undefined> {
+    if (process.platform !== "win32") return Promise.resolve(undefined);
+
+    const commandLine = `"${executable}" ${args.join(" ")}`;
+    const script = [
+        "$ErrorActionPreference='Stop'",
+        `$commandLine=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${base64Text(commandLine)}'))`,
+        `$workingDirectory=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${base64Text(workingDirectory)}'))`,
+        "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$commandLine; CurrentDirectory=$workingDirectory}",
+        "$createdPid=[int]$result.ProcessId",
+        "if ($createdPid -le 0) { throw \"Win32_Process.Create returned $($result.ReturnValue)\" }",
+        "Write-Output $createdPid"
+    ].join("; ");
+
+    return new Promise(resolve => {
+        execFile(
+            "powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+            { timeout: 20000 },
+            (error, stdout, stderr) => {
+                if (error) {
+                    logError("could not create the Arma process through WMI", new Error([error.message, stderr?.trim()].filter(Boolean).join("\n")));
+                    resolve(undefined);
+                    return;
+                }
+
+                const created = Number.parseInt(stdout.trim(), 10);
+                if (!Number.isFinite(created) || created <= 0) {
+                    log(`Win32_Process.Create returned no PID (${stdout.trim() || stderr?.trim() || "no output"}).`);
+                    resolve(undefined);
+                    return;
+                }
+
+                resolve(created);
+            }
+        );
     });
+}
+
+function base64Text(text: string): string {
+    return Buffer.from(text, "utf8").toString("base64");
+}
+
+/** Liveness of the game process, whether it is our child or was created by the WMI provider. */
+function isStartedGameRunning(started: StartedGame): boolean {
+    if (started.handle) return !started.handle.killed && started.handle.exitCode === null;
+    if (started.pid === undefined) return false;
+    if (!processIsRunning(started.pid)) return false;
+
+    started.confirmed = true;
+    return true;
+}
+
+/** `kill(pid, 0)` only tests whether the PID exists; nothing is signalled. */
+function processIsRunning(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /** Forward new SQF diagnostics for files mounted under z\\ into the VS Code output channel. */
@@ -552,7 +705,7 @@ function resolveWorkspaceSqfPath(reportedPath: string): string | undefined {
 /** Command line handed to arma3_x64.exe (also used by scripts/verify-launch-args.js). */
 
 export function isRunning(): boolean {
-    if (armaProcess && !armaProcess.killed) {
+    if (armaProcess && isStartedGameRunning(armaProcess)) {
         return true;
     }
 
@@ -561,7 +714,7 @@ export function isRunning(): boolean {
 
 /** PID of the Arma 3 process this VS Code window started, if it is still running. */
 export function trackedArmaPid(): number | undefined {
-    if (!armaProcess || armaProcess.killed || armaProcess.exitCode !== null) return undefined;
+    if (!armaProcess || !isStartedGameRunning(armaProcess)) return undefined;
     return armaProcess.pid;
 }
 
@@ -582,8 +735,8 @@ export interface StopArmaResult {
 export async function stopArma(options: { allowExternal?: boolean } = {}): Promise<StopArmaResult> {
     const pid = trackedArmaPid();
 
-    if (pid !== undefined) {
-        const stopped = await killProcessTree(armaProcess, pid);
+    if (pid !== undefined && await processMatchesImage(pid, "arma3_x64.exe")) {
+        const stopped = await killProcessTree(armaProcess?.handle, pid);
         if (stopped) {
             armaProcess = undefined;
             externalArmaRunning = false;
@@ -644,41 +797,82 @@ function execFileAsync(file: string, args: string[]): Promise<string> {
 }
 
 export function refreshRunningStatus(): Promise<boolean> {
-    if (armaProcess && !armaProcess.killed) return Promise.resolve(true);
+    // A child process reports its own exit; a WMI-created game only has a PID, so the process
+    // list decides and a stale record is dropped as soon as the game is gone.
+    if (armaProcess?.handle && isStartedGameRunning(armaProcess)) return Promise.resolve(true);
     if (process.platform !== "win32") return Promise.resolve(false);
     if (runningStatusPromise) return runningStatusPromise;
 
     runningStatusPromise = new Promise(resolve => {
         void queryProcessImage("arma3_x64.exe").then(running => {
+            if (!running && armaProcess?.confirmed) armaProcess = undefined;
+            if (running && armaProcess) armaProcess.confirmed = true;
             externalArmaRunning = running;
             runningStatusPromise = undefined;
-            resolve(externalArmaRunning);
+            resolve(armaProcess !== undefined || running);
         }, error => {
             reportProcessStatusError("arma3_x64.exe", "could not check whether Arma 3 is running", error);
             runningStatusPromise = undefined;
-            resolve(externalArmaRunning);
+            resolve(armaProcess !== undefined || externalArmaRunning);
         });
     });
     return runningStatusPromise;
 }
 
 export function refreshDedicatedServerStatus(): Promise<boolean> {
-    if (dedicatedServerProcess && !dedicatedServerProcess.killed) return Promise.resolve(true);
+    if (dedicatedServerProcess?.handle && isStartedGameRunning(dedicatedServerProcess)) return Promise.resolve(true);
     if (process.platform !== "win32") return Promise.resolve(false);
     if (dedicatedServerStatusPromise) return dedicatedServerStatusPromise;
 
     dedicatedServerStatusPromise = new Promise(resolve => {
         void queryProcessImage("arma3server_x64.exe").then(running => {
+            if (!running && dedicatedServerProcess?.confirmed) dedicatedServerProcess = undefined;
+            if (running && dedicatedServerProcess) dedicatedServerProcess.confirmed = true;
             externalDedicatedServerRunning = running;
             dedicatedServerStatusPromise = undefined;
-            resolve(externalDedicatedServerRunning);
+            resolve(dedicatedServerProcess !== undefined || running);
         }, error => {
             reportProcessStatusError("arma3server_x64.exe", "could not check whether the dedicated server is running", error);
             dedicatedServerStatusPromise = undefined;
-            resolve(externalDedicatedServerRunning);
+            resolve(dedicatedServerProcess !== undefined || externalDedicatedServerRunning);
         });
     });
     return dedicatedServerStatusPromise;
+}
+
+/**
+ * Adopts the game this window started before the extension host restarted.
+ *
+ * The window's state survives a reload, the launcher's memory does not: without this, "Stop Arma 3"
+ * would offer to close "an instance that was not started by VS Code" after **Reload Window**.
+ * A PID that is no longer the game is dropped by the next status check.
+ */
+export function adoptTrackedArmaPid(pid: number | undefined): void {
+    if (pid === undefined || armaProcess) return;
+    armaProcess = { pid, confirmed: true };
+}
+
+/** Same as {@link adoptTrackedArmaPid}, for the dedicated server. */
+export function adoptTrackedServerPid(pid: number | undefined): void {
+    if (pid === undefined || dedicatedServerProcess) return;
+    dedicatedServerProcess = { pid, confirmed: true };
+}
+
+/**
+ * True when the PID currently belongs to `imageName`, so a reused PID is never killed. */function processMatchesImage(pid: number, imageName: string): Promise<boolean> {
+    if (process.platform !== "win32") return Promise.resolve(false);
+
+    return new Promise(resolve => {
+        execFile("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { timeout: 2000 }, (error, stdout) => {
+            if (error) {
+                // Cannot verify: assume the tracked process, because it was launched from here.
+                resolve(true);
+                return;
+            }
+
+            resolve(stdout.toLowerCase().includes(imageName.toLowerCase()));
+        });
+    });
 }
 
 function queryProcessImage(imageName: string): Promise<boolean> {
@@ -715,15 +909,14 @@ function reportProcessStatusError(imageName: string, message: string, error: unk
 }
 
 export async function stopDedicatedServer(): Promise<boolean> {
-    // A handle that outlived its process would otherwise make kill() look like success.
-    if (dedicatedServerProcess && (dedicatedServerProcess.killed || dedicatedServerProcess.exitCode !== null)) {
+    // A record that outlived its process would otherwise make the kill look like success.
+    if (dedicatedServerProcess && !isStartedGameRunning(dedicatedServerProcess)) {
         dedicatedServerProcess = undefined;
         externalDedicatedServerRunning = false;
     }
 
-    if (dedicatedServerProcess && !dedicatedServerProcess.killed) {
-        const processHandle = dedicatedServerProcess;
-        const stopped = await killProcessTree(processHandle, processHandle.pid);
+    if (dedicatedServerProcess) {
+        const stopped = await killProcessTree(dedicatedServerProcess.handle, dedicatedServerProcess.pid);
         if (stopped) {
             dedicatedServerProcess = undefined;
             externalDedicatedServerRunning = false;

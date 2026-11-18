@@ -25,11 +25,29 @@
 .PARAMETER Key
     .biprivatekey used with -sign (defaults to @SqfReloader\addons\scripts\SqfReloader.biprivatekey).
 
+.PARAMETER SignThumbprint
+    Authenticode-sign the DLL with this certificate from the current user's store (OV/EV token,
+    DigiCert KeyLocker, SSL.com eSigner, ...). SHA-256 + RFC 3161 timestamp.
+
+.PARAMETER SignPfx
+    Authenticode-sign the DLL with a .pfx file instead. The password comes from -SignPfxPassword
+    or $env:SQFRELOADER_SIGN_PFX_PASSWORD.
+
+.PARAMETER SignMetadata
+    Authenticode-sign the DLL through Microsoft Trusted Signing; the path of its metadata .json
+    (endpoint, account and certificate profile). Needs the Trusted Signing client tools.
+
+.PARAMETER SignTimestampUrl
+    RFC 3161 timestamp server (default http://timestamp.digicert.com).
+
 .PARAMETER NoVersionBump
     Keep the current version (release builds / re-runs of the same version).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File tools\build.ps1 -SignThumbprint 1a2b3c...
 #>
 
 [CmdletBinding()]
@@ -39,11 +57,18 @@ param(
     [switch]$Clean,
     [string]$AddonBuilder = "",
     [string]$Key = "",
+    [string]$SignThumbprint = "",
+    [string]$SignPfx = "",
+    [string]$SignPfxPassword = "",
+    [string]$SignMetadata = "",
+    [string]$SignTimestampUrl = "http://timestamp.digicert.com",
     [switch]$NoVersionBump
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "Common.ps1")
+
+if (!$SignPfxPassword) { $SignPfxPassword = $env:SQFRELOADER_SIGN_PFX_PASSWORD }
 
 if ($NoVersionBump) {
     $version = Get-ProjectVersion
@@ -89,6 +114,13 @@ $dllInputs = @(
     (Join-Path $script:RepoRoot "global.json")
 )
 $dllInputHash = Get-TreeContentHash -Path $dllInputs -Root $script:RepoRoot
+# Signing changes the DLL bytes, and the same sources with a different certificate must not be
+# served from the cache, so the signing identity is part of the cache key.
+$signingIdentity = if ($SignThumbprint) { "thumbprint:" + ($SignThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant() }
+    elseif ($SignPfx) { "pfx:" + (Resolve-Path -LiteralPath $SignPfx).Path.ToLowerInvariant() }
+    elseif ($SignMetadata) { "trusted-signing:" + (Resolve-Path -LiteralPath $SignMetadata).Path.ToLowerInvariant() }
+    else { "unsigned" }
+$dllInputHash = "$dllInputHash|$signingIdentity"
 $pboInputs = @($script:ModSource)
 $keyPath = Get-SqfReloaderPublicKeyPath -Override $Key
 if ($keyPath) { $pboInputs += $keyPath }
@@ -110,7 +142,8 @@ if ($buildPbo) {
 }
 
 if ($buildDll) {
-    $dll = Invoke-DllBuild -Clean:$Clean
+    $dll = Invoke-DllBuild -Clean:$Clean -SignThumbprint $SignThumbprint -SignPfx $SignPfx `
+        -SignPfxPassword $SignPfxPassword -SignMetadata $SignMetadata -SignTimestampUrl $SignTimestampUrl
 }
 else {
     $dll = $distDll

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Settings } from "./settings";
 import { detectArmaDirectory, findArmaDirectory, isArmaDirectory, resetArmaDetection, uniqueValues } from "./armaDetect";
+import { isExcludedPath } from "./excludedFolders";
 
 // Re-exported so every existing `import { … } from "./arma"` keeps working.
 export { detectArmaDirectory, findArmaDirectory, isArmaDirectory, resetArmaDetection };
@@ -13,6 +14,8 @@ export interface Addon {
     /**
      * SqfReloader runtime mount path `z\<tag>\addons\<addon>`, derived from CfgFunctions.
      * This is independent of the developer's PBO prefix file, which is never modified.
+     * A config that declares its own Arma path (`file = "z\<tag>\addons\<addon>\..."`) keeps
+     * that path instead, so the path SqfReloader links is the one the game reads.
      */
     prefix: string;
     /**
@@ -45,7 +48,7 @@ export interface Mod {
 export function findMods(root: string): Mod[] {
     const result: Mod[] = [];
 
-    if (!fs.existsSync(root)) {
+    if (!fs.existsSync(root) || isExcludedPath(root)) {
         return result;
     }
 
@@ -162,7 +165,7 @@ export function findMissions(roots: string[]): MissionFolder[] {
     };
 
     for (const root of roots) {
-        if (!fs.existsSync(root)) {
+        if (!fs.existsSync(root) || isExcludedPath(root)) {
             continue;
         }
 
@@ -205,6 +208,8 @@ export function readMissionMaxPlayers(directory: string): number | undefined {
 
 /** Looks for the mod that contains the given file by walking up from it. */
 export function findModForFile(filePath: string): Mod | undefined {
+    if (isExcludedPath(filePath)) return undefined;
+
     let directory = path.dirname(filePath);
 
     while (true) {
@@ -251,17 +256,29 @@ function describeMod(directory: string): Mod {
 /**
  * Reads the addon description from a folder.
  *
- * The mount prefix is always `z\<tag>\addons\<addon>`, where
+ * The mount prefix is `z\<tag>\addons\<addon>`, where
  *  * <tag>    is the `tag = "..."` of the addon's CfgFunctions block (the name the SQF side
  *              reloads as `<tag>_fnc_<name>`), falling back to the folder name, and
  *  * <addon>  is the folder name below `addons\` (or "main" for a loose folder).
+ *
+ * A config that declares its own Arma path (`file = "z\<tag>\addons\<addon>\functions"`) wins
+ * over that derivation, see {@link declaredMountPrefix} and {@link inheritedMountPrefix}.
  *
  * `$PBOPREFIX$` is deliberately neither read nor written. Its contents belong to the developer's
  * packaging and manual-launch setup; SqfReloader mounts sources separately under Arma's z\ tree.
  */
 export function readAddon(directory: string): Addon | undefined {
-    const hasSources = fs.existsSync(path.join(directory, "config.cpp"))
-        || fs.existsSync(path.join(directory, "functions"));
+    if (isExcludedPath(directory)) {
+        return undefined;
+    }
+
+    const configFile = path.join(directory, "config.cpp");
+    const configText = readConfigText(configFile);
+    const ownMount = declaredMountPrefix(directory, configText);
+    const inherited = ownMount ? undefined : inheritedMountPrefix(directory);
+    const hasSources = configText !== undefined
+        || fs.existsSync(path.join(directory, "functions"))
+        || inherited !== undefined;
 
     if (!hasSources) {
         return undefined;
@@ -271,14 +288,24 @@ export function readAddon(directory: string): Addon | undefined {
     const parent = path.basename(path.dirname(directory)).toLowerCase();
     const insideAddons = parent === "addons";
     const fileName = insideAddons ? folder : "main";
-    const tag = (readFunctionTag(directory) ?? (insideAddons ? folder : parent.replace(/^@/, ""))).toLowerCase();
+    const tag = (functionTagFromText(configText)
+        ?? inherited?.tag
+        ?? readFunctionTag(directory)
+        ?? (insideAddons ? folder : parent.replace(/^@/, ""))).toLowerCase();
+
+    // A config that already spells out its Arma path ("file = z\<tag>\addons\<addon>\functions")
+    // decides where the folder is linked; deriving the prefix from the tag would leave the
+    // configured path unresolved in the game.
+    const declared = ownMount ?? inherited?.prefix;
+    const declaredSegments = declared ? declared.split("\\") : [];
+    const name = declaredSegments.length > 0 ? declaredSegments[declaredSegments.length - 1] : fileName;
 
     return {
         localDirectory: directory,
-        prefix: `z\\${tag}\\addons\\${fileName}`,
+        prefix: declared ?? `z\\${tag}\\addons\\${fileName}`,
         tag,
-        name: fileName,
-        instance: fileName
+        name,
+        instance: name
     };
 }
 
@@ -289,35 +316,147 @@ export function readAddon(directory: string): Addon | undefined {
  */
 export function readFunctionTag(directory: string): string | undefined {
     for (const name of ["config.cpp", "config.bin", "description.ext"]) {
-        const file = path.join(directory, name);
-
-        if (!fs.existsSync(file)) {
-            continue;
-        }
-
-        const text = stripCppComments(fs.readFileSync(file, "utf8"));
-        const block = /class\s+CfgFunctions\s*\{/i.exec(text);
-
-        if (!block) {
-            continue;
-        }
-
-        const body = text.slice(block.index);
-        const declared = /\btag\s*=\s*"([^"]+)"/i.exec(body);
-
-        if (declared) {
-            return declared[1].trim();
-        }
-
-        // No explicit tag: Arma uses the CfgFunctions class name.
-        const className = /class\s+CfgFunctions\s*\{\s*class\s+([\w]+)/i.exec(body);
-
-        if (className) {
-            return className[1];
-        }
+        const tag = functionTagFromText(readConfigText(path.join(directory, name)));
+        if (tag) return tag;
     }
 
     return undefined;
+}
+
+/** Comment-free content of a config file, or undefined when it does not exist. */
+function readConfigText(file: string): string | undefined {
+    try {
+        return stripCppComments(fs.readFileSync(file, "utf8"));
+    } catch {
+        return undefined;
+    }
+}
+
+/** Text from the first `class CfgFunctions {` to the end of the file (the block scan used above). */
+function cfgFunctionsBody(text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    const block = /class\s+CfgFunctions\s*\{/i.exec(text);
+    return block ? text.slice(block.index) : undefined;
+}
+
+function functionTagFromText(text: string | undefined): string | undefined {
+    const body = cfgFunctionsBody(text);
+    if (!body) return undefined;
+
+    const declared = /\btag\s*=\s*"([^"]+)"/i.exec(body);
+    if (declared) return declared[1].trim();
+
+    // No explicit tag: Arma uses the CfgFunctions class name.
+    return /class\s+CfgFunctions\s*\{\s*class\s+([\w]+)/i.exec(body)?.[1];
+}
+
+/**
+ * `file = "..."` paths of the CfgFunctions categories in a config body.
+ *
+ * Most mods keep them relative to the addon (`\example\functions`), but a mod that mounts its
+ * own sources writes the final Arma path (`z\eoex\addons\functions\extension`).
+ */
+export function cfgFunctionPaths(text: string | undefined): string[] {
+    const body = cfgFunctionsBody(text);
+    if (!body) return [];
+
+    const paths: string[] = [];
+    for (const match of body.matchAll(/\bfile\s*=\s*"([^"]*)"/gi)) {
+        const value = match[1].trim();
+        if (value) paths.push(value);
+    }
+
+    return paths;
+}
+
+/**
+ * Mount root the addon's own config declares, e.g. `z\eoex\addons\functions` for
+ * `file = "z\eoex\addons\functions\extension"`.
+ *
+ * A declared path points at a function category, so whatever part of it exists as a folder
+ * below the addon is the category and the rest is the mount root. The shortest root wins when
+ * the categories live in different subfolders.
+ */
+function declaredMountPrefix(directory: string, text: string | undefined): string | undefined {
+    let shortest: string[] | undefined;
+
+    for (const declared of cfgFunctionPaths(text)) {
+        const segments = declared.replace(/[\/\\]+/g, "\\").split("\\").filter(Boolean);
+        if (segments.length < 3) continue;
+
+        const root = segments[0].toLowerCase();
+        if (root !== "z" && root !== "x") continue;
+
+        let mount = segments;
+        for (let keep = 1; keep < segments.length; keep++) {
+            if (!isDirectory(path.join(directory, ...segments.slice(keep)))) continue;
+            mount = segments.slice(0, keep);
+            break;
+        }
+
+        if (mount.length < 3) continue;
+        if (!shortest || mount.length < shortest.length) shortest = mount;
+    }
+
+    return shortest?.map(segment => segment.toLowerCase()).join("\\");
+}
+
+interface DeclaredMount {
+    prefix: string;
+    tag?: string;
+}
+
+/**
+ * Mount root the mod-root config declares for an addon folder that has no config of its own.
+ *
+ * The folder's path inside the mod (`addons\functions`) is looked up in the declared paths; the
+ * declared segments up to the end of that run are where the folder has to be linked. This also
+ * makes such a folder into an addon, which is what a mod that keeps one CfgFunctions at its root
+ * relies on.
+ */
+function inheritedMountPrefix(directory: string): DeclaredMount | undefined {
+    const addonsRoot = path.dirname(directory);
+    if (path.basename(addonsRoot).toLowerCase() !== "addons") return undefined;
+
+    const modRoot = path.dirname(addonsRoot);
+    const text = readConfigText(path.join(modRoot, "config.cpp"));
+    if (!text) return undefined;
+
+    const relative = path.relative(modRoot, directory).replace(/[\/\\]+/g, "\\").toLowerCase().split("\\").filter(Boolean);
+    if (relative.length === 0) return undefined;
+
+    let shortest: string[] | undefined;
+    for (const declared of cfgFunctionPaths(text)) {
+        const segments = declared.replace(/[\/\\]+/g, "\\").split("\\").filter(Boolean).map(segment => segment.toLowerCase());
+        if (segments.length < 3) continue;
+        if (segments[0] !== "z" && segments[0] !== "x") continue;
+
+        const end = lastIndexOfRun(segments, relative);
+        if (end < 0) continue;
+
+        const mount = segments.slice(0, end + 1);
+        if (!shortest || mount.length < shortest.length) shortest = mount;
+    }
+
+    if (!shortest) return undefined;
+    return { prefix: shortest.join("\\"), tag: functionTagFromText(text)?.toLowerCase() };
+}
+
+/** Index of the last segment of the right-most occurrence of `needle` in `haystack`, or -1. */
+function lastIndexOfRun(haystack: string[], needle: string[]): number {
+    for (let start = haystack.length - needle.length; start >= 0; start--) {
+        if (needle.every((value, offset) => haystack[start + offset] === value)) return start + needle.length - 1;
+    }
+
+    return -1;
+}
+
+function isDirectory(target: string): boolean {
+    try {
+        return fs.statSync(target).isDirectory();
+    } catch {
+        return false;
+    }
 }
 
 /** Removes // and /* *\/ comments without touching string literals. */
@@ -449,6 +588,8 @@ export function toFunctionVariable(addon: Addon, filePath: string): string | und
 
 /** Finds the source addon that owns a file (the deepest folder with config.cpp/functions). */
 export function findAddonForFile(filePath: string): Addon | undefined {
+    if (isExcludedPath(filePath)) return undefined;
+
     let directory = path.dirname(filePath);
 
     while (true) {
@@ -467,11 +608,13 @@ export function findAddonForFile(filePath: string): Addon | undefined {
     }
 }
 
+/** Child directories of `directory`, skipping folders excluded by the project settings. */
 export function safeReadDirs(directory: string): string[] {
     try {
         return fs.readdirSync(directory, { withFileTypes: true })
             .filter(entry => entry.isDirectory() || isJunction(entry))
-            .map(entry => path.join(directory, entry.name));
+            .map(entry => path.join(directory, entry.name))
+            .filter(child => !isExcludedPath(child));
     } catch {
         return [];
     }

@@ -49,6 +49,7 @@ interface ViewSettings {
     enabled: boolean;
     autoJunction: boolean;
     clearArmaMissionArtifacts: boolean;
+    excludedFolders: string[];
     notifyOnError: boolean;
     createExampleWithMission: boolean;
     logLevel: string;
@@ -62,7 +63,7 @@ const SETTING_KEYS = new Set<keyof ViewSettings>([
     "armaDirectory", "armaProfile", "extraLaunchArguments", "serverLaunchArguments", "apiUrl",
     "watchInterval", "junctionMode", "reloadOnSave", "deletedFunctionBehavior", "runTimeout",
     "apiPort", "requestTimeout", "enabled", "autoJunction", "clearArmaMissionArtifacts",
-    "notifyOnError", "createExampleWithMission", "logLevel", "hookPresentation"
+    "excludedFolders", "notifyOnError", "createExampleWithMission", "logLevel", "hookPresentation"
 ]);
 
 export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -463,6 +464,8 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
             value = clampNumber(value, 500, 60000);
         } else if (key === "hookPresentation") {
             value = presentationValue({ hookPresentation: value }, "hookPresentation");
+        } else if (key === "excludedFolders") {
+            value = excludedFolderList(value);
         } else if (key === "deletedFunctionBehavior") {
             if (value !== "clear" && value !== "ask" && value !== "keep") {
                 throw new Error("Invalid deleted function behavior.");
@@ -762,6 +765,10 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
         return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
     }
 
+    private excludedFolders(): string[] {
+        return excludedFolderList(this.setting<unknown>("excludedFolders", []));
+    }
+
     private async refresh(): Promise<void> {
         if (!this.view && !this.debugPanel && !this.settingsPanel) return;
         if (this.root && this.promptedSettingsFor !== this.root.uri.fsPath) {
@@ -844,6 +851,7 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
             enabled: this.setting("enabled", true),
             autoJunction: this.setting("autoJunction", true),
             clearArmaMissionArtifacts: this.setting("clearArmaMissionArtifacts", true),
+            excludedFolders: this.excludedFolders(),
             notifyOnError: this.setting("notifyOnError", true),
             createExampleWithMission: this.setting("createExampleWithMission", true),
             logLevel: this.setting("logLevel", "info"),
@@ -862,6 +870,17 @@ export class ProjectViewProvider implements vscode.WebviewViewProvider, vscode.D
 function clampNumber(value: unknown, minimum: number, maximum: number): number {
     const numeric = typeof value === "number" ? value : Number(value);
     return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, Math.round(numeric))) : minimum;
+}
+
+/** Folder list from the settings panel (array) or a hand-edited file (newline separated text). */
+function excludedFolderList(value: unknown): string[] {
+    const items = Array.isArray(value)
+        ? value
+        : typeof value === "string" ? value.split(/[\r\n]+/) : [];
+    return items
+        .filter((item): item is string => typeof item === "string")
+        .map(item => item.trim())
+        .filter(Boolean);
 }
 
 function isModType(value: unknown): value is ModType {

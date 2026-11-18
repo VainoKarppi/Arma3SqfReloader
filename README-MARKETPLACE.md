@@ -34,11 +34,36 @@ troubleshooting, see the [full GitHub README](https://github.com/VainoKarppi/Arm
 - Arma 3 installed, with a trusted (non-restricted-mode) workspace.
 - Arma 3 Tools is recommended for building addon PBOs before launch. The extension can continue
   without AddonBuilder if it is unavailable.
+- **Windows Smart App Control turned off** — it refuses to load the unsigned SqfReloader DLL. See
+  [Smart App Control must be off](#smart-app-control-must-be-off).
 - BattlEye sessions are not supported: BattlEye will not load the unsigned SqfReloader extension.
 
 See [LIMITATIONS.md](./LIMITATIONS.md) for the full support matrix — what works, what should work
 but is untested, what is planned, and what is deliberately out of scope. Release notes are in
 [CHANGELOG.md](./CHANGELOG.md).
+
+### Smart App Control must be off
+
+Smart App Control only loads applications it trusts and has **no per-app exception**, while the
+bundled `SqfReloader_x64.dll` is not code-signed. If it stays on, Arma 3 shows this dialog and then
+**starts without SqfReloader** — saving a `.sqf` file reloads nothing, and the status bar waits for
+a connection that never arrives:
+
+```text
+arma3_x64.exe - Bad Image
+C:\Program Files (x86)\Steam\steamapps\common\Arma 3\@SqfReloader\SqfReloader_x64.dll is either not
+designed to run on Windows or it contains an error. Try installing the program again using the
+original installation media or contact your system administrator or the software vendor for
+support. Error status 0xc0e90002.
+```
+
+Turn it off in **Windows Security → App & browser control → Smart App Control settings → Off**.
+Windows 11 Home can enable it on a clean install, so it is worth checking even when nothing was
+changed.
+
+The extension reports the block on **SqfReloader: Play** instead of launching silently. If you
+cannot turn Smart App Control off, a build signed with a certificate from the Microsoft Trusted
+Root Program loads as well; see `README-FULL.md`, "Signing the DLL".
 
 ## Quick start
 
@@ -76,6 +101,7 @@ Open the **Arma 3** view in the Activity Bar or use the Command Palette:
 | **SqfReloader: Reload and restart mission functions** | Reload the active mission's functions and initialization scripts. |
 | **SqfReloader: Create example mod** | Generate a sample mod and mission. |
 | **SqfReloader: Show output** | View extension logs and Arma script errors. |
+| **SqfReloader: Create diagnostic report** | Write `%LOCALAPPDATA%\SqfReloader\diagnostic.txt` (personal paths removed) and open the folder. |
 | **SqfReloader: Run HEMTT check** | Run `hemtt check` now and refresh problems. |
 
 Right-click an `.sqf` file for **Run in Arma** or **Run in Arma With Parameters**. Right-click a mod
@@ -109,8 +135,12 @@ troubleshooting, see the [full documentation on GitHub](https://github.com/Vaino
 
 [Report bugs, request features, or share suggestions on GitHub](https://github.com/VainoKarppi/Arma3SqfReloader/issues).
 
-For bug reports, include steps to reproduce the issue and attach `SqfReloader.log`, found at:
+For bug reports, run **SqfReloader: Create diagnostic report** in the Command Palette and attach
+`%LOCALAPPDATA%\SqfReloader\diagnostic.txt`, together with `SqfReloader.log` from:
 `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log`
+
+The diagnostic report has your user name, computer name, Arma profile name and personal folder
+paths replaced, so it can be attached to a public issue as-is.
 
 ### Support development
 

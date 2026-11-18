@@ -167,7 +167,9 @@ function Get-VscodeVersion {
 
 function Add-KeyToHashtable {
     # Replaces the manifest's own "version" value in place so the surrounding formatting (and
-    # the lock file's indentation) stays as it was.
+    # the lock file's indentation) stays as it was. The rewritten root value is read back, so a
+    # layout the rewrite does not reach fails the build instead of silently keeping the old
+    # version (package.json used to drift a patch level behind on every bump).
     param(
         [string]$Version,
         [string[]]$Files
@@ -180,8 +182,14 @@ function Add-KeyToHashtable {
         $content = Get-Content $file -Raw
         $updated = Set-JsonRootVersion -Content $content -Version $Version
 
-        if ($updated -eq $content) {
-            Write-Warn "Version bump skipped, no version field: $relative"
+        # The root "version" property is the first line-anchored one in both manifests.
+        $reported = [regex]::Match($updated, '(?m)^[ \t]*"version"[ \t]*:[ \t]*"([^"]*)"').Groups[1].Value
+        if ($reported -ne $Version) {
+            throw "Version $Version could not be written to $relative (its root version reads '$reported'). Fix Set-JsonRootVersion."
+        }
+
+        if ($updated -ceq $content) {
+            Write-Ok "Version $Version already in $relative"
             continue
         }
 
@@ -200,12 +208,19 @@ function Set-JsonRootVersion {
         [Parameter(Mandatory)] [string]$Version
     )
 
-    # package.json and the top-level lock version: `{ "name": ..., "version": ... }`.
+    # package-lock.json and any `{ "name": ..., "version": ... }` manifest: name first.
     $top = '(?s)^(\{\s*"name"\s*:\s*"[^"]*",\s*"version"\s*:\s*")[^"\\]*(")'
+    # package.json keeps displayName/description/publisher between "name" and "version", so when
+    # `$top` does not match, the root "version" is the first version property in the file
+    # (dependencies and contributes come after it).
+    $firstVersion = '("version"\s*:\s*")[^"\\]*(")'
     # package-lock.json: the "" entry of "packages" repeats the root version.
     $lockPackage = '(?s)("packages"\s*:\s*\{\s*"":\s*\{\s*"name"\s*:\s*"[^"]*",\s*"version"\s*:\s*")[^"\\]*(")'
 
     $result = [regex]::Replace($Content, $top, '${1}' + $Version + '${2}', 1)
+    if ($result -ceq $Content) {
+        $result = [regex]::Replace($Content, $firstVersion, '${1}' + $Version + '${2}', 1)
+    }
     return [regex]::Replace($result, $lockPackage, '${1}' + $Version + '${2}', 1)
 }
 
@@ -282,7 +297,14 @@ function Update-ComponentVersions {
 }
 
 function Invoke-DllBuild {
-    param([switch]$Clean)
+    param(
+        [switch]$Clean,
+        [string]$SignThumbprint = "",
+        [string]$SignPfx = "",
+        [string]$SignPfxPassword = "",
+        [string]$SignMetadata = "",
+        [string]$SignTimestampUrl = "http://timestamp.digicert.com"
+    )
 
     $dotnet = Get-DotNetPath
 
@@ -304,7 +326,136 @@ function Invoke-DllBuild {
 
     Write-Ok "DLL: $dll ($([Math]::Round((Get-Item $dll).Length / 1MB, 2)) MB)"
 
+    if ($SignThumbprint -or $SignPfx -or $SignMetadata) {
+        Invoke-DllSigning -DllPath $dll -Thumbprint $SignThumbprint -Pfx $SignPfx -PfxPassword $SignPfxPassword `
+            -Metadata $SignMetadata -TimestampUrl $SignTimestampUrl
+    }
+    else {
+        Write-Warn "Unsigned build. Smart App Control and BattlEye refuse unsigned extensions; see -SignThumbprint / -SignMetadata."
+    }
+
     return $dll
+}
+
+function Find-SignTool {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    # Every installed Windows SDK; the newest one that ships signtool.exe wins.
+    $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path -LiteralPath $kits) {
+        foreach ($version in (Get-ChildItem -LiteralPath $kits -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+            $candidates.Add((Join-Path $version.FullName "x64\signtool.exe"))
+        }
+    }
+
+    $onPath = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates.Add($onPath.Source) }
+
+    return $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+}
+
+function Find-TrustedSigningDlib {
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Microsoft Trusted Signing Client Tools\Azure.CodeSigning.Dlib.dll"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Trusted Signing Client Tools\Azure.CodeSigning.Dlib.dll"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\Trusted Signing\Azure.CodeSigning.Dlib.dll")
+    )
+
+    return $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+}
+
+function Find-CodeSigningCertificate {
+    # The certificate a release build signs with: a private key plus the code-signing EKU
+    # (1.3.6.1.5.5.7.3.3) in the current user's store. The newest one wins; pass -SignThumbprint
+    # when the store holds more than one (a hardware token or cloud HSM shows up here too).
+    if (!(Test-Path "Cert:\CurrentUser\My")) { return $null }
+
+    $candidates = @(
+        Get-ChildItem "Cert:\CurrentUser\My" -ErrorAction SilentlyContinue | Where-Object {
+            $_.HasPrivateKey -and @($_.EnhancedKeyUsageList | Where-Object { ($_.ObjectId), ($_.Value) -contains "1.3.6.1.5.5.7.3.3" }).Count -gt 0
+        } | Sort-Object NotAfter -Descending
+    )
+
+    if ($candidates.Count -eq 0) { return $null }
+    return $candidates[0]
+}
+
+<#
+.SYNOPSIS
+    Authenticode-signs the built DLL with SHA-256 and an RFC 3161 timestamp.
+
+.DESCRIPTION
+    Smart App Control and BattlEye only accept an extension signed by a certificate that chains to
+    the Microsoft Trusted Root Program, so a self-signed certificate is good for testing the
+    pipeline only (it still verifies here as long as the root is trusted on this machine).
+
+    Pick one certificate source:
+      -Thumbprint  certificate in the current user's "My" store (OV/EV hardware token, DigiCert
+                   KeyLocker, SSL.com eSigner, ...): signtool /sha1
+      -Pfx         .pfx file: signtool /f (password from -PfxPassword or
+                   $env:SQFRELOADER_SIGN_PFX_PASSWORD)
+      -Metadata    Microsoft Trusted Signing metadata .json: signtool /dlib + /dmdf
+#>
+function Invoke-DllSigning {
+    param(
+        [Parameter(Mandatory)] [string]$DllPath,
+        [string]$Thumbprint = "",
+        [string]$Pfx = "",
+        [string]$PfxPassword = "",
+        [string]$Metadata = "",
+        [string]$TimestampUrl = "http://timestamp.digicert.com"
+    )
+
+    if (!(Test-Path -LiteralPath $DllPath)) { throw "Cannot sign a missing file: $DllPath" }
+
+    $signTool = Find-SignTool
+    if (!$signTool) {
+        throw 'signtool.exe was not found. Add "Windows SDK Signing Tools for Desktop Apps" in the Visual Studio installer, or run the build from a Developer Command Prompt.'
+    }
+
+    $arguments = New-Object System.Collections.Generic.List[string]
+    foreach ($argument in @("sign", "/fd", "sha256", "/td", "sha256", "/tr", $TimestampUrl)) { $arguments.Add($argument) }
+
+    if ($Thumbprint) {
+        $arguments.Add("/sha1")
+        $arguments.Add((($Thumbprint -replace '[^0-9A-Fa-f]', '')).ToUpperInvariant())
+    }
+    elseif ($Pfx) {
+        $arguments.Add("/f")
+        $arguments.Add((Resolve-Path -LiteralPath $Pfx).Path)
+        if ($PfxPassword) {
+            $arguments.Add("/p")
+            $arguments.Add($PfxPassword)
+        }
+    }
+    elseif ($Metadata) {
+        $dlib = Find-TrustedSigningDlib
+        if (!$dlib) {
+            throw "Trusted Signing needs the client tools: install them from https://aka.ms/trustedsigningclient, or pass -SignThumbprint/-SignPfx instead."
+        }
+        foreach ($argument in @("/dlib", $dlib, "/dmdf", (Resolve-Path -LiteralPath $Metadata).Path)) { $arguments.Add($argument) }
+    }
+    else {
+        throw "Signing needs a certificate: pass -SignThumbprint <thumbprint>, -SignPfx <file.pfx> or -SignMetadata <metadata.json>."
+    }
+
+    $arguments.Add((Resolve-Path -LiteralPath $DllPath).Path)
+
+    Write-Step "Signing $([System.IO.Path]::GetFileName($DllPath)) (SHA-256, $TimestampUrl)"
+    Invoke-Checked -FilePath $signTool -Arguments $arguments.ToArray() | Out-Null
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $DllPath
+    if ($signature.Status -ne "Valid") {
+        throw "The DLL is signed but the signature does not verify ($($signature.Status)). A self-signed certificate must have its root in the Trusted Root store before it verifies here; Smart App Control ignores it either way."
+    }
+
+    Write-Ok "Signed by $($signature.SignerCertificate.Subject)"
+    if ($signature.TimeStamperCertificate) {
+        Write-Ok "Timestamped by $($signature.TimeStamperCertificate.Subject)"
+    }
+    else {
+        Write-Warn "The signature carries no timestamp; it stops validating when the certificate expires."
+    }
 }
 
 function Get-TreeContentHash {

@@ -24,6 +24,7 @@ Status legend:
 | --- | --- | --- |
 | Windows 10 / 11, x64 | **Working** | The supported configuration. Windows-only APIs (`mklink /J`, `tasklist`, `taskkill`) and the bundled x64 DLL are used throughout. |
 | Windows 11 on Arm64 | **Should work** | The x64 `SqfReloader_x64.dll` and Arma 3 run under x64 emulation. Activation shows a one-time warning; nothing has been verified on Arm64 hardware. |
+| Windows 11 with **Smart App Control** on | **Won't fix** | Smart App Control blocks the unsigned DLL (loader status `0xC0E90002`, shown by Arma as "either not designed to run on Windows or it contains an error") and the game runs without SqfReloader. **Play** clears the Mark-of-the-Web on the deployed copy, which is the usual trigger for a DLL copied from another machine; a policy that blocks unsigned DLLs outright can only be satisfied by signing the DLL or turning Smart App Control off. |
 | macOS / Linux desktop | **Won't fix** | Arma 3 with the SqfReloader mod is a Windows game; junctions and the DLL have no equivalent. The extension now says so and stays inactive. |
 | VS Code Web (`vscode.dev`) | **Won't fix** | No local file system, no process launch, no junction. |
 | Remote-SSH to a **Windows** host that has Arma installed | **Should work** | The extension is declared `extensionKind: ["workspace"]`, so it runs on the remote and manipulates that machine's Arma installation. Untested; the remote must run Windows with a desktop session for the game. |
@@ -55,8 +56,9 @@ Status legend:
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| **Play** (start Arma with the workspace mod and `@SqfReloader`) | **Working** | Stages PBOs, links sources, writes the API config, starts `arma3_x64.exe`. |
-| **Stop Arma 3** | **Working** | Closes only the instance VS Code started (its PID and children). If Arma was started elsewhere, the confirmation dialog says so before an image-name kill is used. |
+| **Play** (start Arma with the workspace mod and `@SqfReloader`) | **Working** | Stages PBOs, links sources, writes the API config, starts `arma3_x64.exe` through the WMI provider so it is not a child of the extension host. |
+| Surviving a VS Code window reload | **Working** | The game is created by `Win32_Process.Create`, so **Developer: Reload Window** / an extension update keeps it running; the new extension host adopts the API port and compiles every workspace function again. Needs PowerShell and the WMI service; when `Invoke-CimMethod` fails the launch falls back to a child process, which still works but closes with the window. |
+| **Stop Arma 3** | **Working** | Closes only the instance VS Code started (its PID and children). The PID is kept in the window state, so it is still known after a reload. If Arma was started elsewhere, the confirmation dialog says so before an image-name kill is used. |
 | Launch with a pinned Steam path / non–Steam install | **Should work** | Arma discovery reads the registry and Steam library folders; `armaDirectory` pins a folder manually. |
 | Launch when Steam is not running | **Working** | The extension starts Steam and waits for it. |
 | Dedicated server (**Start dedicated server**) | **Working** | Requires a `.cfg` containing a real `hostname` assignment; the command line is shown before launch. |
@@ -88,7 +90,7 @@ Status legend:
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Project settings panel (`.vscode/sqfReloader-settings.json`) | **Working** | Never reads or writes VS Code `settings.json`. |
-| Mod launch roles (Client / Server / Not Used) | **Working** | The former Shared Mod role is gone; legacy `"both"` values read as Client. |
+| Mod launch roles (Client / Server / Not Used) | **Working** | The former Shared Mod role is gone; legacy `"both"` values read as Client. Once `modTypes` saves any role, only folders with a Client or Server role reach `-mod=`/`-serverMod=`; a project with no saved role still launches every discovered folder as a Client mod. |
 | External mods list (local and Workshop) | **Working** | |
 | Mission linking into profile and installation | **Working** | Requires the profile folder to be writable. A mission that cannot be linked is a warning; Arma still launches. |
 | Junction creation, repair and cleanup | **Working** | A real folder blocking a link is offered for backup into `<Arma 3>\.sqfreloader-backups`. A broken junction (deleted workspace) is replaced automatically on the next launch. |
@@ -113,6 +115,7 @@ Status legend:
 | Ctrl+click / hover on `TAG_fnc_name` | **Working** | Uses `CfgFunctions` and `fn_*.sqf` names. |
 | Global variable navigation | **Working** | Mission namespace only; `uiNamespace`/`profileNamespace` are not resolved. |
 | File-local variable navigation and `params` | **Working** | Single document, scope-aware, cached per document version. |
+| F2 rename of globals and locals | **Working** | Globals: every workspace `.sqf` file, identifier plus a string that is exactly the name. Locals: the open document, only occurrences resolving to the same declaration. `.sqf` files only — a name built at runtime (`format ["%1_var", _tag]`) or stored in a config/`description.ext` string cannot be found. |
 | **See references** | **Working** | Works on a function name or inside a `fn_*.sqf` file. |
 | Compile errors from the RPT as diagnostics | **Working** | Requires the RPT to be readable. |
 | SQF syntax highlighting / IntelliSense | **Won't fix** for now | No grammar or language server ships. Use a dedicated SQF language extension; the navigation providers stay active for `*.sqf` regardless. |
@@ -177,11 +180,20 @@ the attack surface of an unauthenticated local code-execution endpoint.
    by path and never modified.
 9. **Multiplayer client attach.** The API is local to one Arma instance; remote clients are not
    attached individually.
+10. **Code-signing the shipped DLL.** The build is unsigned, so Smart App Control refuses to load
+    it (and BattlEye would too). `tools\build.ps1` can sign (`-SignThumbprint`, `-SignPfx`,
+    `-SignMetadata`), but the certificate has to chain to the Microsoft Trusted Root Program —
+    signing needs a paid or sponsored certificate, and reputation can still lag behind a new one.
 
 ---
 
 ## 6. Reporting a problem
 
-If a row marked **Working** or **Should work** fails for you, include the extension version, your
-Windows version, the Arma 3 branch, the mod layout (mod folder, addons, missions) and
-`SqfReloader.log` from `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log`.
+If a row marked **Working** or **Should work** fails for you, run
+**SqfReloader: Create diagnostic report** and attach `%LOCALAPPDATA%\SqfReloader\diagnostic.txt`
+together with `SqfReloader.log` from `%LOCALAPPDATA%\SqfReloader\logs\SqfReloader.log`. The report
+contains the extension, VS Code, Windows and Arma versions, the detected Arma folder, the deployed
+DLL (with its SHA-256 hash and code-integrity state), the API configuration, the workspace links and
+the recent error lines. Your user name, computer name, Arma profile name and personal
+`C:\Users\<name>` paths are replaced before the file is written, so it can be posted publicly; it
+does not include the mod's SQF source.

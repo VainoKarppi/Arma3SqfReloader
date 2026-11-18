@@ -1,5 +1,4 @@
 import * as path from "path";
-import { pathToFileURL } from "url";
 import { MissionFolder } from "./arma";
 import { projectSetting } from "./projectSettings";
 import { Settings } from "./settings";
@@ -39,7 +38,7 @@ export function formatLaunchArgument(argument: string): string[] {
     if (modMatch) {
         return [
             `${modMatch[1]}=`,
-            ...modMatch[2].split(";").map(directory => `\t\t${pathToFileURL(directory).href}`)
+            ...modMatch[2].split(";").map(directory => `\t\t"${directory}"`)
         ];
     }
 

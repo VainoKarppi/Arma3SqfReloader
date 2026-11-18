@@ -16,9 +16,10 @@ The released behaviour is described in [README-FULL.md](./README-FULL.md); the s
 
 ```powershell
 npm run clean ; npm run compile          # must be error-free
-npm run verify                           # version gate + links + tour/cache + HEMTT shim + scaffold + tags
+npm run verify                           # version gate + links + tour/cache + HEMTT shim + DLL + diagnostics + scaffold + tags
 node scripts/verify-links.js             # junction/mission-link logic (also run by verify)
 node scripts/verify-tutorial.js          # guided tour + project-settings cache (also run by verify)
+node scripts/verify-diagnostics.js       # support report redaction + one real collection run
 npx --no-install @vscode/vsce ls         # packaging: no dev files, out/ has one .js per module
 ```
 
@@ -31,6 +32,7 @@ Expected:
 | `scripts/verify-links.js` | Ends with `All link checks passed.` (broken junction replaced, mission links registered and cleaned up, real folders untouched). |
 | `scripts/verify-tutorial.js` | Ends with `All tutorial and settings-cache checks passed.` |
 | `scripts/verify-hemtt-shim.js` | Ends with `All HEMTT shim checks passed.` (skips itself off Windows). |
+| `scripts/verify-diagnostics.js` | Ends with `Diagnostic report checks passed.` (redaction cases plus one real collection run without the user/computer name or home folder). |
 | `scripts/verify-template.js` | Ends with `TEMPLATE VERIFY PASSED`. |
 | `scripts/verify-tags.js` | Ends with `TAG VERIFY PASSED`. |
 | `vsce ls` | No `src/`, `scripts/`, `*.map`, `node_modules`; `out/` has exactly one `.js` per source module. |
@@ -115,6 +117,22 @@ Not-offered cases:
       the output channel explains that.
 - [ ] Run **SqfReloader: Play Arma 3** again: all links come back and the mission appears in Eden.
 
+### 2.1d A window reload keeps the game and reconnects
+
+- [ ] Start Arma from **Play Arma 3**, open a mission, then run **Developer: Reload Window**. The
+      game window stays open and the mission keeps running.
+- [ ] After the reload the output channel says
+      `Arma 3 was already running, so this window reconnects to it and recompiles the workspace functions.`
+      and the status bar turns green again (`SqfReloader connected: …`) without clicking Play.
+- [ ] Edit and save a `fn_*.sqf`: the reload still reaches the game (the function is recompiled).
+- [ ] Run **SqfReloader: Stop Arma 3**: no "was not started by VS Code" warning appears, and the
+      instance this window started closes.
+- [ ] Repeat with `%LOCALAPPDATA%\SqfReloader\config.json` pointing at a non-default port (set
+      `apiPort` to a busy port so the launch moves it): the reloaded window still finds the API.
+- [ ] Force the fallback (temporarily block `powershell.exe`, e.g. by renaming it in a test VM):
+      the launch still starts Arma, the output channel says the process runs as a child, and the
+      game closes with the window — that is the documented degraded mode.
+
 ### 2.2 Stop only the Arma VS Code started
 - [ ] Start Arma from VS Code, then run **SqfReloader: Stop Arma 3**. The dialog says *"Close the
       Arma 3 instance started from VS Code?"* and only that instance closes. Output channel logs
@@ -168,6 +186,19 @@ Only if HEMTT is installed via scoop/Chocolatey:
 - [ ] Ctrl+click a `TAG_fnc_name` still opens its definition and hover still shows the header.
 - [ ] The Arma Project view still lists mods, watches, hooks and RPT output, and the Debug Console
       still executes SQF.
+
+### 2.6 Diagnostic report
+
+- [ ] **SqfReloader: Create diagnostic report** asks once, then writes
+      `%LOCALAPPDATA%\SqfReloader\diagnostic.txt` and opens that folder in Explorer.
+- [ ] The report has every section (System, VS Code, Arma 3 installation, SqfReloader runtime,
+      SqfReloader API, Processes, Workspace, Arma 3 logs, Visual C++ redistributables, Recent
+      Windows application errors, Extension log).
+- [ ] Search the file for your user name, your computer name and `C:\Users\`: none of them appears
+      (paths show `%USERPROFILE%`, `%LOCALAPPDATA%` and `C:\Users\<user>` instead).
+- [ ] With Arma running, the API section shows the `/status` answer and the DLL hashes of the
+      bundled and the deployed copy match.
+- [ ] **Cancel** at the confirmation writes no file.
 
 ---
 

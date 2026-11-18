@@ -104,6 +104,14 @@
             "default": true,
             "description": "Automatically remove Arma-generated ~Mission.World preview folders from the active profile."
         },
+        "excludedFolders": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "default": [],
+            "description": "Folders SqfReloader ignores completely: publish/build output that copies the mod. Paths are relative to the workspace folder (or absolute). No reload, duplicate-function check, links or function index for files inside them."
+        },
         "logLevel": {
             "type": "string",
             "enum": [
@@ -179,7 +187,7 @@
                     "off"
                 ]
             },
-            "description": "Mod launch roles keyed by the mod folder path relative to the workspace folder."
+            "description": "Mod launch roles keyed by the mod folder path relative to the workspace folder. Once this object has any entry, only folders with a client or server role are passed to -mod= / -serverMod=; a folder without a role is skipped."
         },
         "externalMods": {
             "type": "array",
